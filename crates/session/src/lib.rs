@@ -9,7 +9,7 @@ pub mod host;
 mod session_codes;
 mod stats;
 
-pub use session_codes::SessionCodes;
+pub use session_codes::{Grant, SessionCodes};
 pub use stats::Stats;
 
 use hext_capture::CaptureError;

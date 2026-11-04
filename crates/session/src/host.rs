@@ -10,8 +10,10 @@ use hext_codec::EncoderSettings;
 use hext_input::Area;
 use hext_net::video::VideoSender;
 use hext_net::{Connection, NetError};
-use hext_proto::{Control, Hello, InputEvent, PeerInfo, RejectReason, StreamKind, VideoFrame};
-use tokio::sync::{mpsc, oneshot};
+use hext_proto::{
+    Control, Hello, InputEvent, PeerInfo, Permissions, RejectReason, StreamKind, VideoFrame,
+};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use crate::{Result, SessionError, codes_match};
@@ -29,6 +31,35 @@ pub struct HostConfig {
     pub session_codes: crate::SessionCodes,
     /// Where the screen comes from and the input goes.
     pub desktop: Arc<dyn Desktop>,
+    /// Keeps the host's user aware of the session, with a way to end it.
+    pub presence: Option<Arc<dyn Presence>>,
+}
+
+/// The session going on, as the host's user is shown it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveSession {
+    pub name: String,
+    /// `None`: connected by IP, with the access code.
+    pub id: Option<String>,
+    pub permissions: Permissions,
+}
+
+/// The host's indicator of a session (ARCHITECTURE 7.3).
+pub trait Presence: Send + Sync {
+    /// A session starts (before anything is shared). The session ends
+    /// when the returned [`Notify`], new for each session, is notified.
+    fn started(&self, session: &ActiveSession) -> Arc<Notify>;
+    /// The session ended (however it did).
+    fn ended(&self);
+}
+
+/// The session on the indicator, until dropped.
+struct Shown(Arc<dyn Presence>);
+
+impl Drop for Shown {
+    fn drop(&mut self) {
+        self.0.ended();
+    }
 }
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -225,25 +256,46 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // The viewer proved it holds this key; a session code is only good from
     // the viewer it was issued to.
     let viewer = hext_net::remote_key(&conn);
+    let mut grant = None;
     let (mut control, hello) =
         hext_net::host_handshake(&conn, config.peer.clone(), |hello: &Hello| {
             let code = config.access_code.as_deref();
-            if code.is_some_and(|code| codes_match(code, &hello.access_code))
-                || config.session_codes.redeem(&hello.access_code, &viewer)
-            {
-                Ok(())
-            } else {
-                Err(RejectReason::WrongCode)
+            if code.is_some_and(|code| codes_match(code, &hello.access_code)) {
+                return Ok(Permissions::CONTROL);
             }
+            grant = config.session_codes.redeem(&hello.access_code, &viewer);
+            grant
+                .as_ref()
+                .map(|grant| grant.permissions)
+                .ok_or(RejectReason::WrongCode)
         })
         .await?;
     let client = hello.peer;
+    let session = match grant {
+        Some(grant) => ActiveSession {
+            name: grant.name,
+            id: Some(grant.id),
+            permissions: grant.permissions,
+        },
+        None => ActiveSession {
+            name: client.device_name.clone(),
+            id: None,
+            permissions: Permissions::CONTROL,
+        },
+    };
     // (Not the path: right after the handshake it is usually the relay,
     // and a direct one follows; the viewer's title shows it live.)
     info!(
         "conectado: {} ({:?}, v{})",
         client.device_name, client.os, client.app_version,
     );
+
+    // On the indicator before the first frame leaves.
+    let end = config
+        .presence
+        .as_ref()
+        .map_or_else(Default::default, |presence| presence.started(&session));
+    let _shown = config.presence.clone().map(Shown);
 
     // One slot: backpressure from the network back to the capture.
     let (frames_tx, mut frames_rx) = mpsc::channel::<VideoFrame>(1);
@@ -269,7 +321,11 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             }
         }
     });
-    let mut input = tokio::spawn(receive_input(conn.clone(), screen.clone()));
+    let mut input = tokio::spawn(receive_input(
+        conn.clone(),
+        screen.clone(),
+        session.permissions,
+    ));
 
     let result = loop {
         tokio::select! {
@@ -290,6 +346,10 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                 Err(e) => break Err(e.into()),
             },
             _ = conn.closed() => break Ok(()),
+            _ = end.notified() => {
+                info!("sessão encerrada no host");
+                break Ok(());
+            }
             // Without video or input the session is useless: end it.
             done = &mut writer => break task_end("vídeo", done.map(|r| r.map_err(SessionError::from))),
             done = &mut input => break task_end("input", done),
@@ -530,8 +590,13 @@ fn task_end(
 
 type SharedScreen = Arc<Mutex<Option<Box<dyn Screen>>>>;
 
-/// Injects the client's input until the stream or connection ends.
-async fn receive_input(conn: Connection, screen: SharedScreen) -> Result<()> {
+/// Injects the client's input until the stream or connection ends; without
+/// the permission to control, the input is read and dropped.
+async fn receive_input(
+    conn: Connection,
+    screen: SharedScreen,
+    permissions: Permissions,
+) -> Result<()> {
     let (kind, mut stream) = hext_net::accept_uni(&conn).await?;
     if kind != StreamKind::Input {
         return Err(SessionError::Protocol(format!(
@@ -540,6 +605,9 @@ async fn receive_input(conn: Connection, screen: SharedScreen) -> Result<()> {
     }
     loop {
         let event: InputEvent = stream.recv().await?;
+        if !permissions.control {
+            continue;
+        }
         if let Some(screen) = screen.lock().expect("lock").as_mut() {
             screen.inject(&event);
         }

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod frame;
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// TLS ALPN identifier. It carries no version: versions are compared through
 /// the preamble, so mismatched peers still connect and can report why they fail.
@@ -117,6 +117,32 @@ impl PeerInfo {
     }
 }
 
+/// What the host's user lets the viewer do besides seeing the screen. It
+/// holds on the host: what was not granted is refused there, not only hidden
+/// in the viewer.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Permissions {
+    /// Mouse and keyboard (and Ctrl+Alt+Del).
+    pub control: bool,
+    pub clipboard: bool,
+    pub files: bool,
+    pub restart: bool,
+}
+
+impl Permissions {
+    pub const VIEW_ONLY: Self = Self {
+        control: false,
+        clipboard: false,
+        files: false,
+        restart: false,
+    };
+    /// What a yes without a choice of permissions means.
+    pub const CONTROL: Self = Self {
+        control: true,
+        ..Self::VIEW_ONLY
+    };
+}
+
 /// The client's introduction.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Hello {
@@ -131,7 +157,10 @@ pub enum Control {
     /// First message after the preamble, sent by the client.
     Hello(Hello),
     /// Host's answer to an acceptable [`Control::Hello`].
-    HelloAck(PeerInfo),
+    HelloAck {
+        peer: PeerInfo,
+        permissions: Permissions,
+    },
     /// Host refuses the session; the connection is closed afterwards.
     Reject(RejectReason),
     /// Client asks for a fresh keyframe (start of stream, decode error).
@@ -280,7 +309,13 @@ mod tests {
                 access_code: "123456789".into(),
             }),
             Control::RequestKeyframe,
-            Control::HelloAck(PeerInfo::local("0.1.0", "laptop")),
+            Control::HelloAck {
+                peer: PeerInfo::local("0.1.0", "laptop"),
+                permissions: Permissions {
+                    files: true,
+                    ..Permissions::CONTROL
+                },
+            },
             Control::Reject(RejectReason::Busy),
             Control::Bye,
         ];

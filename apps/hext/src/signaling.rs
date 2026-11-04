@@ -11,8 +11,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use hext_crypto::DeviceKey;
 use hext_net::{Connection, Endpoint};
-use hext_session::SessionCodes;
+use hext_proto::Permissions;
 use hext_session::host::BoxFuture;
+use hext_session::{Grant, SessionCodes};
 use hext_signal::{Check, Client, ClientMsg, DeviceId, KnownHosts, Rejection, Role, ServerMsg};
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{info, warn};
@@ -20,7 +21,7 @@ use tracing::{info, warn};
 use crate::APP_VERSION;
 
 /// How long the host's user has to answer (the server gives up at 60 s).
-const ANSWER_TIME: Duration = Duration::from_secs(55);
+pub const ANSWER_TIME: Duration = Duration::from_secs(55);
 /// Waits between attempts to reach the server, doubling up to the last.
 const RETRY_FIRST: Duration = Duration::from_secs(2);
 const RETRY_MAX: Duration = Duration::from_secs(60);
@@ -29,11 +30,27 @@ const RELAY_WAIT: Duration = Duration::from_secs(5);
 /// How long to try reaching the host (directly or through the relay).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How much of a device's name is shown.
+const MAX_NAME: usize = 64;
+
+/// A name as the other side sent it, made safe to show: nothing that moves
+/// a terminal's cursor or reverses text around the name.
+fn shown_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+        })
+        .take(MAX_NAME)
+        .collect()
+}
+
 /// Asks the host's user whether a device may connect.
 pub trait Ask: Send {
-    /// The question for `name` (ID `id`); a future dropped before it ends
-    /// (the request was cancelled, or time ran out) is a no.
-    fn ask<'a>(&'a mut self, name: &'a str, id: DeviceId) -> BoxFuture<'a, bool>;
+    /// The question for `name` (ID `id`): what the user granted, or `None`
+    /// for a no. A future dropped before it ends (the request was
+    /// cancelled, or time ran out) is a no.
+    fn ask<'a>(&'a mut self, name: &'a str, id: DeviceId) -> BoxFuture<'a, Option<Permissions>>;
 
     /// This computer's ID, once the server gave it (or a different one).
     fn show_id(&mut self, id: DeviceId);
@@ -49,16 +66,19 @@ impl Terminal {
 }
 
 impl Ask for Terminal {
-    fn ask<'a>(&'a mut self, name: &'a str, id: DeviceId) -> BoxFuture<'a, bool> {
+    fn ask<'a>(&'a mut self, name: &'a str, id: DeviceId) -> BoxFuture<'a, Option<Permissions>> {
         Box::pin(async move {
             // Lines typed before the question are not answers to it.
             while self.0.try_recv().is_ok() {}
             println!();
             println!("  \"{name}\" (ID {id}) quer acessar este computador.");
             println!("  Aceitar? [s/N]");
-            self.0.recv().await.is_some_and(|l| {
-                matches!(l.trim().to_lowercase().as_str(), "s" | "sim" | "y" | "yes")
-            })
+            let line = self.0.recv().await?;
+            matches!(
+                line.trim().to_lowercase().as_str(),
+                "s" | "sim" | "y" | "yes"
+            )
+            .then_some(Permissions::CONTROL)
         })
     }
 
@@ -131,6 +151,7 @@ async fn serve(
         else {
             continue;
         };
+        let from_name = shown_name(&from_name);
         if slot.available_permits() == 0 {
             info!("pedido de {from_name} ({from}) recusado: já existe uma sessão");
             client.send(&ClientMsg::Reject { request }).await?;
@@ -147,7 +168,7 @@ async fn serve(
                 msg = client.recv() => match msg? {
                     ServerMsg::Cancelled { request: r } if r == request => {
                         println!("  O pedido foi cancelado.");
-                        break false;
+                        break None;
                     }
                     // Others asking meanwhile wait their turn by being told
                     // no: the user answers one at a time.
@@ -158,16 +179,16 @@ async fn serve(
                 },
                 _ = &mut deadline => {
                     println!("  Sem resposta: recusado.");
-                    break false;
+                    break None;
                 }
             }
         };
         // A session may have started (by IP) while the user decided.
         let busy = slot.available_permits() == 0;
-        if accepted && busy {
+        if accepted.is_some() && busy {
             println!("  Já existe uma sessão: o pedido foi recusado.");
         }
-        let answer = if accepted && !busy {
+        let answer = if let Some(permissions) = accepted.filter(|_| !busy) {
             println!("  Aceito: conectando...");
             // The relay must be among the addresses: without it, a viewer
             // on another network has nothing to fall back on. Right after
@@ -179,7 +200,14 @@ async fn serve(
                 request,
                 addrs: hext_net::addr_to_strings(&endpoint.addr()),
                 // Good only from the device that asked.
-                session_code: codes.issue(from_key),
+                session_code: codes.issue(
+                    from_key,
+                    Grant {
+                        permissions,
+                        name: from_name.clone(),
+                        id: from.to_string(),
+                    },
+                ),
             }
         } else {
             ClientMsg::Reject { request }
@@ -270,5 +298,18 @@ fn rejection(reason: Rejection) -> &'static str {
         }
         Rejection::Busy => "o outro computador já tem um pedido esperando resposta",
         Rejection::SelfConnect => "esse é o ID deste computador",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_only_text_to_show() {
+        assert_eq!(shown_name("PC do João"), "PC do João");
+        assert_eq!(shown_name("a\u{1b}[2Jb\nc"), "a[2Jbc");
+        assert_eq!(shown_name("abc\u{202E}gnp.exe"), "abcgnp.exe");
+        assert_eq!(shown_name(&"x".repeat(500)).chars().count(), MAX_NAME);
     }
 }

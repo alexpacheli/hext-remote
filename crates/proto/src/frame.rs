@@ -72,7 +72,10 @@ mod tests {
 
     #[test]
     fn frame_arriving_in_pieces() {
-        let msg = Control::HelloAck(PeerInfo::local("0.1.0", "desk"));
+        let msg = Control::HelloAck {
+            peer: PeerInfo::local("0.1.0", "desk"),
+            permissions: crate::Permissions::CONTROL,
+        };
         let frame = encode_frame(&msg, MAX_FRAME_LEN).unwrap();
         let mut buf = Vec::new();
         for (i, byte) in frame.iter().enumerate() {
@@ -90,7 +93,10 @@ mod tests {
     #[test]
     fn two_frames_in_one_buffer() {
         let mut buf = encode_frame(&Control::Bye, MAX_FRAME_LEN).unwrap();
-        let second = Control::HelloAck(PeerInfo::local("0.1.0", "desk"));
+        let second = Control::HelloAck {
+            peer: PeerInfo::local("0.1.0", "desk"),
+            permissions: crate::Permissions::CONTROL,
+        };
         buf.extend(encode_frame(&second, MAX_FRAME_LEN).unwrap());
         assert_eq!(
             take_frame::<Control>(&mut buf, MAX_FRAME_LEN).unwrap(),

@@ -19,15 +19,17 @@ Acesso e suporte remoto para Windows, macOS e Linux, focado em fluidez.
 | `crates/render` | Renderização na GPU (wgpu), YUV → RGB no shader |
 | `crates/session` | Pipelines do host e do cliente |
 | `crates/metrics` | Estatísticas de latência |
-| `apps/hext` | O app: comandos `host` e `view` |
+| `apps/hext` | O app: interface (Tauri, sem comando), `host`, `view` e `service` |
 | `apps/hext-server` | Servidor: IDs, presença e sinalização (veja [docs/hext-server.md](docs/hext-server.md)) |
 
 ## Desenvolvimento
 
-Precisa do [Rust](https://rustup.rs). A versão é fixada em `rust-toolchain.toml` e instalada sozinha.
+Precisa do [Rust](https://rustup.rs). A versão é fixada em `rust-toolchain.toml` e instalada sozinha. No
+Windows, precisa também do Visual Studio Build Tools com a carga "Desenvolvimento para desktop com C++".
 
 ```sh
 cargo test --workspace     # testes (inclui um teste de ponta a ponta host → cliente)
+cargo run -p hext          # a interface
 cargo run -p hext -- --help
 ```
 

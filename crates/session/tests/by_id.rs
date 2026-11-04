@@ -9,9 +9,9 @@ use std::time::Duration;
 use hext_codec::{DecoderPreference, EncoderSettings};
 use hext_crypto::DeviceKey;
 use hext_net::{EndpointConfig, NetError};
-use hext_proto::{Hello, PeerInfo, RejectReason};
+use hext_proto::{Hello, PeerInfo, Permissions, RejectReason};
 use hext_session::host::{HostConfig, LocalDesktop};
-use hext_session::{SessionCodes, SessionError, client, host};
+use hext_session::{Grant, SessionCodes, SessionError, client, host};
 use hext_signal::{Client, ClientMsg, Role, ServerMsg};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -42,6 +42,7 @@ async fn accepted_by_id_then_streams() {
             test_pattern: true,
             encoder: EncoderSettings::default(),
         }),
+        presence: None,
     });
     tokio::spawn(async move {
         while let Some(incoming) = endpoint.accept().await {
@@ -73,7 +74,14 @@ async fn accepted_by_id_then_streams() {
             .send(&ClientMsg::Accept {
                 request,
                 addrs: host_addrs,
-                session_code: codes.issue(from_key),
+                session_code: codes.issue(
+                    from_key,
+                    Grant {
+                        permissions: Permissions::CONTROL,
+                        name: from_name,
+                        id: "482 913 557".into(),
+                    },
+                ),
             })
             .await
             .unwrap();

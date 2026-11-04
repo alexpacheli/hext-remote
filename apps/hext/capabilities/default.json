@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "As telas do app: só eventos de mudança e, na barra, arrastar a janela",
+  "windows": ["main", "ask", "bar"],
+  "permissions": ["core:event:default", "core:window:allow-start-dragging"]
+}
