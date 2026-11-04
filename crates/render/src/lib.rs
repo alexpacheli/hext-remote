@@ -97,6 +97,55 @@ struct Planes {
     bind_group: wgpu::BindGroup,
 }
 
+/// The graphics API to try first, unless `WGPU_BACKEND` says otherwise.
+/// DirectX 12 on Windows: with Vulkan, on a computer with two GPUs, a window
+/// going full screen on the other GPU's monitor kept the size it had.
+fn preferred_backends() -> Option<wgpu::Backends> {
+    (cfg!(windows) && std::env::var_os("WGPU_BACKEND").is_none()).then_some(wgpu::Backends::DX12)
+}
+
+/// A surface on `window` and the GPU to draw it with, on `backends` (`None`:
+/// any, even a software one; with a choice, the others may do better).
+fn open_gpu(window: &Arc<Window>, backends: Option<wgpu::Backends>) -> Result<Gpu, RenderError> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    if let Some(backends) = backends {
+        descriptor.backends = backends;
+    }
+    let instance = wgpu::Instance::new(descriptor);
+    let surface = instance
+        .create_surface(window.clone())
+        .map_err(|e| RenderError::Surface(e.to_string()))?;
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: Some(&surface),
+        ..Default::default()
+    }))
+    .map_err(|e| RenderError::Adapter(e.to_string()))?;
+    let info = adapter.get_info();
+    if backends.is_some() && info.device_type == wgpu::DeviceType::Cpu {
+        return Err(RenderError::Adapter(format!("{} é software", info.name)));
+    }
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("hext"),
+        ..Default::default()
+    }))
+    .map_err(|e| RenderError::Device(e.to_string()))?;
+    tracing::info!("GPU: {:?} ({:?})", info.name, info.backend);
+    Ok(Gpu {
+        surface,
+        adapter,
+        device,
+        queue,
+    })
+}
+
+struct Gpu {
+    surface: wgpu::Surface<'static>,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -116,23 +165,18 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(window: Arc<Window>) -> Result<Self, RenderError> {
         let size = window.inner_size();
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance
-            .create_surface(window)
-            .map_err(|e| RenderError::Surface(e.to_string()))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .map_err(|e| RenderError::Adapter(e.to_string()))?;
-        tracing::info!("GPU: {:?}", adapter.get_info().name);
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("hext"),
-            ..Default::default()
-        }))
-        .map_err(|e| RenderError::Device(e.to_string()))?;
+        let Gpu {
+            surface,
+            adapter,
+            device,
+            queue,
+        } = match preferred_backends() {
+            Some(backends) => open_gpu(&window, Some(backends)).or_else(|e| {
+                tracing::warn!("{backends:?}: {e}");
+                open_gpu(&window, None)
+            })?,
+            None => open_gpu(&window, None)?,
+        };
 
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -296,13 +340,18 @@ impl Renderer {
     }
 
     pub fn render(&mut self) -> Result<(), RenderError> {
-        let texture = match self.surface.get_current_texture() {
+        let mut texture = self.surface.get_current_texture();
+        if matches!(
+            texture,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost
+        ) {
+            // Once more, set up again: a still screen sends no next frame.
+            self.surface.configure(&self.device, &self.config);
+            texture = self.surface.get_current_texture();
+        }
+        let texture = match texture {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return Ok(());
-            }
             // Minimized or busy: skip this frame.
             _ => return Ok(()),
         };

@@ -302,7 +302,10 @@ impl ApplicationHandler<UserEvent> for Viewer {
                 self.draw(false);
             }
             WindowEvent::RedrawRequested => self.draw(false),
-            WindowEvent::Focused(false) => self.send(InputEvent::ReleaseAll),
+            WindowEvent::Focused(false) => {
+                self.local_key = None;
+                self.send(InputEvent::ReleaseAll);
+            }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = None;
                 self.update_button();
@@ -364,14 +367,8 @@ impl ApplicationHandler<UserEvent> for Viewer {
                 };
                 // Ctrl+Alt+End (or Ctrl+Alt+Delete, where this computer
                 // does not keep it): Ctrl+Alt+Del on the host.
-                // (A new press means its release got lost, as can happen
-                // while the window changes: that one counts.)
-                if self.local_key == Some(code)
-                    && (event.repeat || event.state == ElementState::Released)
-                {
-                    if event.state == ElementState::Released {
-                        self.local_key = None;
-                    }
+                let released = event.state == ElementState::Released;
+                if belongs_to_shortcut(&mut self.local_key, code, event.repeat, released) {
                     return;
                 }
                 if event.state == ElementState::Pressed
@@ -431,6 +428,26 @@ impl ApplicationHandler<UserEvent> for Viewer {
             self.runtime.block_on(endpoint.close());
         }
     }
+}
+
+/// Whether a key event is the rest of a shortcut of the viewer (`held`): its
+/// repeats and release, not keys for the host. A new press means the release
+/// got lost, as can happen while the window changes: it is a key like any
+/// other, and so is what follows it.
+fn belongs_to_shortcut(
+    held: &mut Option<KeyCode>,
+    code: KeyCode,
+    repeat: bool,
+    released: bool,
+) -> bool {
+    if *held != Some(code) {
+        return false;
+    }
+    if repeat && !released {
+        return true;
+    }
+    *held = None;
+    released
 }
 
 /// Whether the mouse at (`x`, `y`) calls for the button at `rect`: it comes up
@@ -590,6 +607,27 @@ mod tests {
         width: 56.0,
         height: 28.0,
     };
+
+    #[test]
+    fn a_shortcut_keeps_its_repeats_and_release() {
+        let mut held = Some(KeyCode::Enter);
+        assert!(belongs_to_shortcut(&mut held, KeyCode::Enter, true, false));
+        assert!(!belongs_to_shortcut(&mut held, KeyCode::KeyA, false, false));
+        assert!(belongs_to_shortcut(&mut held, KeyCode::Enter, false, true));
+        assert_eq!(held, None);
+    }
+
+    #[test]
+    fn a_key_after_a_lost_release_is_the_hosts_up_and_down() {
+        let mut held = Some(KeyCode::Enter);
+        assert!(!belongs_to_shortcut(
+            &mut held,
+            KeyCode::Enter,
+            false,
+            false
+        ));
+        assert!(!belongs_to_shortcut(&mut held, KeyCode::Enter, false, true));
+    }
 
     #[test]
     fn the_button_comes_from_the_top_edge_only() {
