@@ -68,6 +68,12 @@ pub fn run(args: ViewArgs) -> Result<()> {
         "conectado a {} ({:?}, v{})",
         session.host.device_name, session.host.os, session.host.app_version
     );
+    if !session.permissions.control {
+        info!("o host permitiu só ver a tela");
+    }
+    if args.report_to_ui {
+        println!("{}", crate::ui_link::VIEWER_CONNECTED);
+    }
 
     let host_is_mac = session.host.os == Os::MacOs;
     let mut app = Viewer {
@@ -127,7 +133,8 @@ impl Viewer {
     }
 
     fn send(&self, event: InputEvent) {
-        if let Some(session) = &self.session {
+        // (The host refuses it anyway; this saves sending it.)
+        if let Some(session) = self.session.as_ref().filter(|s| s.permissions.control) {
             session.send_input(event);
         }
     }
@@ -164,7 +171,15 @@ impl Viewer {
         };
         let mut stats = session.stats.lock().expect("lock");
         let path = path_label(session);
-        let mut title = format!("Hext Remote — {}{path}", session.host.device_name);
+        let view_only = if session.permissions.control {
+            ""
+        } else {
+            " (só ver)"
+        };
+        let mut title = format!(
+            "Hext Remote — {}{view_only}{path}",
+            session.host.device_name
+        );
         if let Some(snapshot) = stats.snapshot() {
             title += &format!(
                 " — {}x{} | {snapshot} | RTT {:.1} ms",

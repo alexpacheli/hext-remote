@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use hext_codec::{DecoderPreference, YuvFrame};
 use hext_net::video::{Event, Reassembler};
 use hext_net::{Connection, ControlStream, FramedSend, NetError};
-use hext_proto::{Control, Datagram, Hello, InputEvent, PeerInfo, StreamKind, VideoFrame};
+use hext_proto::{
+    Control, Datagram, Hello, InputEvent, PeerInfo, Permissions, StreamKind, VideoFrame,
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -22,6 +24,8 @@ pub struct DecodedFrame {
 /// A running client session.
 pub struct ClientHandle {
     pub host: PeerInfo,
+    /// What the host lets this viewer do (it refuses the rest anyway).
+    pub permissions: Permissions,
     pub stats: Arc<Mutex<Stats>>,
     conn: Connection,
     input: mpsc::UnboundedSender<InputEvent>,
@@ -76,7 +80,7 @@ pub async fn start(
     decoder: DecoderPreference,
     on_frame: impl FnMut(DecodedFrame) + Send + 'static,
 ) -> Result<ClientHandle> {
-    let (control, host) = hext_net::client_handshake(&conn, hello).await?;
+    let (control, host, permissions) = hext_net::client_handshake(&conn, hello).await?;
     let input_stream = hext_net::open_uni(&conn, StreamKind::Input).await?;
 
     let stats = Arc::new(Mutex::new(Stats::default()));
@@ -106,6 +110,7 @@ pub async fn start(
     }
     Ok(ClientHandle {
         host,
+        permissions,
         stats,
         conn,
         input: input_tx,

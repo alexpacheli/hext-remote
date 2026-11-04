@@ -1,8 +1,10 @@
 //! Hext Remote.
 //!
-//! F1: `host` shares this machine's screen; `view` opens a window showing a
-//! host's screen and forwards mouse and keyboard. The desktop UI (Tauri)
-//! replaces the command line later.
+//! Started without a command, this is the interface (Tauri, Windows and
+//! macOS): the ID, the requests and connecting to another computer. The
+//! commands remain for what has no screen yet, and for testing: `host` shares
+//! this machine's screen; `view` opens a window showing a host's screen and
+//! forwards mouse and keyboard.
 
 #[cfg_attr(not(windows), allow(dead_code))] // the service is Windows-only for now
 mod agent;
@@ -10,7 +12,23 @@ mod bench;
 mod host;
 mod service;
 mod signaling;
+#[cfg(any(windows, target_os = "macos"))]
+mod ui;
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
+mod ui_link;
 mod viewer;
+
+/// Linux has no interface until F7.
+#[cfg(not(any(windows, target_os = "macos")))]
+mod ui {
+    pub enum Link {
+        Portable,
+    }
+
+    pub fn run(_link: Link) -> anyhow::Result<()> {
+        anyhow::bail!("sem interface neste sistema por enquanto: veja --help")
+    }
+}
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -62,8 +80,9 @@ fn relay(value: &str) -> Result<Option<hext_net::RelayUrl>> {
     about = "Hext Remote — acesso e suporte remoto"
 )]
 struct Cli {
+    /// Sem comando: abre a interface.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -86,6 +105,12 @@ enum Command {
     /// (Interno) Captura e input na sessão do usuário, a pedido do serviço.
     #[command(hide = true)]
     Agent {
+        #[arg(long)]
+        pipe: String,
+    },
+    /// (Interno) A interface na sessão do usuário, iniciada pelo serviço.
+    #[command(hide = true)]
+    Ui {
         #[arg(long)]
         pipe: String,
     },
@@ -205,6 +230,9 @@ struct ViewArgs {
     /// Decodificador de vídeo.
     #[arg(long, value_enum, default_value_t = CodecChoice::Auto)]
     decoder: CodecChoice,
+    /// (Interno) Avisa a interface que abriu este visualizador quando conectar.
+    #[arg(long, hide = true)]
+    report_to_ui: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -227,10 +255,11 @@ fn main() -> Result<()> {
     let command = Cli::parse().command;
     // The service and its agents have no console: they log to a file.
     let log_file = match &command {
-        Command::Service {
+        Some(Command::Service {
             action: ServiceAction::Run,
-        } => service::log_file("service"),
-        Command::Agent { .. } => service::log_file("agent"),
+        }) => service::log_file("service"),
+        Some(Command::Agent { .. }) => service::log_file("agent"),
+        Some(Command::Ui { .. }) | None => service::user_log_file("ui"),
         _ => None,
     };
     // noq_udp (iroh's QUIC) warns on every MTU probe that a link (e.g.
@@ -248,12 +277,17 @@ fn main() -> Result<()> {
     }
 
     match command {
-        Command::Host(args) => tokio::runtime::Runtime::new()?.block_on(host::run(args)),
-        Command::View(args) => viewer::run(args),
-        Command::Bench(args) => bench::run(&args),
-        Command::Encoders => bench::encoders(),
-        Command::Service { action } => service::command(action),
-        Command::Agent { pipe } => service::agent(&pipe),
+        None => ui::run(ui::Link::Portable),
+        Some(Command::Host(args)) => tokio::runtime::Runtime::new()?.block_on(host::run(args)),
+        Some(Command::View(args)) => viewer::run(args),
+        Some(Command::Bench(args)) => bench::run(&args),
+        Some(Command::Encoders) => bench::encoders(),
+        Some(Command::Service { action }) => service::command(action),
+        Some(Command::Agent { pipe }) => service::agent(&pipe),
+        #[cfg(windows)]
+        Some(Command::Ui { pipe }) => ui::run(ui::Link::Service(pipe)),
+        #[cfg(not(windows))]
+        Some(Command::Ui { .. }) => anyhow::bail!("a interface do serviço só existe no Windows"),
     }
 }
 

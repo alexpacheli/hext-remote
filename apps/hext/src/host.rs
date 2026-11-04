@@ -13,6 +13,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
+use crate::ui_link::{UiAsk, UiHub};
 use crate::{APP_VERSION, CodecChoice, HostArgs, device_name, exe_name};
 
 /// Delay after a wrong access code, so guessing is limited to one try per second.
@@ -132,6 +133,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
             test_pattern: args.test_pattern,
             encoder,
         }),
+        presence: None,
     });
     // One session at a time, handshake included: attempts are serialized,
     // which together with the penalty rate-limits code guessing.
@@ -152,6 +154,74 @@ pub async fn run(args: HostArgs) -> Result<()> {
     }
 
     accept(&endpoint, config, slot, tokio::signal::ctrl_c()).await;
+    endpoint.close().await;
+    Ok(())
+}
+
+/// The portable app's host: by ID only (no access code), asking through the
+/// interface and showing it the session (`hub`), this user's screen. Runs for
+/// as long as the app does.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub async fn portable(hub: UiHub) -> Result<()> {
+    let key = Arc::new(crate::device_key(None)?);
+    let name = device_name();
+    if crate::service::installed() {
+        hub.set_notice(
+            "O serviço do Hext Remote está instalado: este app tem outro ID, só dele.".to_owned(),
+        );
+    }
+    // Registered before the relay sees this computer (it serves only
+    // registered ones).
+    let register = crate::signaling::login(crate::DEFAULT_SERVER, &key, &name);
+    match tokio::time::timeout(Duration::from_secs(10), register).await {
+        Ok(Ok(client)) => {
+            let _ = client.close().await;
+        }
+        Ok(Err(e)) => warn!("{e:#}"),
+        Err(_) => warn!("servidor de sinalização: sem resposta"),
+    }
+    let relay = crate::relay(crate::DEFAULT_RELAY)?;
+    let has_relay = relay.is_some();
+    let endpoint = hext_net::bind(
+        &key,
+        &EndpointConfig {
+            relay,
+            bind: None,
+            accept: true,
+        },
+    )
+    .await?;
+    // Keeps running either way: Accessibility takes effect for the next
+    // session; Screen Recording (macOS) only after restarting the app.
+    if let Err(e) = hext_capture::preflight() {
+        warn!("{e}");
+        hub.set_notice(e.to_string());
+    }
+    hext_input::preflight();
+
+    let session_codes = SessionCodes::default();
+    let config = Arc::new(HostConfig {
+        peer: PeerInfo::local(APP_VERSION, name.clone()),
+        access_code: None,
+        session_codes: session_codes.clone(),
+        desktop: Arc::new(LocalDesktop {
+            display: 0,
+            test_pattern: false,
+            encoder: EncoderSettings::default(),
+        }),
+        presence: Some(Arc::new(hub.clone())),
+    });
+    let slot = Arc::new(Semaphore::new(1));
+    tokio::spawn(crate::signaling::host(
+        crate::DEFAULT_SERVER.to_owned(),
+        key,
+        name,
+        (endpoint.clone(), has_relay),
+        session_codes,
+        slot.clone(),
+        Box::new(UiAsk(hub)),
+    ));
+    accept(&endpoint, config, slot, std::future::pending::<()>()).await;
     endpoint.close().await;
     Ok(())
 }

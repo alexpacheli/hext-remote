@@ -1,12 +1,16 @@
 //! The Windows service (`HextRemote`): runs as SYSTEM from boot, keeps the
 //! computer online with its own ID and owns the sessions; an agent in the
 //! console session (relaunched when that session changes) captures and
-//! injects input there. As tested in the secure-desktop spike.
+//! injects input there. As tested in the secure-desktop spike. The interface
+//! the user sees is a third process, in that same session, running as the
+//! user (see [`crate::ui`]).
 #![allow(unsafe_code)] // Win32 calls: services, tokens, processes, pipes
 
 use std::ffi::c_void;
+use std::future::Future;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
@@ -16,7 +20,7 @@ use anyhow::{Context, Result, bail};
 use hext_codec::EncoderSettings;
 use hext_crypto::{FileKeyStore, load_or_create, machine_dir};
 use hext_net::EndpointConfig;
-use hext_proto::PeerInfo;
+use hext_proto::{PeerInfo, Permissions};
 use hext_session::SessionCodes;
 use hext_session::host::{BoxFuture, HostConfig};
 use hext_signal::DeviceId;
@@ -28,17 +32,20 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_SERVICE_SPECIFIC_ERROR, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0,
 };
 use windows::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
-    SE_FILE_OBJECT,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows::Win32::Security::{
-    DuplicateTokenEx, IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-    SECURITY_ATTRIBUTES, SecurityImpersonation, SetTokenInformation, TOKEN_ALL_ACCESS,
-    TokenPrimary, TokenSessionId, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    DuplicateTokenEx, GetTokenInformation, IsWellKnownSid, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SecurityImpersonation, SetTokenInformation,
+    TOKEN_ALL_ACCESS, TOKEN_USER, TokenPrimary, TokenSessionId, TokenUser,
+    WinBuiltinAdministratorsSid, WinLocalSystemSid,
 };
+use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use windows::Win32::System::RemoteDesktop::{
-    WTS_CURRENT_SERVER_HANDLE, WTSGetActiveConsoleSessionId, WTSSendMessageW,
+    WTS_CURRENT_SERVER_HANDLE, WTS_SESSIONSTATE_LOCK, WTSFreeMemory, WTSGetActiveConsoleSessionId,
+    WTSINFOEXW, WTSQuerySessionInformationW, WTSQueryUserToken, WTSSendMessageW, WTSSessionInfoEx,
 };
 use windows::Win32::System::Services::{
     RegisterServiceCtrlHandlerExW, SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP,
@@ -48,8 +55,8 @@ use windows::Win32::System::Services::{
     StartServiceCtrlDispatcherW,
 };
 use windows::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken,
-    PROCESS_INFORMATION, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, GetCurrentProcess,
+    OpenProcessToken, PROCESS_INFORMATION, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::Shell::IsUserAnAdmin;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -59,6 +66,7 @@ use windows::core::{PCWSTR, PWSTR, w};
 
 use crate::agent::{AgentHub, Stream};
 use crate::signaling::Ask;
+use crate::ui_link::UiHub;
 use crate::{APP_VERSION, DEFAULT_RELAY, DEFAULT_SERVER, device_name};
 
 const SERVICE: &str = "HextRemote";
@@ -68,7 +76,7 @@ const SAS_VALUE: &str = "SoftwareSASGeneration";
 
 windows_core::link!("sas.dll" "system" fn SendSAS(asuser: windows_core::BOOL));
 /// How long the user has to answer a request (the server gives up at 60 s).
-const ANSWER_SECS: u32 = 55;
+const ANSWER_SECS: u32 = crate::signaling::ANSWER_TIME.as_secs() as u32;
 
 /// Where the computer's ID is written for `service status`.
 fn id_file() -> Result<PathBuf> {
@@ -84,8 +92,10 @@ fn program_dir() -> Result<PathBuf> {
 // ---------------------------------------------------------------- commands
 
 fn sc(args: &[&str]) -> Result<String> {
+    // (No console of its own: the interface has none to share.)
     let out = Command::new("sc.exe")
         .args(args)
+        .creation_flags(CREATE_NO_WINDOW.0)
         .output()
         .context("sc.exe")?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -98,6 +108,10 @@ fn sc(args: &[&str]) -> Result<String> {
 
 fn exists() -> bool {
     sc(&["query", SERVICE]).is_ok()
+}
+
+pub fn installed() -> bool {
+    exists()
 }
 
 /// Stops the service and waits until it has.
@@ -224,8 +238,13 @@ pub fn install() -> Result<()> {
     std::fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
     let exe = dir.join("HextRemote.exe");
     let current = std::env::current_exe()?;
-    if !same_file(&current, &exe) {
-        std::fs::copy(&current, &exe).with_context(|| format!("copiar para {}", exe.display()))?;
+    if !same_file(&current, &exe)
+        && let Err(e) = replace_exe(&current, &exe)
+    {
+        if installed {
+            let _ = sc(&["start", SERVICE]); // the version there, not none
+        }
+        return Err(e);
     }
 
     let bin_path = format!("\"{}\" service run", exe.display());
@@ -276,6 +295,20 @@ pub fn install() -> Result<()> {
         "Ainda sem ID: o serviço não conseguiu entrar no servidor. Veja {}",
         data.join("service.log").display()
     );
+    Ok(())
+}
+
+/// Puts the program at `exe`. A viewer the user opened may be running from
+/// there, which the service does not stop: a running program cannot be
+/// overwritten, but it can be moved out of the way.
+fn replace_exe(new: &Path, exe: &Path) -> Result<()> {
+    let old = exe.with_extension("old.exe");
+    let _ = std::fs::remove_file(&old); // from the last update
+    if std::fs::copy(new, exe).is_ok() {
+        return Ok(());
+    }
+    std::fs::rename(exe, &old).with_context(|| format!("mover {}", exe.display()))?;
+    std::fs::copy(new, exe).with_context(|| format!("copiar para {}", exe.display()))?;
     Ok(())
 }
 
@@ -483,7 +516,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
 }
 
 /// The host, as a service: by ID only (no access code), the user asked
-/// through a message box, the screen through the agents.
+/// through the interface, the screen through the agents.
 async fn serve() -> Result<()> {
     info!("serviço iniciado (v{APP_VERSION})");
     let key =
@@ -528,7 +561,17 @@ async fn serve() -> Result<()> {
             warn!("Ctrl+Alt+Del recusado: a política SoftwareSASGeneration não permite");
         }
     });
-    tokio::spawn(supervise(hub.clone()));
+    let agents = hub.clone();
+    tokio::spawn(supervise("agent", move |session| {
+        let hub = agents.clone();
+        async move { launch(session, &hub).await }
+    }));
+    let ui = UiHub::default();
+    let interfaces = ui.clone();
+    tokio::spawn(supervise("interface", move |session| {
+        let ui = interfaces.clone();
+        async move { launch_ui(session, &ui).await }
+    }));
     let encoder = EncoderSettings::default();
     let session_codes = SessionCodes::default();
     let config = Arc::new(HostConfig {
@@ -541,6 +584,7 @@ async fn serve() -> Result<()> {
             test_pattern: false,
             encoder,
         })),
+        presence: Some(Arc::new(ui.clone())),
     });
     let slot = Arc::new(Semaphore::new(1));
     tokio::spawn(crate::signaling::host(
@@ -550,7 +594,7 @@ async fn serve() -> Result<()> {
         (endpoint.clone(), true),
         session_codes,
         slot.clone(),
-        Box::new(MessageBox),
+        Box::new(ConsoleAsk(ui)),
     ));
     crate::host::accept(&endpoint, config, slot, STOP.notified()).await;
     // A session still on: the agent stops streaming and releases any held
@@ -570,50 +614,94 @@ fn write_id(id: DeviceId) {
     info!("ID deste computador: {id}");
 }
 
-/// Asks whoever is at the console, in a message box.
-struct MessageBox;
+/// Asks whoever is at the console: in the interface, or, where no window of
+/// the user can be seen (the sign-in screen, a locked computer), in a
+/// message box.
+struct ConsoleAsk(UiHub);
 
-impl Ask for MessageBox {
-    fn ask<'a>(&'a mut self, name: &'a str, id: DeviceId) -> BoxFuture<'a, bool> {
-        let title: Vec<u16> = "Hext Remote".encode_utf16().collect();
-        let text: Vec<u16> =
-            format!("\"{name}\" (ID {id}) quer acessar este computador.\n\nAceitar?")
-                .encode_utf16()
-                .collect();
+impl Ask for ConsoleAsk {
+    fn ask<'a>(&'a mut self, name: &'a str, id: DeviceId) -> BoxFuture<'a, Option<Permissions>> {
         Box::pin(async move {
-            let asked = tokio::task::spawn_blocking(move || {
-                let session = unsafe { WTSGetActiveConsoleSessionId() };
-                let mut answer = MESSAGEBOX_RESULT(0);
-                // Waits for the answer, or `ANSWER_SECS` (then it is a no).
-                let sent = unsafe {
-                    WTSSendMessageW(
-                        Some(WTS_CURRENT_SERVER_HANDLE),
-                        session,
-                        PCWSTR(title.as_ptr()),
-                        (title.len() * 2) as u32,
-                        PCWSTR(text.as_ptr()),
-                        (text.len() * 2) as u32,
-                        MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
-                        ANSWER_SECS,
-                        &mut answer,
-                        true,
-                    )
-                };
-                match sent {
-                    Ok(()) => answer == IDYES,
-                    Err(e) => {
-                        warn!("perguntar na sessão {session}: {e}");
-                        false
-                    }
-                }
-            });
-            asked.await.unwrap_or(false)
+            let session = unsafe { WTSGetActiveConsoleSessionId() };
+            let answer = if is_locked(session) {
+                None
+            } else {
+                self.0.ask(name, id)
+            };
+            match answer {
+                Some(answer) => answer.wait().await,
+                None => message_box(session, name, id)
+                    .await
+                    .then_some(Permissions::CONTROL),
+            }
         })
     }
 
     fn show_id(&mut self, id: DeviceId) {
         write_id(id);
+        self.0.set_id(id);
     }
+}
+
+/// Whether `session` is locked: the user's windows are out of sight, behind
+/// the sign-in screen.
+fn is_locked(session: u32) -> bool {
+    let mut info = PWSTR::null();
+    let mut size = 0;
+    let found = unsafe {
+        WTSQuerySessionInformationW(
+            Some(WTS_CURRENT_SERVER_HANDLE),
+            session,
+            WTSSessionInfoEx,
+            &mut info,
+            &mut size,
+        )
+    };
+    if found.is_err() {
+        return false; // no such session: nothing there is locked
+    }
+    unsafe {
+        let details = &*info.0.cast::<WTSINFOEXW>();
+        let locked = details.Level == 1
+            && details.Data.WTSInfoExLevel1.SessionFlags as u32 == WTS_SESSIONSTATE_LOCK;
+        WTSFreeMemory(info.0.cast());
+        locked
+    }
+}
+
+/// Asks in a message box on `session` (the system draws it, so it needs no
+/// process there).
+async fn message_box(session: u32, name: &str, id: DeviceId) -> bool {
+    let title: Vec<u16> = "Hext Remote".encode_utf16().collect();
+    let text: Vec<u16> = format!("\"{name}\" (ID {id}) quer acessar este computador.\n\nAceitar?")
+        .encode_utf16()
+        .collect();
+    let asked = tokio::task::spawn_blocking(move || {
+        let mut answer = MESSAGEBOX_RESULT(0);
+        // Waits for the answer, or `ANSWER_SECS` (then it is a no).
+        let sent = unsafe {
+            WTSSendMessageW(
+                Some(WTS_CURRENT_SERVER_HANDLE),
+                session,
+                PCWSTR(title.as_ptr()),
+                (title.len() * 2) as u32,
+                PCWSTR(text.as_ptr()),
+                (text.len() * 2) as u32,
+                MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
+                ANSWER_SECS,
+                &mut answer,
+                true,
+            )
+        };
+        match sent {
+            Ok(()) => answer == IDYES,
+            Err(e) => {
+                warn!("perguntar na sessão {session}: {e}");
+                false
+            }
+        }
+    });
+    asked.await.unwrap_or(false)
 }
 
 // ---------------------------------------------------------------- agents
@@ -639,32 +727,41 @@ impl Drop for Process {
     }
 }
 
-/// Keeps an agent running in the console session: a new one when the
-/// session changes (a logon, switching users) or the agent ends.
-async fn supervise(hub: AgentHub) {
-    let mut current: Option<(u32, Process, tokio::task::JoinHandle<()>)> = None;
+/// A process started in a session, and the connection serving it.
+type Running = (Process, tokio::task::JoinHandle<()>);
+
+/// Keeps a process (`what`) running in the console session: a new one when
+/// the session changes (a logon, switching users) or the process ends.
+/// `launch` starts it; `None`: that session has nothing to run for now.
+async fn supervise<F, L>(what: &'static str, launch: L)
+where
+    L: Fn(u32) -> F,
+    F: Future<Output = Result<Option<Running>>>,
+{
+    let mut current: Option<(u32, Running)> = None;
     // After a failure, waits longer each time (and logs less).
     let mut retry = Duration::from_secs(1);
     loop {
         let session = unsafe { WTSGetActiveConsoleSessionId() };
         let alive = current
             .as_ref()
-            .is_some_and(|(s, process, _)| *s == session && process.alive());
+            .is_some_and(|(s, (process, _))| *s == session && process.alive());
         // u32::MAX: no session attached to the console (switching).
         if !alive && session != u32::MAX {
-            if let Some((old, process, attached)) = current.take() {
-                info!("agent da sessão {old} encerrado");
+            if let Some((old, (process, attached))) = current.take() {
+                info!("{what} da sessão {old} encerrado");
                 drop(process);
                 attached.abort();
             }
-            match launch(session, &hub).await {
-                Ok((process, attached)) => {
-                    info!("agent iniciado na sessão {session}");
-                    current = Some((session, process, attached));
+            match launch(session).await {
+                Ok(Some(running)) => {
+                    info!("{what} iniciado na sessão {session}");
+                    current = Some((session, running));
                     retry = Duration::from_secs(1);
                 }
+                Ok(None) => {}
                 Err(e) => {
-                    warn!("iniciar o agent na sessão {session}: {e:#} (de novo em {retry:?})");
+                    warn!("iniciar {what} na sessão {session}: {e:#} (de novo em {retry:?})");
                     tokio::time::sleep(retry).await;
                     retry = (retry * 2).min(Duration::from_secs(60));
                 }
@@ -674,39 +771,129 @@ async fn supervise(hub: AgentHub) {
     }
 }
 
-/// Starts an agent in `session`, connected to `hub` through a new pipe
-/// that only the system can open, and checks it is that agent on the line.
-async fn launch(session: u32, hub: &AgentHub) -> Result<(Process, tokio::task::JoinHandle<()>)> {
+/// A new pipe name (nobody can have it ready), for `what`.
+fn pipe_name(what: &str) -> Result<String> {
     let mut nonce = [0u8; 16];
     SystemRandom::new()
         .fill(&mut nonce)
         .map_err(|_| anyhow::anyhow!("sem números aleatórios"))?;
-    let name = format!(r"\\.\pipe\hext-agent-{}", hex(&nonce));
-    let pipe = system_only_pipe(&name)?;
-    let (process, pid) = spawn_agent(session, &name)?;
+    Ok(format!(r"\\.\pipe\hext-{what}-{}", hex(&nonce)))
+}
+
+/// Waits for process `pid` on `pipe`, and for nobody else.
+async fn wait_for(pipe: &NamedPipeServer, pid: u32) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(15), pipe.connect())
         .await
-        .context("o agent não se conectou")??;
+        .context("o processo não se conectou")??;
     let mut client = 0;
     unsafe { GetNamedPipeClientProcessId(HANDLE(pipe.as_raw_handle()), &mut client) }?;
     if client != pid {
-        bail!("processo {client} no lugar do agent {pid}");
+        bail!("processo {client} no lugar do {pid}");
     }
+    Ok(())
+}
+
+/// Starts an agent in `session`, connected to `hub` through a new pipe
+/// that only the system can open, and checks it is that agent on the line.
+async fn launch(session: u32, hub: &AgentHub) -> Result<Option<Running>> {
+    let name = pipe_name("agent")?;
+    let pipe = restricted_pipe(&name, "D:P(A;;GA;;;SY)")?;
+    let (process, pid) = spawn_agent(session, &name)?;
+    wait_for(&pipe, pid).await?;
     let hub = hub.clone();
     let attached = tokio::spawn(async move { hub.attach(pipe).await });
-    Ok((process, attached))
+    Ok(Some((process, attached)))
+}
+
+/// Starts the interface in `session`, as the user logged on there, through
+/// a pipe that only the system and that user can open. Nobody logged on:
+/// there is no one to run it as.
+async fn launch_ui(session: u32, ui: &UiHub) -> Result<Option<Running>> {
+    let Some(user) = UserToken::of(session) else {
+        return Ok(None);
+    };
+    let (pipe, process, pid) = user.start_ui()?;
+    wait_for(&pipe, pid).await?;
+    let ui = ui.clone();
+    let attached = tokio::spawn(async move { ui.attach(pipe).await });
+    Ok(Some((process, attached)))
+}
+
+/// The token of the user logged on to a session.
+struct UserToken(HANDLE);
+
+impl Drop for UserToken {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+impl UserToken {
+    fn of(session: u32) -> Option<Self> {
+        let mut token = HANDLE::default();
+        unsafe { WTSQueryUserToken(session, &mut token) }.ok()?;
+        Some(Self(token))
+    }
+
+    /// The user's SID, as text.
+    fn sid(&self) -> Result<String> {
+        unsafe {
+            let mut size = 0;
+            // (Fails, saying how much it needs.)
+            let _ = GetTokenInformation(self.0, TokenUser, None, 0, &mut size);
+            let mut buffer = vec![0u64; (size as usize).div_ceil(size_of::<u64>())];
+            GetTokenInformation(
+                self.0,
+                TokenUser,
+                Some(buffer.as_mut_ptr().cast()),
+                size,
+                &mut size,
+            )?;
+            let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
+            let mut text = PWSTR::null();
+            ConvertSidToStringSidW(user.User.Sid, &mut text)?;
+            let sid = text.to_string();
+            let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+            Ok(sid?)
+        }
+    }
+
+    /// Starts the interface as this user, with a new pipe open to the
+    /// system and this user only. Returns the pipe, the process and its id.
+    fn start_ui(self) -> Result<(NamedPipeServer, Process, u32)> {
+        let name = pipe_name("ui")?;
+        let sddl = format!("D:P(A;;GA;;;SY)(A;;GRGW;;;{})", self.sid()?);
+        let pipe = restricted_pipe(&name, &sddl)?;
+        let (process, pid) = self.spawn_ui(&name)?;
+        Ok((pipe, process, pid))
+    }
+
+    /// Starts `<this exe> ui --pipe <name>` as this user, with their
+    /// environment (their folders, not the system's).
+    fn spawn_ui(&self, pipe: &str) -> Result<(Process, u32)> {
+        let exe = std::env::current_exe()?;
+        let command = format!("\"{}\" ui --pipe {pipe}", exe.display());
+        unsafe {
+            let mut environment = std::ptr::null_mut();
+            CreateEnvironmentBlock(&mut environment, Some(self.0), false)?;
+            let started = create_process(self.0, &command, Some(environment));
+            let _ = DestroyEnvironmentBlock(environment);
+            started
+        }
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// A named pipe only SYSTEM can open (the agent runs as SYSTEM).
-fn system_only_pipe(name: &str) -> Result<NamedPipeServer> {
+/// A named pipe open only to those in `sddl`.
+fn restricted_pipe(name: &str, sddl: &str) -> Result<NamedPipeServer> {
+    let sddl: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            w!("D:P(A;;GA;;;SY)"),
+            PCWSTR(sddl.as_ptr()),
             SDDL_REVISION_1,
             &mut descriptor,
             None,
@@ -754,36 +941,53 @@ fn spawn_agent(session: u32, pipe: &str) -> Result<(Process, u32)> {
                 (&raw const session).cast(),
                 size_of::<u32>() as u32,
             )?;
-            let mut command: Vec<u16> = format!("\"{}\" agent --pipe {pipe}", exe.display())
-                .encode_utf16()
-                .chain([0])
-                .collect();
-            let mut desktop: Vec<u16> = "winsta0\\default".encode_utf16().chain([0]).collect();
-            let startup = STARTUPINFOW {
-                cb: size_of::<STARTUPINFOW>() as u32,
-                lpDesktop: PWSTR(desktop.as_mut_ptr()),
-                ..Default::default()
-            };
-            let mut info = PROCESS_INFORMATION::default();
-            CreateProcessAsUserW(
-                Some(token),
-                PCWSTR::null(),
-                Some(PWSTR(command.as_mut_ptr())),
+            create_process(
+                token,
+                &format!("\"{}\" agent --pipe {pipe}", exe.display()),
                 None,
-                None,
-                false,
-                CREATE_NO_WINDOW,
-                None,
-                PCWSTR::null(),
-                &startup,
-                &mut info,
-            )?;
-            let _ = CloseHandle(info.hThread);
-            Ok((Process(info.hProcess), info.dwProcessId))
+            )
         })();
         let _ = CloseHandle(token);
         result
     }
+}
+
+/// Starts `command` with `token`, on the session's default desktop, with
+/// `environment` (a block made for that token) if given.
+unsafe fn create_process(
+    token: HANDLE,
+    command: &str,
+    environment: Option<*const c_void>,
+) -> Result<(Process, u32)> {
+    let mut command: Vec<u16> = command.encode_utf16().chain([0]).collect();
+    let mut desktop: Vec<u16> = "winsta0\\default".encode_utf16().chain([0]).collect();
+    let startup = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        lpDesktop: PWSTR(desktop.as_mut_ptr()),
+        ..Default::default()
+    };
+    let mut flags = CREATE_NO_WINDOW;
+    if environment.is_some() {
+        flags |= CREATE_UNICODE_ENVIRONMENT;
+    }
+    let mut info = PROCESS_INFORMATION::default();
+    unsafe {
+        CreateProcessAsUserW(
+            Some(token),
+            PCWSTR::null(),
+            Some(PWSTR(command.as_mut_ptr())),
+            None,
+            None,
+            false,
+            flags,
+            environment,
+            PCWSTR::null(),
+            &startup,
+            &mut info,
+        )?;
+        let _ = CloseHandle(info.hThread);
+    }
+    Ok((Process(info.hProcess), info.dwProcessId))
 }
 
 // ---------------------------------------------------------------- agent
@@ -802,4 +1006,35 @@ pub fn agent(pipe: &str) -> Result<()> {
         info!("o serviço encerrou o agent");
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Stdio;
+
+    use super::*;
+
+    #[test]
+    fn an_update_gets_past_a_program_still_running() {
+        let dir = std::env::temp_dir().join(format!("hext-update-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("HextRemote.exe");
+        let new = dir.join("new.exe");
+        std::fs::copy(std::env::var("ComSpec").unwrap(), &exe).unwrap();
+        std::fs::write(&new, b"the new version").unwrap();
+        let mut running = Command::new(&exe)
+            .args(["/c", "ping -n 30 127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let replaced = replace_exe(&new, &exe);
+
+        let _ = running.kill();
+        let _ = running.wait();
+        let contents = std::fs::read(&exe);
+        let _ = std::fs::remove_dir_all(&dir);
+        replaced.unwrap();
+        assert_eq!(contents.unwrap(), b"the new version");
+    }
 }

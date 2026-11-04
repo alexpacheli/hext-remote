@@ -31,11 +31,22 @@ windows-core.workspace = true
 windows = { workspace = true, features = [
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_System_Console",
+    "Win32_System_Environment",
     "Win32_System_Pipes",
     "Win32_System_RemoteDesktop",
     "Win32_System_Services",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+# The pages embedded in the executable, also without the Tauri CLI.
+tauri = { version = "2", features = ["custom-protocol"] }
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(any(windows, target_os = "macos"))'.build-dependencies]
+tauri-build = { version = "2", features = [] }
 
 [lints]
 workspace = true

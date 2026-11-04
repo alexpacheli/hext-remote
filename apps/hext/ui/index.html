@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hext Remote</title>
+    <link rel="stylesheet" href="app.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body data-page="home">
+    <main>
+      <h1>Hext Remote</h1>
+
+      <section>
+        <h2>Seu ID</h2>
+        <p class="id" id="own-id">Conectando…</p>
+        <p class="hint">Passe este número para quem vai acessar este computador.</p>
+        <p class="notice" id="notice" hidden></p>
+      </section>
+
+      <section>
+        <h2>Acessar outro computador</h2>
+        <form id="connect">
+          <input
+            id="target"
+            inputmode="numeric"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="ID do outro computador"
+            aria-label="ID do outro computador"
+          />
+          <button type="submit" id="connect-button" class="primary">Conectar</button>
+        </form>
+        <p class="status" id="status" role="status"></p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use hext_proto::frame::{self, MAX_FRAME_LEN};
 use hext_proto::{
-    Control, Datagram, Hello, PREAMBLE_LEN, PROTOCOL_VERSION, PeerInfo, RejectReason, StreamKind,
-    decode_preamble, encode_preamble,
+    Control, Datagram, Hello, PREAMBLE_LEN, PROTOCOL_VERSION, PeerInfo, Permissions, RejectReason,
+    StreamKind, decode_preamble, encode_preamble,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -141,11 +141,12 @@ impl ControlStream {
     }
 }
 
-/// Client side: opens the control stream and introduces itself.
+/// Client side: opens the control stream and introduces itself. Returns
+/// the host, and what it lets this viewer do.
 pub async fn client_handshake(
     conn: &Connection,
     hello: Hello,
-) -> Result<(ControlStream, PeerInfo)> {
+) -> Result<(ControlStream, PeerInfo, Permissions)> {
     with_timeout(async {
         let mut control = ControlStream::new(conn.open_bi().await?);
         control.send_preamble().await?;
@@ -159,7 +160,7 @@ pub async fn client_handshake(
         }
         control.send(&Control::Hello(hello)).await?;
         match control.recv().await? {
-            Control::HelloAck(host) => Ok((control, host)),
+            Control::HelloAck { peer, permissions } => Ok((control, peer, permissions)),
             Control::Reject(reason) => {
                 conn.close(0u32.into(), b"rejected");
                 Err(NetError::Rejected(reason))
@@ -174,12 +175,13 @@ pub async fn client_handshake(
 
 /// Host side: accepts the control stream and validates the client.
 ///
-/// `validate` decides whether the [`Hello`] is admitted; a rejection is sent
-/// to the client before the error is returned.
+/// `validate` decides whether the [`Hello`] is admitted, and with what
+/// permissions; a rejection is sent to the client before the error is
+/// returned.
 pub async fn host_handshake(
     conn: &Connection,
     local: PeerInfo,
-    validate: impl FnOnce(&Hello) -> Result<(), RejectReason>,
+    validate: impl FnOnce(&Hello) -> Result<Permissions, RejectReason>,
 ) -> Result<(ControlStream, Hello)> {
     with_timeout(async {
         let mut control = ControlStream::new(conn.accept_bi().await?);
@@ -198,13 +200,20 @@ pub async fn host_handshake(
             Control::Hello(hello) => hello,
             other => return Err(NetError::Unexpected(format!("{other:?} instead of Hello"))),
         };
-        if let Err(reason) = validate(&hello) {
-            control.send(&Control::Reject(reason)).await?;
-            control.send.finish();
-            let _ = tokio::time::timeout(LINGER, conn.closed()).await;
-            return Err(NetError::Rejected(reason));
-        }
-        control.send(&Control::HelloAck(local)).await?;
+        let permissions = match validate(&hello) {
+            Ok(permissions) => permissions,
+            Err(reason) => {
+                control.send(&Control::Reject(reason)).await?;
+                control.send.finish();
+                let _ = tokio::time::timeout(LINGER, conn.closed()).await;
+                return Err(NetError::Rejected(reason));
+            }
+        };
+        let ack = Control::HelloAck {
+            peer: local,
+            permissions,
+        };
+        control.send(&ack).await?;
         Ok((control, hello))
     })
     .await

@@ -112,8 +112,9 @@ hext-service (SYSTEM, sessão 0)
    ├─ fala com a sinalização, mantém a presença e aceita conexões
    └─ lança ──► hext-agent (na sessão do usuário ativo, ou na tela Winlogon/UAC)
                    └─ captura, encode e injeção de input
-hext (UI)    ──► interface do usuário: ID, lista de máquinas, configurações
-hext --view  ──► janela(s) da sessão remota (render nativo)
+hext (UI)    ──► interface: ID, aceite, barra de sessão. Roda sempre como o usuário
+                 (no modo instalado, lançada pelo serviço; fala com ele por um pipe)
+hext view    ──► janela(s) da sessão remota (render nativo)
 ```
 
 - Um serviço na sessão 0 **não consegue capturar a tela**. Por isso ele lança um *agent* na sessão ativa usando `WTSGetActiveConsoleSessionId` e `CreateProcessAsUser`.
@@ -128,8 +129,8 @@ hext --view  ──► janela(s) da sessão remota (render nativo)
 
 ### 3.5 Interface
 
-- **Casca da UI** (ID, lista de máquinas, login, configurações, chat): **Tauri 2**, que é rápido de desenvolver e tem visual moderno.
-- **Visualizador da sessão:** janela **nativa** (`winit` + `wgpu`) num processo separado, iniciado com `hext --view`. O vídeo nunca passa por um webview.
+- **Casca da UI** (ID, lista de máquinas, login, configurações, chat): **Tauri 2**, que é rápido de desenvolver e tem visual moderno. As páginas são HTML, CSS e JavaScript simples (`apps/hext/ui`), embutidos no executável, sem Node no build. Por enquanto só no Windows e no macOS; o Linux continua na linha de comando até a F7.
+- **Visualizador da sessão:** janela **nativa** (`winit` + `wgpu`) num processo separado, iniciado com `hext view`. O vídeo nunca passa por um webview.
   - Se o visualizador travar, a UI principal continua de pé.
   - Cada monitor remoto pode virar uma janela separada.
 

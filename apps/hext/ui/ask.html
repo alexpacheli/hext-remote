@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hext Remote: pedido de acesso</title>
+    <link rel="stylesheet" href="app.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body data-page="ask">
+    <main>
+      <h1>Pedido de acesso</h1>
+      <p class="who"><strong id="name"></strong></p>
+      <p class="hint">ID <span id="id"></span> quer acessar este computador.</p>
+
+      <fieldset>
+        <legend>O que essa pessoa pode fazer</legend>
+        <label><input type="checkbox" checked disabled /> Ver a tela</label>
+        <label><input type="checkbox" id="control" checked /> Controlar o mouse e o teclado</label>
+        <label class="soon"><input type="checkbox" disabled /> Área de transferência (em breve)</label>
+        <label class="soon"><input type="checkbox" disabled /> Arquivos (em breve)</label>
+        <label class="soon"><input type="checkbox" disabled /> Reiniciar o computador (em breve)</label>
+      </fieldset>
+
+      <div class="actions">
+        <button type="button" id="refuse">Recusar</button>
+        <button type="button" id="accept" class="primary" disabled>Aceitar</button>
+      </div>
+      <p class="hint" id="countdown"></p>
+    </main>
+  </body>
+</html>

@@ -19,9 +19,9 @@ fn hello(code: &str) -> Hello {
     }
 }
 
-fn check_code(hello: &Hello) -> Result<(), RejectReason> {
+fn check_code(hello: &Hello) -> Result<hext_proto::Permissions, RejectReason> {
     if hello.access_code == CODE {
-        Ok(())
+        Ok(hext_proto::Permissions::CONTROL)
     } else {
         Err(RejectReason::WrongCode)
     }
@@ -76,7 +76,7 @@ async fn handshake_ping_and_bye() {
     let conn = connect(&client, addr).await.unwrap();
     // The host proved it holds the key we dialed.
     assert_eq!(remote_key(&conn), host_key);
-    let (control, host_info) = client_handshake(&conn, hello(CODE)).await.unwrap();
+    let (control, host_info, _) = client_handshake(&conn, hello(CODE)).await.unwrap();
     assert_eq!(host_info.device_name, "host");
 
     // Many pings while the host also waits on the control stream exercise

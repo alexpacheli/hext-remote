@@ -103,7 +103,7 @@ pub async fn read_msg<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
 }
 
 /// A task that ends with its owner (when the owner is dropped, too).
-struct Task<T>(tokio::task::JoinHandle<T>);
+pub struct Task<T>(pub tokio::task::JoinHandle<T>);
 
 impl<T> Drop for Task<T> {
     fn drop(&mut self) {
