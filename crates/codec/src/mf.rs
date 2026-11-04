@@ -143,6 +143,10 @@ impl Tweaks {
     };
 }
 
+/// How long to wait, after an output format change, for the transform to
+/// announce the output again.
+const AFTER_FORMAT_CHANGE: Duration = Duration::from_millis(100);
+
 /// How many times one image is retried on another way to encode it
 /// (without zero-copy, then another encoder) before giving up on the GPU.
 const MAX_ATTEMPTS: usize = 4;
@@ -785,6 +789,23 @@ impl Session {
                         as u32;
                     self.provides_samples = info.dwFlags & provides != 0 && !self.own_output_sample;
                     self.output_size = info.cbSize.max(self.width * self.height * 3 / 2);
+                    // An async transform announces the output again, and
+                    // asking before that is "unexpected" (Intel Quick Sync);
+                    // others expect to be asked right away.
+                    let deadline = Instant::now() + AFTER_FORMAT_CHANGE;
+                    loop {
+                        match self.wait_event(deadline)? {
+                            Some(kind) if kind == METransformHaveOutput.0 as u32 => break,
+                            Some(kind) if kind == METransformNeedInput.0 as u32 => {
+                                self.need_input += 1;
+                            }
+                            Some(kind) if kind == METransformDrainComplete.0 as u32 => {
+                                self.draining = false;
+                            }
+                            Some(_) => {}
+                            None => break,
+                        }
+                    }
                 },
                 Err(e) => {
                     let context = format!(
