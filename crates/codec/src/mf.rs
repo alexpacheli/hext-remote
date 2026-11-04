@@ -156,7 +156,7 @@ struct Session {
     transform: IMFTransform,
     events: IMFMediaEventGenerator,
     /// Receives the type of each event, delivered by [`EventSink`].
-    event_rx: mpsc::Receiver<windows::core::Result<u32>>,
+    event_rx: mpsc::Receiver<windows::core::Result<(u32, windows::core::HRESULT)>>,
     callback: IMFAsyncCallback,
     codec: Option<ICodecAPI>,
     /// `METransformNeedInput` events not yet answered with an input.
@@ -644,6 +644,33 @@ impl Session {
     /// sleeps, whose ~15 ms granularity on Windows would add latency), and the
     /// deadline keeps a stuck driver from hanging the host.
     fn wait_event(&mut self, deadline: Instant) -> Result<Option<u32>, CodecError> {
+        let kind = self.wait_event_status(deadline)?;
+        Ok(match kind {
+            Some((kind, status)) if status.is_err() => {
+                return Err(CodecError::Hardware(format!(
+                    "evento {kind} com erro: {}",
+                    windows::core::Error::from(status)
+                )));
+            }
+            Some((kind, _)) => {
+                let known = [
+                    METransformNeedInput.0,
+                    METransformHaveOutput.0,
+                    METransformDrainComplete.0,
+                ];
+                if !known.contains(&(kind as i32)) {
+                    tracing::info!("evento {kind} do encoder");
+                }
+                Some(kind)
+            }
+            None => None,
+        })
+    }
+
+    fn wait_event_status(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<Option<(u32, windows::core::HRESULT)>, CodecError> {
         let timeout = deadline.saturating_duration_since(Instant::now());
         match self.event_rx.recv_timeout(timeout) {
             Ok(Ok(kind)) => {
@@ -795,7 +822,7 @@ impl Drop for Session {
 #[implement(IMFAsyncCallback)]
 struct EventSink {
     generator: IMFMediaEventGenerator,
-    tx: mpsc::Sender<windows::core::Result<u32>>,
+    tx: mpsc::Sender<windows::core::Result<(u32, windows::core::HRESULT)>>,
 }
 
 impl IMFAsyncCallback_Impl for EventSink_Impl {
@@ -805,8 +832,10 @@ impl IMFAsyncCallback_Impl for EventSink_Impl {
     }
 
     fn Invoke(&self, result: Ref<IMFAsyncResult>) -> windows::core::Result<()> {
+        // The type, and the status the transform gave it (an error shows
+        // up there before any call fails).
         let kind = unsafe { self.generator.EndGetEvent(result.ok()?) }
-            .and_then(|event| unsafe { event.GetType() });
+            .and_then(|event| unsafe { Ok((event.GetType()?, event.GetStatus()?)) });
         // The receiver is gone once the session ended; nothing to do then.
         let _ = self.tx.send(kind);
         Ok(())
