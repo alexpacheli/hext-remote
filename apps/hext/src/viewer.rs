@@ -13,21 +13,26 @@ use hext_input::keymap::{self, CommandKey};
 use hext_net::{Connection, Endpoint, EndpointConfig};
 use hext_proto::Os;
 use hext_proto::{Hello, InputEvent, MouseButton, PeerInfo};
-use hext_render::Renderer;
+use hext_render::{ButtonAction, Renderer, VideoRect, button_rect};
 use hext_session::client::{self, ClientHandle};
 use hext_signal::{DeviceId, KnownHosts};
 use tracing::{info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Modifiers, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, ModifiersKeyState, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::{APP_VERSION, CmdKey, CodecChoice, CtrlKey, ViewArgs, device_name, parse_addr};
 
 /// Trackpad scrolling arrives in pixels; this many make one wheel notch.
 const PIXELS_PER_NOTCH: f64 = 50.0;
+/// How long the button stays up after entering full screen, so the way out
+/// is seen once.
+const BUTTON_HINT: Duration = Duration::from_secs(4);
+/// How close to the top of the window the mouse must go to call the button.
+const BUTTON_EDGE: f64 = 2.0;
 
 enum UserEvent {
     Frame,
@@ -93,7 +98,11 @@ pub fn run(args: ViewArgs) -> Result<()> {
             && !cfg!(target_os = "macos")
             && args.ctrl_key == CtrlKey::Cmd,
         modifiers: Modifiers::default(),
-        secure_attention_key: None,
+        local_key: None,
+        cursor: None,
+        button: None,
+        button_hint: None,
+        button_pressed: false,
         last_title: Instant::now(),
     };
     event_loop.run_app(&mut app)?;
@@ -113,9 +122,17 @@ struct Viewer {
     swap_ctrl_and_super: bool,
     /// Ctrl, Alt... held on this keyboard (for Ctrl+Alt+End).
     modifiers: Modifiers,
-    /// The End or Delete that sent Ctrl+Alt+Del: its repeats and release
-    /// are not keys for the host.
-    secure_attention_key: Option<KeyCode>,
+    /// The key of a shortcut of the viewer: its repeats and release are not
+    /// keys for the host.
+    local_key: Option<KeyCode>,
+    /// Where the mouse is in the window.
+    cursor: Option<(f64, f64)>,
+    /// The full screen button on screen, if any.
+    button: Option<(ButtonAction, VideoRect)>,
+    /// The button stays up until then, wherever the mouse is.
+    button_hint: Option<Instant>,
+    /// The button took a press: its release is not for the host either.
+    button_pressed: bool,
     last_title: Instant,
 }
 
@@ -158,6 +175,46 @@ impl Viewer {
         }
         if let Err(e) = renderer.render() {
             warn!("render: {e}");
+        }
+    }
+
+    fn toggle_fullscreen(&mut self) {
+        let Some(window) = &self.window else { return };
+        let entering = window.fullscreen().is_none();
+        // The whole screen; the video keeps its proportions (`letterbox`).
+        window.set_fullscreen(entering.then_some(Fullscreen::Borderless(None)));
+        self.button_hint = entering.then(|| Instant::now() + BUTTON_HINT);
+        self.update_button();
+    }
+
+    /// Shows the button while the mouse calls for it or the hint lasts.
+    fn update_button(&mut self) {
+        let Some(window) = &self.window else { return };
+        let size = window.inner_size();
+        let rect = button_rect((size.width, size.height), window.scale_factor());
+        let near = self
+            .cursor
+            .is_some_and(|(x, y)| button_called(rect, self.button.is_some(), x, y));
+        let action = if window.fullscreen().is_some() {
+            ButtonAction::Leave
+        } else {
+            ButtonAction::Enter
+        };
+        let button = (near || self.button_hint.is_some()).then_some((action, rect));
+        if self.button != button {
+            self.button = button;
+            if let Some(renderer) = &mut self.renderer {
+                renderer.set_button(button);
+            }
+            self.draw(false);
+        }
+    }
+
+    /// Whether the mouse is on the button.
+    fn on_button(&self) -> bool {
+        match (self.button, self.cursor) {
+            (Some((_, rect)), Some((x, y))) => rect.contains(x, y, 0.0),
+            _ => false,
         }
     }
 
@@ -241,17 +298,40 @@ impl ApplicationHandler<UserEvent> for Viewer {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
                 }
+                self.update_button();
                 self.draw(false);
             }
             WindowEvent::RedrawRequested => self.draw(false),
-            WindowEvent::Focused(false) => self.send(InputEvent::ReleaseAll),
+            WindowEvent::Focused(false) => {
+                self.local_key = None;
+                self.send(InputEvent::ReleaseAll);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                self.update_button();
+            }
             WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = Some((position.x, position.y));
+                self.update_button();
                 let rect = self.renderer.as_ref().and_then(Renderer::video_rect);
                 if let Some((x, y)) = rect.and_then(|r| r.normalize(position.x, position.y)) {
                     self.send(InputEvent::MouseMove { x, y });
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if button == winit::event::MouseButton::Left {
+                    let pressed = state == ElementState::Pressed;
+                    // (Pressed again: its release got lost, as with `local_key`.)
+                    let was_ours = std::mem::replace(&mut self.button_pressed, false);
+                    if pressed && self.on_button() {
+                        self.button_pressed = true;
+                        self.toggle_fullscreen();
+                        return;
+                    }
+                    if was_ours && !pressed {
+                        return;
+                    }
+                }
                 let button = match button {
                     winit::event::MouseButton::Left => MouseButton::Left,
                     winit::event::MouseButton::Right => MouseButton::Right,
@@ -287,18 +367,25 @@ impl ApplicationHandler<UserEvent> for Viewer {
                 };
                 // Ctrl+Alt+End (or Ctrl+Alt+Delete, where this computer
                 // does not keep it): Ctrl+Alt+Del on the host.
-                if self.secure_attention_key == Some(code) {
-                    if event.state == ElementState::Released {
-                        self.secure_attention_key = None;
-                    }
+                let released = event.state == ElementState::Released;
+                if belongs_to_shortcut(&mut self.local_key, code, event.repeat, released) {
                     return;
                 }
                 if event.state == ElementState::Pressed
                     && matches!(code, KeyCode::End | KeyCode::Delete)
                     && self.ctrl_alt()
                 {
-                    self.secure_attention_key = Some(code);
+                    self.local_key = Some(code);
                     self.send(InputEvent::SecureAttention);
+                    return;
+                }
+                // Ctrl+Alt+Enter: full screen, and back.
+                if event.state == ElementState::Pressed
+                    && matches!(code, KeyCode::Enter | KeyCode::NumpadEnter)
+                    && self.ctrl_alt()
+                {
+                    self.local_key = Some(code);
+                    self.toggle_fullscreen();
                     return;
                 }
                 // Repeats are forwarded too: injected keys do not auto-repeat.
@@ -316,8 +403,19 @@ impl ApplicationHandler<UserEvent> for Viewer {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.update_title();
+        if self
+            .button_hint
+            .is_some_and(|until| until <= Instant::now())
+        {
+            self.button_hint = None;
+            self.update_button();
+        }
+        event_loop.set_control_flow(match self.button_hint {
+            Some(until) => ControlFlow::WaitUntil(until),
+            None => ControlFlow::Wait,
+        });
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
@@ -329,6 +427,38 @@ impl ApplicationHandler<UserEvent> for Viewer {
         if let Some(endpoint) = self.endpoint.take() {
             self.runtime.block_on(endpoint.close());
         }
+    }
+}
+
+/// Whether a key event is the rest of a shortcut of the viewer (`held`): its
+/// repeats and release, not keys for the host. A new press means the release
+/// got lost, as can happen while the window changes: it is a key like any
+/// other, and so is what follows it.
+fn belongs_to_shortcut(
+    held: &mut Option<KeyCode>,
+    code: KeyCode,
+    repeat: bool,
+    released: bool,
+) -> bool {
+    if *held != Some(code) {
+        return false;
+    }
+    if repeat && !released {
+        return true;
+    }
+    *held = None;
+    released
+}
+
+/// Whether the mouse at (`x`, `y`) calls for the button at `rect`: it comes up
+/// at the very top of the window, and stays while the mouse is around. A mouse
+/// merely passing there does not bring it, or what is under it on the host
+/// could never be clicked.
+fn button_called(rect: VideoRect, shown: bool, x: f64, y: f64) -> bool {
+    if shown {
+        rect.contains(x, y, rect.height)
+    } else {
+        y <= BUTTON_EDGE && rect.contains(x, f64::from(rect.y), rect.height)
     }
 }
 
@@ -464,5 +594,52 @@ fn decoder(choice: CodecChoice) -> DecoderPreference {
         CodecChoice::Auto => DecoderPreference::Auto,
         CodecChoice::Software => DecoderPreference::Software,
         CodecChoice::Hardware => DecoderPreference::Hardware,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RECT: VideoRect = VideoRect {
+        x: 472.0,
+        y: 6.0,
+        width: 56.0,
+        height: 28.0,
+    };
+
+    #[test]
+    fn a_shortcut_keeps_its_repeats_and_release() {
+        let mut held = Some(KeyCode::Enter);
+        assert!(belongs_to_shortcut(&mut held, KeyCode::Enter, true, false));
+        assert!(!belongs_to_shortcut(&mut held, KeyCode::KeyA, false, false));
+        assert!(belongs_to_shortcut(&mut held, KeyCode::Enter, false, true));
+        assert_eq!(held, None);
+    }
+
+    #[test]
+    fn a_key_after_a_lost_release_is_the_hosts_up_and_down() {
+        let mut held = Some(KeyCode::Enter);
+        assert!(!belongs_to_shortcut(
+            &mut held,
+            KeyCode::Enter,
+            false,
+            false
+        ));
+        assert!(!belongs_to_shortcut(&mut held, KeyCode::Enter, false, true));
+    }
+
+    #[test]
+    fn the_button_comes_from_the_top_edge_only() {
+        assert!(button_called(RECT, false, 500.0, 0.0));
+        assert!(!button_called(RECT, false, 500.0, 20.0));
+        assert!(!button_called(RECT, false, 100.0, 0.0));
+    }
+
+    #[test]
+    fn the_button_stays_while_the_mouse_is_around() {
+        assert!(button_called(RECT, true, 500.0, 20.0));
+        assert!(button_called(RECT, true, 500.0, 60.0));
+        assert!(!button_called(RECT, true, 500.0, 90.0));
     }
 }

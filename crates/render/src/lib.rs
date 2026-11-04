@@ -10,6 +10,12 @@ use hext_codec::YuvFrame;
 use winit::window::Window;
 
 const SHADER: &str = include_str!("yuv.wgsl");
+const BUTTON_SHADER: &str = include_str!("button.wgsl");
+
+/// The full screen button, in logical pixels, and how far from the top.
+const BUTTON_WIDTH: f64 = 56.0;
+const BUTTON_HEIGHT: f64 = 28.0;
+const BUTTON_TOP: f64 = 6.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -38,6 +44,34 @@ impl VideoRect {
         let ny = (py as f32 - self.y) / self.height;
         ((0.0..=1.0).contains(&nx) && (0.0..=1.0).contains(&ny)).then_some((nx, ny))
     }
+
+    /// Whether a window position is inside, with `margin` pixels to spare.
+    pub fn contains(&self, px: f64, py: f64, margin: f32) -> bool {
+        let (px, py) = (px as f32, py as f32);
+        px >= self.x - margin
+            && px <= self.x + self.width + margin
+            && py >= self.y - margin
+            && py <= self.y + self.height + margin
+    }
+}
+
+/// Where the full screen button goes, at the top center of a window of
+/// `window` physical pixels and that display scale.
+pub fn button_rect(window: (u32, u32), scale: f64) -> VideoRect {
+    let (width, height) = (BUTTON_WIDTH * scale, BUTTON_HEIGHT * scale);
+    VideoRect {
+        x: ((f64::from(window.0) - width) / 2.0).floor() as f32,
+        y: (BUTTON_TOP * scale).floor() as f32,
+        width: width as f32,
+        height: height as f32,
+    }
+}
+
+/// What pressing the full screen button does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonAction {
+    Enter,
+    Leave,
 }
 
 /// Fits a `video` sized picture into a `window`, preserving aspect ratio.
@@ -63,6 +97,55 @@ struct Planes {
     bind_group: wgpu::BindGroup,
 }
 
+/// The graphics API to try first, unless `WGPU_BACKEND` says otherwise.
+/// DirectX 12 on Windows: with Vulkan, on a computer with two GPUs, a window
+/// going full screen on the other GPU's monitor kept the size it had.
+fn preferred_backends() -> Option<wgpu::Backends> {
+    (cfg!(windows) && std::env::var_os("WGPU_BACKEND").is_none()).then_some(wgpu::Backends::DX12)
+}
+
+/// A surface on `window` and the GPU to draw it with, on `backends` (`None`:
+/// any, even a software one; with a choice, the others may do better).
+fn open_gpu(window: &Arc<Window>, backends: Option<wgpu::Backends>) -> Result<Gpu, RenderError> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    if let Some(backends) = backends {
+        descriptor.backends = backends;
+    }
+    let instance = wgpu::Instance::new(descriptor);
+    let surface = instance
+        .create_surface(window.clone())
+        .map_err(|e| RenderError::Surface(e.to_string()))?;
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: Some(&surface),
+        ..Default::default()
+    }))
+    .map_err(|e| RenderError::Adapter(e.to_string()))?;
+    let info = adapter.get_info();
+    if backends.is_some() && info.device_type == wgpu::DeviceType::Cpu {
+        return Err(RenderError::Adapter(format!("{} é software", info.name)));
+    }
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("hext"),
+        ..Default::default()
+    }))
+    .map_err(|e| RenderError::Device(e.to_string()))?;
+    tracing::info!("GPU: {:?} ({:?})", info.name, info.backend);
+    Ok(Gpu {
+        surface,
+        adapter,
+        device,
+        queue,
+    })
+}
+
+struct Gpu {
+    surface: wgpu::Surface<'static>,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -73,28 +156,27 @@ pub struct Renderer {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     planes: Option<Planes>,
+    button_enter: wgpu::RenderPipeline,
+    button_leave: wgpu::RenderPipeline,
+    /// The button on screen, if any.
+    button: Option<(ButtonAction, VideoRect)>,
 }
 
 impl Renderer {
     pub fn new(window: Arc<Window>) -> Result<Self, RenderError> {
         let size = window.inner_size();
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance
-            .create_surface(window)
-            .map_err(|e| RenderError::Surface(e.to_string()))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .map_err(|e| RenderError::Adapter(e.to_string()))?;
-        tracing::info!("GPU: {:?}", adapter.get_info().name);
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("hext"),
-            ..Default::default()
-        }))
-        .map_err(|e| RenderError::Device(e.to_string()))?;
+        let Gpu {
+            surface,
+            adapter,
+            device,
+            queue,
+        } = match preferred_backends() {
+            Some(backends) => open_gpu(&window, Some(backends)).or_else(|e| {
+                tracing::warn!("{backends:?}: {e}");
+                open_gpu(&window, None)
+            })?,
+            None => open_gpu(&window, None)?,
+        };
 
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -167,6 +249,39 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let button_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("button"),
+            source: wgpu::ShaderSource::Wgsl(BUTTON_SHADER.into()),
+        });
+        let button_pipeline = |entry_point| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("button"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &button_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &button_shader,
+                    entry_point: Some(entry_point),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: view_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let button_enter = button_pipeline("fs_enter");
+        let button_leave = button_pipeline("fs_leave");
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("yuv"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -184,6 +299,9 @@ impl Renderer {
             layout,
             sampler,
             planes: None,
+            button_enter,
+            button_leave,
+            button: None,
         })
     }
 
@@ -194,6 +312,11 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// Shows the full screen button, or hides it, from the next render.
+    pub fn set_button(&mut self, button: Option<(ButtonAction, VideoRect)>) {
+        self.button = button;
     }
 
     /// Where the current video sits in the window, once a frame was uploaded.
@@ -217,13 +340,18 @@ impl Renderer {
     }
 
     pub fn render(&mut self) -> Result<(), RenderError> {
-        let texture = match self.surface.get_current_texture() {
+        let mut texture = self.surface.get_current_texture();
+        if matches!(
+            texture,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost
+        ) {
+            // Once more, set up again: a still screen sends no next frame.
+            self.surface.configure(&self.device, &self.config);
+            texture = self.surface.get_current_texture();
+        }
+        let texture = match texture {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return Ok(());
-            }
             // Minimized or busy: skip this frame.
             _ => return Ok(()),
         };
@@ -257,6 +385,20 @@ impl Renderer {
                 pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &planes.bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            let (width, height) = (self.config.width as f32, self.config.height as f32);
+            // (A window too small for it goes without.)
+            if let Some((action, rect)) = self.button
+                && rect.x >= 0.0
+                && rect.x + rect.width <= width
+                && rect.y + rect.height <= height
+            {
+                pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
+                pass.set_pipeline(match action {
+                    ButtonAction::Enter => &self.button_enter,
+                    ButtonAction::Leave => &self.button_leave,
+                });
                 pass.draw(0..3, 0..1);
             }
         }
@@ -345,6 +487,15 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_button_sits_at_the_top_center() {
+        let r = button_rect((1000, 800), 2.0);
+        assert_eq!((r.x, r.y, r.width, r.height), (444.0, 12.0, 112.0, 56.0));
+        assert!(r.contains(500.0, 40.0, 0.0));
+        assert!(!r.contains(500.0, 80.0, 0.0));
+        assert!(r.contains(500.0, 80.0, 56.0));
+    }
 
     #[test]
     fn letterbox_wide_window() {

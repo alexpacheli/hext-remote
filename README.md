@@ -124,6 +124,9 @@ Com o serviço, o técnico vê e controla também a **tela de login, o bloqueio 
 `Ctrl+Alt+Del` com **Ctrl+Alt+End** (ou Ctrl+Alt+Delete no Mac). O acesso pelo IP com código fica
 desligado no serviço: só pelo ID, com aceite.
 
+Na janela do visualizador, **Ctrl+Alt+Enter** entra e sai da tela cheia, com a imagem ocupando a tela
+inteira sem distorcer. Levar o mouse até a borda de cima, no centro, mostra um botão que faz o mesmo.
+
 ## Testar: controlar o Mac a partir do Windows
 
 1. **No Mac**, no Terminal: `./HextRemote host`.
