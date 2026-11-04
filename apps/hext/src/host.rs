@@ -134,6 +134,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
             encoder,
         }),
         presence: None,
+        unattended: None,
     });
     // One session at a time, handshake included: attempts are serialized,
     // which together with the penalty rate-limits code guessing.
@@ -210,6 +211,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
             encoder: EncoderSettings::default(),
         }),
         presence: Some(Arc::new(hub.clone())),
+        unattended: None,
     });
     let slot = Arc::new(Semaphore::new(1));
     tokio::spawn(crate::signaling::host(

@@ -99,6 +99,18 @@ pub fn follow_input_desktop() -> bool {
     }
 }
 
+/// The name of the desktop getting input now, where there is such a thing.
+pub fn input_desktop_name() -> Option<String> {
+    #[cfg(windows)]
+    {
+        desktop::input_desktop_name()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// Checks (and on macOS requests) the permission to capture the screen, so
 /// a host can report a missing one at startup rather than on first connection.
 pub fn preflight() -> Result<(), CaptureError> {

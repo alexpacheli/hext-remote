@@ -59,6 +59,11 @@ pub fn follow_input_desktop() -> bool {
     }
 }
 
+/// The name of the desktop getting input now.
+pub fn input_desktop_name() -> Option<String> {
+    name(open_input_desktop()?.0)
+}
+
 /// The desktop getting input, opened; `None` without the rights to.
 fn open_input_desktop() -> Option<Opened> {
     // GENERIC_ALL: to read the screen and send input there.

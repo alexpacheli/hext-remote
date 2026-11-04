@@ -17,9 +17,14 @@ const pages = {
       $("connect").addEventListener("submit", async (event) => {
         event.preventDefault();
         try {
-          await invoke("connect", { id: $("target").value });
+          await invoke("connect", {
+            id: $("target").value,
+            password: $("password").value || null,
+          });
         } catch (message) {
           showStatus(String(message), true);
+        } finally {
+          $("password").value = "";
         }
       });
     },
@@ -29,11 +34,16 @@ const pages = {
       notice.hidden = !view.notice;
       notice.textContent = view.notice ?? "";
 
+      showRecent(view.recent);
       const busy = view.viewer.state === "asking" || view.viewer.state === "connected";
       $("connect-button").disabled = busy;
       switch (view.viewer.state) {
         case "asking":
-          showStatus("Aguardando o outro computador aceitar…");
+          showStatus(
+            view.viewer.locked
+              ? "O computador está bloqueado: peça para alguém acordar a tela."
+              : "Aguardando o outro computador…",
+          );
           break;
         case "connected":
           showStatus("Conectado. A tela abriu em outra janela.");
@@ -93,14 +103,43 @@ const pages = {
       if (!view.session) {
         return;
       }
-      const { name, id, permissions } = view.session;
+      const { name, id, permissions, unattended } = view.session;
       const who = id ? `${name} (ID ${id})` : name;
       const doing = permissions.control ? "vendo e controlando" : "vendo";
-      $("session").textContent = `${who} está ${doing} este computador`;
+      const how = unattended ? " (entrou com a senha)" : "";
+      $("session").textContent = `${who} está ${doing} este computador${how}`;
       $("session").title = $("session").textContent;
     },
   },
 };
+
+/** The computers accessed; a click fills in the ID. */
+function showRecent(computers) {
+  $("recent-section").hidden = computers.length === 0;
+  $("recent").replaceChildren(
+    ...computers.map(({ id, name }) => {
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "pick";
+      pick.textContent = name ? `${name} (${id})` : id;
+      pick.title = pick.textContent;
+      pick.addEventListener("click", () => {
+        $("target").value = id;
+        $("password").focus();
+      });
+      const forget = document.createElement("button");
+      forget.type = "button";
+      forget.className = "forget";
+      forget.textContent = "×";
+      forget.title = "Tirar da lista";
+      forget.setAttribute("aria-label", `Tirar ${name || id} da lista`);
+      forget.addEventListener("click", () => invoke("forget", { id }));
+      const item = document.createElement("li");
+      item.append(pick, forget);
+      return item;
+    }),
+  );
+}
 
 function showStatus(text, error = false) {
   $("status").textContent = text;

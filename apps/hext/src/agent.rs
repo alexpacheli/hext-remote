@@ -36,6 +36,17 @@ pub enum ToAgent {
     Input(InputEvent),
     /// Stop streaming (the session ended).
     Stop,
+    /// The indicator for where the interface cannot be seen (the sign-in
+    /// screen, a locked computer); `None`: no session.
+    Indicator(Option<Indicator>),
+}
+
+/// The session, as the agent shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Indicator {
+    pub text: String,
+    /// Also on the user's own desktop: no interface there has the bar.
+    pub everywhere: bool,
 }
 
 /// Agent → service.
@@ -46,6 +57,8 @@ pub enum FromAgent {
     /// A frame of stream `id` (frames of an older one may still be on the
     /// way when the next starts).
     Frame { id: u64, frame: VideoFrame },
+    /// Someone pressed Encerrar on the indicator.
+    EndSession,
 }
 
 /// What to stream.
@@ -120,6 +133,8 @@ pub struct AgentHub {
     state: Arc<Mutex<HubState>>,
     /// Sends Ctrl+Alt+Del, which only the service itself can.
     secure_attention: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Ends the session, for the indicator.
+    end_session: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[derive(Default)]
@@ -130,6 +145,8 @@ struct HubState {
     session: Option<Session>,
     /// Numbers each session's stream, so frames of one never reach another.
     next_stream: u64,
+    /// What the indicator shows during a session.
+    indicator: Option<Indicator>,
 }
 
 struct Session {
@@ -158,6 +175,9 @@ impl AgentHub {
                     id: session.id,
                     stream: session.stream,
                 });
+            }
+            if state.indicator.is_some() {
+                let _ = tx.send(ToAgent::Indicator(state.indicator.clone()));
             }
             state.agent = Some((id, tx));
             id
@@ -200,6 +220,11 @@ impl AgentHub {
                     // agent through the pipe.
                     let _ = frames.send(frame).await;
                 }
+                Ok(Some(FromAgent::EndSession)) => {
+                    if let Some(end) = &self.end_session {
+                        end();
+                    }
+                }
                 Ok(None) => break,
                 Err(e) => {
                     warn!("agent: {e}");
@@ -215,12 +240,23 @@ impl AgentHub {
         }
     }
 
-    /// A hub that sends Ctrl+Alt+Del with `send` (the agents cannot).
-    pub fn with_secure_attention(send: impl Fn() + Send + Sync + 'static) -> Self {
+    /// A hub that sends Ctrl+Alt+Del with `send` (the agents cannot) and
+    /// ends the session with `end`.
+    pub fn new(
+        send: impl Fn() + Send + Sync + 'static,
+        end: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         Self {
             secure_attention: Some(Arc::new(send)),
+            end_session: Some(Arc::new(end)),
             ..Self::default()
         }
+    }
+
+    /// What the indicator shows; `None`: no session.
+    pub fn set_indicator(&self, indicator: Option<Indicator>) {
+        self.state.lock().expect("lock").indicator = indicator.clone();
+        self.send(ToAgent::Indicator(indicator));
     }
 
     /// Ends the session's streaming (the agent releases any held key).
@@ -353,6 +389,7 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
         Ok::<_, std::io::Error>(())
     }));
     let mut screen: Option<(Box<dyn Screen>, Task<()>)> = None;
+    let mut indicator = None;
     let result = loop {
         let msg = match read_msg::<_, ToAgent>(&mut reader).await {
             Ok(Some(msg)) => msg,
@@ -401,12 +438,37 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
                 }
             }
             ToAgent::Stop => stop(&mut screen).await,
+            ToAgent::Indicator(shown) => {
+                // (Not here: it waits for its window, and input does not.)
+                let old = indicator.take();
+                tokio::task::spawn_blocking(move || drop(old));
+                indicator = shown.and_then(|shown| show_indicator(&shown, out_tx.clone()));
+            }
         }
     };
     stop(&mut screen).await;
+    drop(indicator);
     drop(out_tx);
     let _ = (&mut writing.0).await;
     result
+}
+
+/// The indicator on the sign-in screen, until dropped.
+#[cfg(windows)]
+fn show_indicator(
+    shown: &Indicator,
+    out: mpsc::Sender<FromAgent>,
+) -> Option<crate::service::Banner> {
+    crate::service::Banner::show(&shown.text, shown.everywhere, move || {
+        // (On a thread of its own: it can wait for room among the frames.)
+        let _ = out.blocking_send(FromAgent::EndSession);
+    })
+}
+
+/// (Only the Windows service has an agent.)
+#[cfg(not(windows))]
+fn show_indicator(_shown: &Indicator, _out: mpsc::Sender<FromAgent>) -> Option<()> {
+    None
 }
 
 async fn stop(screen: &mut Option<(Box<dyn Screen>, Task<()>)>) {
@@ -506,9 +568,12 @@ mod tests {
     async fn ctrl_alt_del_is_sent_by_the_service() {
         let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = sent.clone();
-        let hub = AgentHub::with_secure_attention(move || {
-            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
+        let hub = AgentHub::new(
+            move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+            || {},
+        );
         let _agent = agent(&hub);
         let (tx, _frames) = mpsc::channel(1);
         let mut screen = hub.desktop(test_stream()).open(tx).await.unwrap();

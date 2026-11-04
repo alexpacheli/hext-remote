@@ -10,6 +10,8 @@
 mod agent;
 mod bench;
 mod host;
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
+mod recent;
 mod service;
 mod signaling;
 #[cfg(any(windows, target_os = "macos"))]
@@ -128,6 +130,13 @@ enum ServiceAction {
     },
     /// Mostra se o serviço está rodando e o ID deste computador.
     Status,
+    /// Liga o acesso não assistido: define a senha (pedida aqui, sem aparecer).
+    /// Precisa de administrador.
+    Password {
+        /// Desliga o acesso não assistido e apaga a senha.
+        #[arg(long)]
+        off: bool,
+    },
     /// (Interno) O próprio serviço, iniciado pelo Windows.
     #[command(hide = true)]
     Run,
@@ -230,6 +239,10 @@ struct ViewArgs {
     /// Decodificador de vídeo.
     #[arg(long, value_enum, default_value_t = CodecChoice::Auto)]
     decoder: CodecChoice,
+    /// Entra com a senha de acesso não assistido do host, lida da entrada
+    /// padrão (num terminal, é pedida sem aparecer). Só pelo ID.
+    #[arg(long)]
+    password_stdin: bool,
     /// (Interno) Avisa a interface que abriu este visualizador quando conectar.
     #[arg(long, hide = true)]
     report_to_ui: bool,

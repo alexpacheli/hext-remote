@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use hext_crypto::DeviceKey;
+use hext_crypto::{DeviceKey, PublicKey};
 use hext_net::{Connection, Endpoint};
 use hext_proto::Permissions;
 use hext_session::host::BoxFuture;
@@ -19,6 +19,7 @@ use tokio::sync::{Semaphore, mpsc};
 use tracing::{info, warn};
 
 use crate::APP_VERSION;
+use crate::ui_link::HOST_LOCKED;
 
 /// How long the host's user has to answer (the server gives up at 60 s).
 pub const ANSWER_TIME: Duration = Duration::from_secs(55);
@@ -35,7 +36,7 @@ const MAX_NAME: usize = 64;
 
 /// A name as the other side sent it, made safe to show: nothing that moves
 /// a terminal's cursor or reverses text around the name.
-fn shown_name(name: &str) -> String {
+pub fn shown_name(name: &str) -> String {
     name.chars()
         .filter(|c| {
             !c.is_control()
@@ -54,6 +55,16 @@ pub trait Ask: Send {
 
     /// This computer's ID, once the server gave it (or a different one).
     fn show_id(&mut self, id: DeviceId);
+
+    /// Whether the unattended password is on here.
+    fn unattended(&self) -> bool {
+        false
+    }
+
+    /// Whether the question will wait for someone to wake the screen.
+    fn locked(&self) -> bool {
+        false
+    }
 }
 
 /// Asks on the terminal.
@@ -147,6 +158,7 @@ async fn serve(
             from,
             from_key,
             from_name,
+            unattended,
         } = client.recv().await?
         else {
             continue;
@@ -156,6 +168,29 @@ async fn serve(
             info!("pedido de {from_name} ({from}) recusado: já existe uma sessão");
             client.send(&ClientMsg::Reject { request }).await?;
             continue;
+        }
+        if unattended {
+            // Nobody to ask: the password decides, in the session.
+            let answer = if ask.unattended() {
+                info!("pedido de {from_name} ({from}) com a senha de acesso não assistido");
+                let grant = Grant {
+                    permissions: Permissions::CONTROL,
+                    name: from_name,
+                    id: from.to_string(),
+                    needs_password: true,
+                };
+                accept(request, from_key, grant, (endpoint, has_relay), codes).await
+            } else {
+                info!(
+                    "pedido de {from_name} ({from}) com senha, mas o acesso não assistido está desligado"
+                );
+                ClientMsg::NoUnattended { request }
+            };
+            client.send(&answer).await?;
+            continue;
+        }
+        if ask.locked() {
+            client.send(&ClientMsg::Waiting { request }).await?;
         }
         // One deadline for the question, whatever else arrives meanwhile.
         let deadline = tokio::time::sleep(ANSWER_TIME);
@@ -190,29 +225,39 @@ async fn serve(
         }
         let answer = if let Some(permissions) = accepted.filter(|_| !busy) {
             println!("  Aceito: conectando...");
-            // The relay must be among the addresses: without it, a viewer
-            // on another network has nothing to fall back on. Right after
-            // starting (or a network change) it may still be connecting.
-            if has_relay && endpoint.addr().relay_urls().next().is_none() {
-                let _ = tokio::time::timeout(RELAY_WAIT, endpoint.online()).await;
-            }
-            ClientMsg::Accept {
-                request,
-                addrs: hext_net::addr_to_strings(&endpoint.addr()),
-                // Good only from the device that asked.
-                session_code: codes.issue(
-                    from_key,
-                    Grant {
-                        permissions,
-                        name: from_name.clone(),
-                        id: from.to_string(),
-                    },
-                ),
-            }
+            let grant = Grant {
+                permissions,
+                name: from_name.clone(),
+                id: from.to_string(),
+                needs_password: false,
+            };
+            accept(request, from_key, grant, (endpoint, has_relay), codes).await
         } else {
             ClientMsg::Reject { request }
         };
         client.send(&answer).await?;
+    }
+}
+
+/// The yes to request `request`: where to connect, and a code good only from
+/// the device that asked.
+async fn accept(
+    request: u64,
+    from_key: PublicKey,
+    grant: Grant,
+    (endpoint, has_relay): (&Endpoint, bool),
+    codes: &SessionCodes,
+) -> ClientMsg {
+    // The relay must be among the addresses: without it, a viewer on another
+    // network has nothing to fall back on. Right after starting (or a network
+    // change) it may still be connecting.
+    if has_relay && endpoint.addr().relay_urls().next().is_none() {
+        let _ = tokio::time::timeout(RELAY_WAIT, endpoint.online()).await;
+    }
+    ClientMsg::Accept {
+        request,
+        addrs: hext_net::addr_to_strings(&endpoint.addr()),
+        session_code: codes.issue(from_key, grant),
     }
 }
 
@@ -241,15 +286,22 @@ pub async fn login(server: &str, key: &DeviceKey, name: &str) -> Result<Client> 
 /// Viewer side: asks host `id` for access through `client` (logged in),
 /// checks its key against the one remembered for that ID, and connects from
 /// `endpoint` (directly or through the relay). Returns the connection and
-/// the one-time code to present.
+/// the one-time code to present. `unattended`: with the password, so nobody
+/// is asked.
 pub async fn connect(
     mut client: Client,
     id: DeviceId,
     known: &KnownHosts,
     endpoint: &Endpoint,
+    unattended: bool,
 ) -> Result<(Connection, String)> {
-    println!("Pedindo acesso a {id}... aguardando o outro computador aceitar.");
-    let access = match client.request_access(id).await? {
+    if unattended {
+        println!("Conectando a {id} com a senha...");
+    } else {
+        println!("Pedindo acesso a {id}... aguardando o outro computador aceitar.");
+    }
+    let on_waiting = || println!("{HOST_LOCKED}");
+    let access = match client.request_access(id, unattended, on_waiting).await? {
         Ok(access) => access,
         Err(reason) => bail!("{}", rejection(reason)),
     };
@@ -298,6 +350,7 @@ fn rejection(reason: Rejection) -> &'static str {
         }
         Rejection::Busy => "o outro computador já tem um pedido esperando resposta",
         Rejection::SelfConnect => "esse é o ID deste computador",
+        Rejection::UnattendedOff => "esse computador não está com o acesso por senha ligado",
     }
 }
 

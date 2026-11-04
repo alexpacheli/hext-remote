@@ -97,6 +97,10 @@ struct Pending {
     host: DeviceId,
     host_session: u64,
     expires: Instant,
+    /// With the password: no sign that the host trusts this viewer.
+    unattended: bool,
+    /// The viewer takes [`ServerMsg::Waiting`].
+    viewer_notices: bool,
 }
 
 impl State {
@@ -278,6 +282,8 @@ struct Session {
     limited: bool,
     /// The host whose limit refused its last request (audited once).
     refused_by: Option<DeviceId>,
+    /// It takes [`ServerMsg::Waiting`].
+    notices: bool,
 }
 
 type Sink = futures_util::stream::SplitSink<WebSocket, Message>;
@@ -324,6 +330,7 @@ pub async fn handle(socket: WebSocket, state: &State, ip: IpAddr) {
         device_name,
         app_version,
         accepts_requests,
+        notices,
     }))) = hello
     else {
         // Silence, garbage or another message first: no login.
@@ -378,6 +385,7 @@ pub async fn handle(socket: WebSocket, state: &State, ip: IpAddr) {
         ip,
         limited: false,
         refused_by: None,
+        notices,
     };
     if send(&mut sink, &ServerMsg::Welcome { id }).await {
         let mut ping = tokio::time::interval(PING_INTERVAL);
@@ -464,7 +472,11 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
         ClientMsg::Hello { .. } => Some(ServerMsg::Error {
             message: "já conectado".to_owned(),
         }),
-        ClientMsg::Connect { request, to } => connect(state, me, request, to)
+        ClientMsg::Connect {
+            request,
+            to,
+            unattended,
+        } => connect(state, me, request, to, unattended)
             .await
             .err()
             .map(|reason| ServerMsg::Rejected { request, reason }),
@@ -474,10 +486,16 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
             session_code,
         } => {
             let p = take_mine(state, me, request)?;
-            state.audit(p.viewer, p.host, "accepted");
             let (host, viewer) = (p.host, p.viewer);
-            if let Err(e) = state.db(move |db| db.remember_accepted(host, viewer)).await {
-                warn!("banco de dados: {e}");
+            if p.unattended {
+                // This says nothing of the password yet: it must not make the
+                // viewer trusted, or its guesses would go unlimited.
+                state.audit(viewer, host, "accepted_unattended");
+            } else {
+                state.audit(viewer, host, "accepted");
+                if let Err(e) = state.db(move |db| db.remember_accepted(host, viewer)).await {
+                    warn!("banco de dados: {e}");
+                }
             }
             let accepted = ServerMsg::Accepted {
                 request: p.viewer_request,
@@ -502,6 +520,31 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
             state.send_to(p.viewer, p.viewer_session, declined).await;
             None
         }
+        ClientMsg::NoUnattended { request } => {
+            let p = take_mine(state, me, request)?;
+            state.audit(p.viewer, p.host, "unattended_off");
+            let off = ServerMsg::Rejected {
+                request: p.viewer_request,
+                reason: Rejection::UnattendedOff,
+            };
+            state.send_to(p.viewer, p.viewer_session, off).await;
+            None
+        }
+        ClientMsg::Waiting { request } => {
+            let viewer = {
+                let pending = state.pending.lock().expect("lock");
+                pending
+                    .get(&request)
+                    .filter(|p| (p.host, p.host_session) == (me.id, me.session))
+                    .filter(|p| p.viewer_notices)
+                    .map(|p| (p.viewer, p.viewer_session, p.viewer_request))
+            };
+            if let Some((viewer, session, request)) = viewer {
+                let waiting = ServerMsg::Waiting { request };
+                state.send_to(viewer, session, waiting).await;
+            }
+            None
+        }
     }
 }
 
@@ -512,6 +555,7 @@ async fn connect(
     me: &mut Session,
     request: u64,
     to: DeviceId,
+    unattended: bool,
 ) -> Result<(), Rejection> {
     let now = Instant::now();
     if !state.connects_by_device.allow(&me.id, now) || !state.connects_by_ip.allow(&me.ip, now) {
@@ -567,6 +611,8 @@ async fn connect(
                 host: to,
                 host_session,
                 expires: now + REQUEST_TIMEOUT,
+                unattended,
+                viewer_notices: me.notices,
             },
         );
     }
@@ -575,6 +621,7 @@ async fn connect(
         from: me.id,
         from_key: me.key,
         from_name: me.name.clone(),
+        unattended,
     };
     if !state.send_to(to, host_session, ask).await {
         state.pending.lock().expect("lock").remove(&server_request);

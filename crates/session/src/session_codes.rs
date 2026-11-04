@@ -21,6 +21,8 @@ pub struct Grant {
     /// The name and ID the user saw when asked.
     pub name: String,
     pub id: String,
+    /// Nobody accepted: the viewer must also know the unattended password.
+    pub needs_password: bool,
 }
 
 /// A code, the viewer it was issued to, when, and what it grants.
@@ -82,6 +84,7 @@ mod tests {
             permissions: Permissions::CONTROL,
             name: "Técnico".into(),
             id: "482 913 557".into(),
+            needs_password: false,
         }
     }
 

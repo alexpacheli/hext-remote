@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use hext_crypto::PublicKey;
+use hext_crypto::pake::{self, HostExchange, SALT_LEN, Verifier, ViewerExchange};
 use hext_proto::frame::{self, MAX_FRAME_LEN};
 use hext_proto::{
     Control, Datagram, Hello, PREAMBLE_LEN, PROTOCOL_VERSION, PeerInfo, Permissions, RejectReason,
@@ -7,8 +9,9 @@ use hext_proto::{
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use zeroize::Zeroizing;
 
-use crate::{Connection, NetError, Result};
+use crate::{Connection, NetError, Result, remote_key};
 
 /// Upper bound for the whole handshake, so silent peers cannot hold a host task.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -16,6 +19,13 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a peer that is about to fail or leave waits for the other side to
 /// close, so its last message is delivered instead of discarded.
 const LINGER: Duration = Duration::from_secs(2);
+
+/// How a viewer answers a host that asks for the unattended password.
+pub struct PasswordLogin {
+    pub password: Zeroizing<String>,
+    /// The key of this device: the exchange is tied to it.
+    pub viewer: PublicKey,
+}
 
 /// Largest chunk read from a stream at once.
 const READ_CHUNK: usize = 64 * 1024;
@@ -142,10 +152,12 @@ impl ControlStream {
 }
 
 /// Client side: opens the control stream and introduces itself. Returns
-/// the host, and what it lets this viewer do.
+/// the host, and what it lets this viewer do. `password` answers the host if
+/// it asks for the unattended password.
 pub async fn client_handshake(
     conn: &Connection,
     hello: Hello,
+    password: Option<PasswordLogin>,
 ) -> Result<(ControlStream, PeerInfo, Permissions)> {
     with_timeout(async {
         let mut control = ControlStream::new(conn.open_bi().await?);
@@ -159,7 +171,15 @@ pub async fn client_handshake(
             });
         }
         control.send(&Control::Hello(hello)).await?;
-        match control.recv().await? {
+        let mut answer = control.recv().await?;
+        if let Control::PasswordChallenge { salt, message } = answer {
+            let Some(password) = password else {
+                conn.close(0u32.into(), b"password needed");
+                return Err(NetError::PasswordNeeded);
+            };
+            answer = prove_password(conn, &mut control, password, salt, message).await?;
+        }
+        match answer {
             Control::HelloAck { peer, permissions } => Ok((control, peer, permissions)),
             Control::Reject(reason) => {
                 conn.close(0u32.into(), b"rejected");
@@ -173,17 +193,96 @@ pub async fn client_handshake(
     .await
 }
 
+/// The client's side of the password exchange, once the host started it.
+/// Returns the host's next message.
+async fn prove_password(
+    conn: &Connection,
+    control: &mut ControlStream,
+    login: PasswordLogin,
+    salt: [u8; SALT_LEN],
+    from_host: Vec<u8>,
+) -> Result<Control> {
+    let host = remote_key(conn);
+    let PasswordLogin { password, viewer } = login;
+    // Slow on purpose.
+    let secret = tokio::task::spawn_blocking(move || pake::stretch(&password, &salt))
+        .await
+        .map_err(|e| NetError::Unexpected(e.to_string()))??;
+    let (exchange, message) = ViewerExchange::start(&secret, &viewer, &host);
+    let key = exchange
+        .finish(&from_host)
+        .ok_or_else(|| NetError::Unexpected("invalid password exchange".into()))?;
+    let proof = key.proof().to_vec();
+    control
+        .send(&Control::PasswordProof { message, proof })
+        .await?;
+    match control.recv().await? {
+        Control::PasswordOk { confirmation } => {
+            // It knows the password, too: holding the host's key is not all
+            // the viewer asked for.
+            if !key.host_confirmed(&confirmation) {
+                conn.close(0u32.into(), b"host not confirmed");
+                return Err(NetError::HostNotConfirmed);
+            }
+            control.recv().await
+        }
+        other => Ok(other),
+    }
+}
+
+/// Whether a [`Hello`] gets in.
+pub enum Admission {
+    Allow(Permissions),
+    /// Only with the password behind `verifier`, on the host with key `host`.
+    Password {
+        permissions: Permissions,
+        verifier: Verifier,
+        host: PublicKey,
+    },
+}
+
+/// The host's side of the password exchange: whether the password was right.
+async fn check_password(
+    conn: &Connection,
+    control: &mut ControlStream,
+    verifier: &Verifier,
+    host: &PublicKey,
+) -> Result<bool> {
+    let viewer = remote_key(conn);
+    let (exchange, message) = HostExchange::start(verifier, &viewer, host);
+    control
+        .send(&Control::PasswordChallenge {
+            salt: *verifier.salt(),
+            message,
+        })
+        .await?;
+    let Control::PasswordProof { message, proof } = control.recv().await? else {
+        return Ok(false);
+    };
+    let Some(confirmation) = exchange.finish(&message, &proof) else {
+        return Ok(false);
+    };
+    control
+        .send(&Control::PasswordOk {
+            confirmation: confirmation.to_vec(),
+        })
+        .await?;
+    Ok(true)
+}
+
 /// Host side: accepts the control stream and validates the client.
 ///
 /// `validate` decides whether the [`Hello`] is admitted, and with what
 /// permissions; a rejection is sent to the client before the error is
-/// returned.
+/// returned. A wrong password comes back as
+/// [`NetError::Rejected`]`(`[`RejectReason::WrongPassword`]`)`, however long
+/// the client stays to hear it.
 pub async fn host_handshake(
     conn: &Connection,
     local: PeerInfo,
-    validate: impl FnOnce(&Hello) -> Result<Permissions, RejectReason>,
+    validate: impl FnOnce(&Hello) -> Result<Admission, RejectReason>,
 ) -> Result<(ControlStream, Hello)> {
-    with_timeout(async {
+    let (mut control, hello, admitted) = with_timeout(async {
         let mut control = ControlStream::new(conn.accept_bi().await?);
         let remote = control.recv_preamble().await?;
         // Always answer with our version, so the client can report a mismatch.
@@ -200,23 +299,42 @@ pub async fn host_handshake(
             Control::Hello(hello) => hello,
             other => return Err(NetError::Unexpected(format!("{other:?} instead of Hello"))),
         };
-        let permissions = match validate(&hello) {
-            Ok(permissions) => permissions,
-            Err(reason) => {
-                control.send(&Control::Reject(reason)).await?;
-                control.send.finish();
-                let _ = tokio::time::timeout(LINGER, conn.closed()).await;
-                return Err(NetError::Rejected(reason));
-            }
+        let admitted = match validate(&hello) {
+            Ok(Admission::Allow(permissions)) => Ok(permissions),
+            Ok(Admission::Password {
+                permissions,
+                verifier,
+                host,
+            }) => match check_password(conn, &mut control, &verifier, &host).await? {
+                true => Ok(permissions),
+                false => Err(RejectReason::WrongPassword),
+            },
+            Err(reason) => Err(reason),
         };
-        let ack = Control::HelloAck {
-            peer: local,
-            permissions,
-        };
-        control.send(&ack).await?;
-        Ok((control, hello))
+        Ok((control, hello, admitted))
     })
-    .await
+    .await?;
+    match admitted {
+        Ok(permissions) => {
+            let ack = Control::HelloAck {
+                peer: local,
+                permissions,
+            };
+            with_timeout(control.send(&ack)).await?;
+            Ok((control, hello))
+        }
+        Err(reason) => {
+            // The decision is made: a client that left, or that stays until
+            // the deadline, must not turn a wrong guess into something else.
+            let _ = tokio::time::timeout(LINGER, async {
+                let _ = control.send(&Control::Reject(reason)).await;
+                control.send.finish();
+                conn.closed().await;
+            })
+            .await;
+            Err(NetError::Rejected(reason))
+        }
+    }
 }
 
 async fn with_timeout<T>(fut: impl Future<Output = Result<T>>) -> Result<T> {

@@ -109,6 +109,7 @@ impl Client {
                     device_name: device_name.to_owned(),
                     app_version: app_version.to_owned(),
                     accepts_requests: role == Role::Host,
+                    notices: true,
                 })
                 .await?;
             match client.recv().await? {
@@ -127,12 +128,23 @@ impl Client {
         self.id
     }
 
-    /// Asks device `to` for access and waits for its user's answer (or the
-    /// server's: offline, timeout…).
-    pub async fn request_access(&mut self, to: DeviceId) -> Result<Result<Access, Rejection>> {
+    /// Asks device `to` for access and waits for the answer (from its user,
+    /// or the server: offline, timeout…). `unattended`: with the password, so
+    /// nobody is asked. `on_waiting` runs if the host says it is locked.
+    pub async fn request_access(
+        &mut self,
+        to: DeviceId,
+        unattended: bool,
+        mut on_waiting: impl FnMut(),
+    ) -> Result<Result<Access, Rejection>> {
         let request = self.next_request;
         self.next_request += 1;
-        self.send(&ClientMsg::Connect { request, to }).await?;
+        self.send(&ClientMsg::Connect {
+            request,
+            to,
+            unattended,
+        })
+        .await?;
         let answer = async {
             loop {
                 match self.recv().await? {
@@ -151,6 +163,7 @@ impl Client {
                     ServerMsg::Rejected { request: r, reason } if r == request => {
                         return Ok(Err(reason));
                     }
+                    ServerMsg::Waiting { request: r } if r == request => on_waiting(),
                     _ => {} // about something else
                 }
             }

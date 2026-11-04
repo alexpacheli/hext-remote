@@ -29,8 +29,21 @@
             aria-label="ID do outro computador"
           />
           <button type="submit" id="connect-button" class="primary">Conectar</button>
+          <input
+            id="password"
+            class="wide"
+            type="password"
+            autocomplete="off"
+            placeholder="Senha, para entrar sem ninguém aceitar (opcional)"
+            aria-label="Senha de acesso não assistido (opcional)"
+          />
         </form>
         <p class="status" id="status" role="status"></p>
+      </section>
+
+      <section id="recent-section" hidden>
+        <h2>Computadores acessados</h2>
+        <ul class="recent" id="recent"></ul>
       </section>
     </main>
   </body>

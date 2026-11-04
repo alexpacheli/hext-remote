@@ -102,6 +102,7 @@ async fn session_with(permissions: Permissions) -> Running {
             permissions,
             name: "Técnico".into(),
             id: "482 913 557".into(),
+            needs_password: false,
         },
     );
     let desktop = Counting::default();
@@ -113,6 +114,7 @@ async fn session_with(permissions: Permissions) -> Running {
         session_codes: codes,
         desktop: Arc::new(desktop),
         presence: Some(indicator.clone()),
+        unattended: None,
     });
     let accepting = host_endpoint.clone();
     let host = tokio::spawn(async move {
@@ -129,6 +131,7 @@ async fn session_with(permissions: Permissions) -> Running {
             peer: PeerInfo::local("test", "viewer"),
             access_code: code,
         },
+        None,
         DecoderPreference::Software,
         |_| {},
     )

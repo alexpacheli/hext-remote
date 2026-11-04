@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use hext_crypto::DeviceKey;
+use hext_crypto::pake::Verifier;
 use hext_net::{
-    Endpoint, EndpointAddr, EndpointConfig, NetError, bind, client_handshake, connect,
+    Admission, Endpoint, EndpointAddr, EndpointConfig, NetError, bind, client_handshake, connect,
     host_handshake, recv_datagram, remote_key, send_datagram,
 };
 use hext_proto::{
@@ -19,9 +20,9 @@ fn hello(code: &str) -> Hello {
     }
 }
 
-fn check_code(hello: &Hello) -> Result<hext_proto::Permissions, RejectReason> {
+fn check_code(hello: &Hello) -> Result<Admission, RejectReason> {
     if hello.access_code == CODE {
-        Ok(hext_proto::Permissions::CONTROL)
+        Ok(Admission::Allow(hext_proto::Permissions::CONTROL))
     } else {
         Err(RejectReason::WrongCode)
     }
@@ -76,7 +77,7 @@ async fn handshake_ping_and_bye() {
     let conn = connect(&client, addr).await.unwrap();
     // The host proved it holds the key we dialed.
     assert_eq!(remote_key(&conn), host_key);
-    let (control, host_info, _) = client_handshake(&conn, hello(CODE)).await.unwrap();
+    let (control, host_info, _) = client_handshake(&conn, hello(CODE), None).await.unwrap();
     assert_eq!(host_info.device_name, "host");
 
     // Many pings while the host also waits on the control stream exercise
@@ -156,6 +157,60 @@ fn addresses_travel_as_text() {
     assert!(back.iter().all(|e| e.len() <= 64));
 }
 
+/// `msg` as a control stream carries it.
+fn framed(msg: &Control) -> Vec<u8> {
+    hext_proto::frame::encode_frame(msg, 1 << 16).unwrap()
+}
+
+/// The wrong guess of someone who waits to send it and then stays, hoping the
+/// deadline runs out before the host writes it down.
+#[tokio::test]
+async fn a_wrong_password_is_reported_even_at_the_deadline() {
+    let (host, addr) = local_host().await;
+    let host_key = DeviceKey::generate().unwrap().public_key();
+    let verifier = Verifier::new("senha certa").unwrap();
+    let server = tokio::spawn(async move {
+        let conn = host.accept().await.expect("endpoint open").await?;
+        let handshake = host_handshake(&conn, PeerInfo::local("test", "host"), |_| {
+            Ok(Admission::Password {
+                permissions: hext_proto::Permissions::CONTROL,
+                verifier,
+                host: host_key,
+            })
+        })
+        .await;
+        handshake.map(|_| ())
+    });
+
+    let (client, _) = viewer().await;
+    let conn = connect(&client, addr).await.unwrap();
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send.write_all(&encode_preamble(PROTOCOL_VERSION))
+        .await
+        .unwrap();
+    send.write_all(&framed(&Control::Hello(hello(CODE))))
+        .await
+        .unwrap();
+    let mut reply = [0; 4];
+    recv.read_exact(&mut reply).await.unwrap();
+    assert_eq!(decode_preamble(reply).unwrap(), PROTOCOL_VERSION);
+
+    // Close to the deadline, with less time left than the host lingers.
+    tokio::time::sleep(Duration::from_millis(8500)).await;
+    send.write_all(&framed(&Control::PasswordProof {
+        message: vec![0; 33],
+        proof: vec![0; 32],
+    }))
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        server.await.unwrap(),
+        Err(NetError::Rejected(RejectReason::WrongPassword))
+    ));
+    drop(conn);
+}
+
 #[tokio::test]
 async fn incompatible_version_is_reported() {
     let (host, addr) = local_host().await;
@@ -184,7 +239,7 @@ async fn wrong_access_code_is_rejected() {
 
     let (client, _) = viewer().await;
     let conn = connect(&client, addr).await.unwrap();
-    let result = client_handshake(&conn, hello("000000000")).await;
+    let result = client_handshake(&conn, hello("000000000"), None).await;
     assert!(
         matches!(result, Err(NetError::Rejected(RejectReason::WrongCode))),
         "{:?}",

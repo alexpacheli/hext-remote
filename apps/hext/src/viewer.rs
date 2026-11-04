@@ -4,16 +4,18 @@
 //! tokio runtime and decoding on its own thread. Each decoded frame is
 //! handed over through `latest` and the event loop is woken to draw it.
 
+use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use hext_codec::{DecoderPreference, YuvFrame};
 use hext_input::keymap::{self, CommandKey};
-use hext_net::{Connection, Endpoint, EndpointConfig};
+use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::Os;
-use hext_proto::{Hello, InputEvent, MouseButton, PeerInfo};
+use hext_proto::{Hello, InputEvent, MouseButton, PeerInfo, RejectReason};
 use hext_render::{ButtonAction, Renderer, VideoRect, button_rect};
+use hext_session::SessionError;
 use hext_session::client::{self, ClientHandle};
 use hext_signal::{DeviceId, KnownHosts};
 use tracing::{info, warn};
@@ -23,6 +25,7 @@ use winit::event::{ElementState, Modifiers, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, ModifiersKeyState, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
+use zeroize::Zeroizing;
 
 use crate::{APP_VERSION, CmdKey, CodecChoice, CtrlKey, ViewArgs, device_name, parse_addr};
 
@@ -40,15 +43,17 @@ enum UserEvent {
 }
 
 pub fn run(args: ViewArgs) -> Result<()> {
+    let password = read_password(&args)?;
     let runtime = tokio::runtime::Runtime::new()?;
-    let (endpoint, conn, code) = runtime.block_on(open(&args))?;
+    let (endpoint, conn, code, viewer) = runtime.block_on(open(&args, password.is_some()))?;
+    let password = password.map(|password| PasswordLogin { password, viewer });
     let hello = Hello {
         peer: PeerInfo::local(APP_VERSION, device_name()),
         access_code: code,
     };
 
     if args.headless {
-        return runtime.block_on(headless(endpoint, conn, args, hello));
+        return runtime.block_on(headless(endpoint, conn, args, hello, password));
     }
 
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
@@ -58,11 +63,12 @@ pub fn run(args: ViewArgs) -> Result<()> {
     let (handle, closed_proxy) = (latest.clone(), proxy.clone());
     let session = runtime.block_on(async {
         let watch = conn.clone();
-        let session = client::start(conn, hello, decoder(args.decoder), move |frame| {
+        let session = client::start(conn, hello, password, decoder(args.decoder), move |frame| {
             *handle.lock().expect("lock") = Some(frame.yuv);
             let _ = proxy.send_event(UserEvent::Frame);
         })
-        .await?;
+        .await
+        .map_err(explain)?;
         tokio::spawn(async move {
             watch.closed().await;
             let _ = closed_proxy.send_event(UserEvent::SessionEnded);
@@ -77,7 +83,11 @@ pub fn run(args: ViewArgs) -> Result<()> {
         info!("o host permitiu só ver a tela");
     }
     if args.report_to_ui {
-        println!("{}", crate::ui_link::VIEWER_CONNECTED);
+        println!(
+            "{} {}",
+            crate::ui_link::VIEWER_CONNECTED,
+            crate::signaling::shown_name(&session.host.device_name)
+        );
     }
 
     let host_is_mac = session.host.os == Os::MacOs;
@@ -462,12 +472,57 @@ fn button_called(rect: VideoRect, shown: bool, x: f64, y: f64) -> bool {
     }
 }
 
+/// The unattended password, if asked for: from the terminal, unseen, or from
+/// standard input (never an argument: others could read it in the process
+/// list).
+fn read_password(args: &ViewArgs) -> Result<Option<Zeroizing<String>>> {
+    if !args.password_stdin {
+        return Ok(None);
+    }
+    let password = if std::io::stdin().is_terminal() {
+        Zeroizing::new(rpassword::prompt_password("Senha do outro computador: ")?)
+    } else {
+        let mut line = Zeroizing::new(String::new());
+        std::io::stdin().read_line(&mut line)?;
+        // (In place: a copy would stay behind in memory.)
+        let end = line.trim_end_matches(['\r', '\n']).len();
+        line.truncate(end);
+        line
+    };
+    if password.is_empty() {
+        bail!("a senha está vazia");
+    }
+    Ok(Some(password))
+}
+
+/// What to tell the user when a session does not open.
+fn explain(e: SessionError) -> anyhow::Error {
+    let reason = match &e {
+        SessionError::Net(NetError::Rejected(RejectReason::WrongPassword)) => "senha errada".into(),
+        SessionError::Net(NetError::Rejected(RejectReason::LockedOut { seconds })) => format!(
+            "senhas erradas demais: tente de novo em {} min",
+            seconds.div_ceil(60)
+        ),
+        SessionError::Net(NetError::Rejected(RejectReason::Denied)) => {
+            "esse computador não está aceitando a senha agora".into()
+        }
+        _ => return e.into(),
+    };
+    anyhow::anyhow!(reason)
+}
+
 /// Connects to the host: by ID through the server (`--server`), or by IP
-/// with the access code and the host's key. Returns the code to present to
-/// the host.
-async fn open(args: &ViewArgs) -> Result<(Endpoint, Connection, String)> {
+/// with the access code and the host's key. `unattended`: with the password.
+/// Returns the code to present to the host, and this device's key.
+async fn open(
+    args: &ViewArgs,
+    unattended: bool,
+) -> Result<(Endpoint, Connection, String, hext_crypto::PublicKey)> {
     // The arguments first, before any network.
     let target = target(args)?;
+    if unattended && !matches!(target, Target::Id { .. }) {
+        bail!("a senha de acesso não assistido só vale conectando pelo ID");
+    }
     let key = crate::device_key(args.device_key.as_deref())?;
     let (endpoint, connected) = match target {
         Target::Id { id, server } => {
@@ -480,7 +535,8 @@ async fn open(args: &ViewArgs) -> Result<(Endpoint, Connection, String)> {
                 Some(path) => KnownHosts::new(path.with_file_name("known_hosts")),
                 None => KnownHosts::default_location()?,
             };
-            let connected = crate::signaling::connect(client, id, &known, &endpoint).await;
+            let connected =
+                crate::signaling::connect(client, id, &known, &endpoint, unattended).await;
             (endpoint, connected)
         }
         Target::Ip { addr, host, code } => {
@@ -494,7 +550,7 @@ async fn open(args: &ViewArgs) -> Result<(Endpoint, Connection, String)> {
         }
     };
     match connected {
-        Ok((conn, code)) => Ok((endpoint, conn, code)),
+        Ok((conn, code)) => Ok((endpoint, conn, code, key.public_key())),
         Err(e) => {
             endpoint.close().await;
             Err(e)
@@ -553,8 +609,11 @@ async fn headless(
     conn: Connection,
     args: ViewArgs,
     hello: Hello,
+    password: Option<PasswordLogin>,
 ) -> Result<()> {
-    let session = client::start(conn, hello, decoder(args.decoder), |_| {}).await?;
+    let session = client::start(conn, hello, password, decoder(args.decoder), |_| {})
+        .await
+        .map_err(explain)?;
     println!(
         "Conectado a {} ({:?}, v{})",
         session.host.device_name, session.host.os, session.host.app_version

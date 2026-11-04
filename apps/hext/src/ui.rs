@@ -10,7 +10,7 @@
 //! Windows are made when needed: this stays running in every session of
 //! an installed computer, and an idle webview is not cheap.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
@@ -25,9 +25,11 @@ use tauri::{
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::warn;
+use zeroize::Zeroizing;
 
 use crate::agent::{read_msg, write_msg};
-use crate::ui_link::{FromUi, SessionView, ToUi, UiHub, VIEWER_CONNECTED};
+use crate::recent::{Computer, Recent};
+use crate::ui_link::{FromUi, HOST_LOCKED, SessionView, ToUi, UiHub, VIEWER_CONNECTED};
 
 /// Tells the pages to read [`View`] again.
 const CHANGED: &str = "changed";
@@ -56,7 +58,9 @@ struct AskView {
 enum ViewerState {
     #[default]
     Idle,
-    Asking,
+    Asking {
+        locked: bool,
+    },
     Connected,
     Failed {
         message: String,
@@ -71,6 +75,8 @@ struct View {
     ask: Option<AskView>,
     session: Option<SessionView>,
     viewer: ViewerState,
+    /// The computers this one accessed, the latest first.
+    recent: Vec<Computer>,
 }
 
 struct Shared {
@@ -132,7 +138,7 @@ fn open_home(app: &AppHandle) {
         let home = window(&app, "main", "index.html", |builder| {
             builder
                 .title("Hext Remote")
-                .inner_size(420.0, 440.0)
+                .inner_size(420.0, 640.0)
                 .resizable(false)
                 .maximizable(false)
                 .center()
@@ -426,20 +432,30 @@ fn end_session(window: WebviewWindow, shared: State<'_, Shared>) {
     }
 }
 
+/// Connects to computer `id`; with `password`, nobody there needs to accept.
 #[tauri::command]
-fn connect(app: AppHandle, shared: State<'_, Shared>, id: String) -> Result<(), String> {
+fn connect(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+    id: String,
+    password: Option<String>,
+) -> Result<(), String> {
+    let password = password.filter(|p| !p.is_empty()).map(Zeroizing::new);
     let id: DeviceId = id.parse().map_err(|e| format!("{e}"))?;
     {
         let mut view = shared.view.lock().expect("lock");
-        if matches!(view.viewer, ViewerState::Asking | ViewerState::Connected) {
+        if matches!(
+            view.viewer,
+            ViewerState::Asking { .. } | ViewerState::Connected
+        ) {
             return Err("Já existe uma conexão aberta.".into());
         }
         if view.id.as_deref() == Some(id.to_string().as_str()) {
             return Err("Esse é o ID deste computador.".into());
         }
-        view.viewer = ViewerState::Asking;
+        view.viewer = ViewerState::Asking { locked: false };
     }
-    if let Err(e) = open_viewer(app.clone(), id) {
+    if let Err(e) = open_viewer(app.clone(), id, password) {
         let message = format!("Não foi possível abrir a conexão: {e:#}");
         shared.view.lock().expect("lock").viewer = ViewerState::Failed {
             message: message.clone(),
@@ -450,8 +466,29 @@ fn connect(app: AppHandle, shared: State<'_, Shared>, id: String) -> Result<(), 
     Ok(())
 }
 
+/// Takes a computer off the list.
+#[tauri::command]
+fn forget(app: AppHandle, shared: State<'_, Shared>, id: String) {
+    let mut recent = Recent::load();
+    recent.forget(&id);
+    recent.save();
+    shared.view.lock().expect("lock").recent = recent.into_list();
+    changed(&app);
+}
+
+/// A viewer connected to computer `id`, called `name`: on the list it goes.
+fn remember(app: &AppHandle, id: &str, name: &str) {
+    let mut recent = Recent::load();
+    recent.visited(id, name);
+    recent.save();
+    let shared = app.state::<Shared>();
+    let mut view = shared.view.lock().expect("lock");
+    view.viewer = ViewerState::Connected;
+    view.recent = recent.into_list();
+}
+
 /// Opens the viewer, a process of its own (ARCHITECTURE 3.5), and follows it.
-fn open_viewer(app: AppHandle, id: DeviceId) -> Result<()> {
+fn open_viewer(app: AppHandle, id: DeviceId, password: Option<Zeroizing<String>>) -> Result<()> {
     // Not the key the portable host is using: our relay serves one
     // connection per key, so the two would keep knocking each other off.
     let key = hext_crypto::config_dir()?.join("viewer.key");
@@ -462,7 +499,11 @@ fn open_viewer(app: AppHandle, id: DeviceId) -> Result<()> {
         .arg("--device-key")
         .arg(key)
         .arg("--report-to-ui")
-        .stdin(Stdio::null())
+        .stdin(if password.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
@@ -471,7 +512,14 @@ fn open_viewer(app: AppHandle, id: DeviceId) -> Result<()> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
+    if password.is_some() {
+        // Through its input: an argument could be read in the process list.
+        command.arg("--password-stdin");
+    }
     let mut child = command.spawn().context("iniciar o visualizador")?;
+    if let (Some(password), Some(mut stdin)) = (&password, child.stdin.take()) {
+        writeln!(stdin, "{}", password.as_str()).context("passar a senha ao visualizador")?;
+    }
     let stdout = child.stdout.take().context("saída do visualizador")?;
     let stderr = child.stderr.take().context("erros do visualizador")?;
 
@@ -479,13 +527,16 @@ fn open_viewer(app: AppHandle, id: DeviceId) -> Result<()> {
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
-            if line.contains(VIEWER_CONNECTED) {
+            if let Some(name) = line.strip_prefix(VIEWER_CONNECTED) {
+                remember(&connected, &id.to_string(), name.trim());
+                changed(&connected);
+            } else if line == HOST_LOCKED {
                 connected
                     .state::<Shared>()
                     .view
                     .lock()
                     .expect("lock")
-                    .viewer = ViewerState::Connected;
+                    .viewer = ViewerState::Asking { locked: true };
                 changed(&connected);
             }
         }
@@ -542,11 +593,20 @@ pub fn run(link: Link) -> Result<()> {
             }
         }))
         .manage(Shared {
-            view: Mutex::default(),
+            view: Mutex::new(View {
+                recent: Recent::load().into_list(),
+                ..View::default()
+            }),
             to_host,
             managed,
         })
-        .invoke_handler(tauri::generate_handler![view, answer, end_session, connect])
+        .invoke_handler(tauri::generate_handler![
+            view,
+            answer,
+            end_session,
+            connect,
+            forget
+        ])
         .on_window_event(move |window, event| {
             let WindowEvent::CloseRequested { api, .. } = event else {
                 return;
