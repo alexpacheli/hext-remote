@@ -467,7 +467,7 @@ fn show_indicator(
 
 /// (Only the Windows service has an agent.)
 #[cfg(not(windows))]
-fn show_indicator(_shown: &Indicator, _out: mpsc::Sender<FromAgent>) -> Option<()> {
+fn show_indicator(_shown: &Indicator, _out: mpsc::Sender<FromAgent>) -> Option<Box<()>> {
     None
 }
 
