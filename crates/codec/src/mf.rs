@@ -137,6 +137,9 @@ impl Tweaks {
 const MAX_ATTEMPTS: usize = 4;
 
 struct Session {
+    /// The transform's stream numbers.
+    input_id: u32,
+    output_id: u32,
     width: u32,
     height: u32,
     /// The capture's D3D11 device this session was opened for, if any.
@@ -280,6 +283,14 @@ impl MfEncoder {
 
         let fps = self.settings.max_fps.round().max(1.0) as u32;
 
+        // Most transforms number their streams from 0 (and do not say so,
+        // E_NOTIMPL); some do not.
+        let (mut input_ids, mut output_ids) = ([0u32], [0u32]);
+        if unsafe { transform.GetStreamIDs(&mut input_ids, &mut output_ids) }.is_err() {
+            (input_ids, output_ids) = ([0], [0]);
+        }
+        let (input_id, output_id) = (input_ids[0], output_ids[0]);
+
         // An async transform refuses every message until unlocked.
         unsafe {
             let attributes = transform
@@ -357,7 +368,7 @@ impl MfEncoder {
                     .map_err(|e| hw("profile", e))?;
             }
             transform
-                .SetOutputType(0, &output, 0)
+                .SetOutputType(output_id, &output, 0)
                 .map_err(|e| hw("SetOutputType", e))?;
 
             let input = video_type(&MFVideoFormat_NV12, width, height, fps)?;
@@ -365,7 +376,7 @@ impl MfEncoder {
                 .SetUINT32(&MF_MT_DEFAULT_STRIDE, width)
                 .map_err(|e| hw("stride", e))?;
             transform
-                .SetInputType(0, &input, 0)
+                .SetInputType(input_id, &input, 0)
                 .map_err(|e| hw("SetInputType (NV12)", e))?;
 
             transform
@@ -376,7 +387,13 @@ impl MfEncoder {
                 .map_err(|e| hw("start of stream", e))?;
         }
 
-        let info = unsafe { transform.GetOutputStreamInfo(0) }.map_err(|e| hw("stream info", e))?;
+        let info = unsafe { transform.GetOutputStreamInfo(output_id) }
+            .map_err(|e| hw("stream info", e))?;
+        tracing::info!(
+            "streams: entrada {input_id}, saída {output_id} (flags {:#x}, {} bytes)",
+            info.dwFlags,
+            info.cbSize
+        );
         let provides =
             (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0) as u32;
         let events: IMFMediaEventGenerator =
@@ -388,6 +405,8 @@ impl MfEncoder {
         }
         .into();
         let mut session = Session {
+            input_id,
+            output_id,
             width,
             height,
             device: device.cloned(),
@@ -553,7 +572,8 @@ impl Session {
         while self.need_input == 0 || (self.gpu_input && self.in_flight >= MAX_TEXTURES_IN_FLIGHT) {
             merge(&mut ready, self.next_event(deadline)?);
         }
-        unsafe { self.transform.ProcessInput(0, sample, 0) }.map_err(|e| hw("ProcessInput", e))?;
+        unsafe { self.transform.ProcessInput(self.input_id, sample, 0) }
+            .map_err(|e| hw("ProcessInput", e))?;
         self.need_input -= 1;
         self.in_flight += 1;
 
@@ -667,7 +687,7 @@ impl Session {
                 Some(empty_sample(self.output_size)?)
             };
             let mut buffer = MFT_OUTPUT_DATA_BUFFER {
-                dwStreamID: 0,
+                dwStreamID: self.output_id,
                 pSample: ManuallyDrop::new(provided),
                 dwStatus: 0,
                 pEvents: ManuallyDrop::new(None),
@@ -690,10 +710,10 @@ impl Session {
                 Err(e) if e.code() == MF_E_TRANSFORM_STREAM_CHANGE => unsafe {
                     let new_type = self
                         .transform
-                        .GetOutputAvailableType(0, 0)
+                        .GetOutputAvailableType(self.output_id, 0)
                         .map_err(|e| hw("new output type", e))?;
                     self.transform
-                        .SetOutputType(0, &new_type, 0)
+                        .SetOutputType(self.output_id, &new_type, 0)
                         .map_err(|e| hw("SetOutputType after change", e))?;
                     self.refresh_sequence_header();
                 },
@@ -731,7 +751,7 @@ impl Session {
     }
 
     fn refresh_sequence_header(&mut self) {
-        self.sequence_header = unsafe { self.transform.GetOutputCurrentType(0) }
+        self.sequence_header = unsafe { self.transform.GetOutputCurrentType(self.output_id) }
             .ok()
             .and_then(|t| blob(&t, &MF_MT_MPEG_SEQUENCE_HEADER))
             .unwrap_or_default();
@@ -1111,11 +1131,18 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
     };
     let mut results = Vec::new();
     for name in &names {
-        for (variant, tweaks) in [
-            ("memória, todas as configurações", Tweaks::ALL),
-            ("memória, nenhuma opcional", none),
+        for (variant, tweaks, (w, h)) in [
+            (
+                "memória, todas as configurações",
+                Tweaks::ALL,
+                (width, height),
+            ),
+            ("memória, nenhuma opcional", none, (width, height)),
+            // Encoders work in 16-line blocks: 1080 is not a multiple.
+            ("memória, 1920x1088", Tweaks::ALL, (1920, 1088)),
+            ("memória, 1280x720", Tweaks::ALL, (1280, 720)),
         ] {
-            let result = probe_one(settings, name, None, Feed::Memory(tweaks), width, height);
+            let result = probe_one(settings, name, None, Feed::Memory(tweaks), w, h);
             results.push(ProbeResult {
                 encoder: name.clone(),
                 variant: variant.into(),
