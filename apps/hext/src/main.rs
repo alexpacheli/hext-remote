@@ -74,6 +74,9 @@ enum Command {
     View(ViewArgs),
     /// Mede o tempo de codificação de vídeo com uma imagem da tela (macOS).
     Bench(BenchArgs),
+    /// Testa os codificadores de vídeo da GPU com várias configurações
+    /// (diagnóstico, Windows).
+    Encoders,
     /// Instala o Hext Remote como serviço do Windows: online com o ID deste
     /// computador desde o boot, antes de alguém entrar.
     Service {
@@ -248,6 +251,7 @@ fn main() -> Result<()> {
         Command::Host(args) => tokio::runtime::Runtime::new()?.block_on(host::run(args)),
         Command::View(args) => viewer::run(args),
         Command::Bench(args) => bench::run(&args),
+        Command::Encoders => bench::encoders(),
         Command::Service { action } => service::command(action),
         Command::Agent { pipe } => service::agent(&pipe),
     }

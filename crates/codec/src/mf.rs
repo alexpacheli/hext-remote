@@ -101,6 +101,33 @@ pub struct MfEncoder {
     tried_gpu_input: bool,
     /// Encoders that failed even through memory: the next ones are tried.
     failed: Vec<String>,
+    /// Which settings to give the encoder (all, normally; fewer when
+    /// probing what a driver accepts).
+    tweaks: Tweaks,
+    /// Only this encoder (probing).
+    only: Option<String>,
+}
+
+/// The optional encoder settings, each of which a driver may refuse.
+#[derive(Debug, Clone, Copy)]
+pub struct Tweaks {
+    /// `MF_LOW_LATENCY` and `CODECAPI_AVLowLatencyMode`.
+    pub low_latency: bool,
+    /// Constant bit rate at the configured rate.
+    pub rate_control: bool,
+    /// A long GOP and no B frames.
+    pub gop: bool,
+    /// Baseline profile asked for in the output type.
+    pub profile: bool,
+}
+
+impl Tweaks {
+    pub const ALL: Self = Self {
+        low_latency: true,
+        rate_control: true,
+        gop: true,
+        profile: true,
+    };
 }
 
 /// How many times one image is retried on another way to encode it
@@ -171,6 +198,8 @@ impl MfEncoder {
             zero_copy_failed: Vec::new(),
             tried_gpu_input: false,
             failed: Vec::new(),
+            tweaks: Tweaks::ALL,
+            only: None,
         })
     }
 
@@ -221,8 +250,10 @@ impl MfEncoder {
         // An encoder on the capture's adapter, or else any (fed from
         // memory); none that already failed.
         let usable = |list: Vec<IMFActivate>| {
-            list.into_iter()
-                .find(|a| !self.failed.contains(&friendly_name(a)))
+            list.into_iter().find(|a| {
+                let name = friendly_name(a);
+                !self.failed.contains(&name) && self.only.as_ref().is_none_or(|only| *only == name)
+            })
         };
         let on_adapter = device.and_then(|device| {
             enumerate(Some(device))
@@ -254,7 +285,9 @@ impl MfEncoder {
             attributes
                 .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
                 .map_err(|e| hw("async unlock", e))?;
-            let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
+            if self.tweaks.low_latency {
+                let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
+            }
         }
 
         // The device goes in before the media types.
@@ -283,23 +316,30 @@ impl MfEncoder {
         // Encoder settings are best effort: drivers support different subsets.
         let codec: Option<ICodecAPI> = transform.cast().ok();
         if let Some(codec) = &codec {
-            set(codec, &CODECAPI_AVLowLatencyMode, bool_variant());
-            set(
-                codec,
-                &CODECAPI_AVEncCommonRateControlMode,
-                u32_variant(eAVEncCommonRateControlMode_CBR.0 as u32),
-            );
-            set(
-                codec,
-                &CODECAPI_AVEncCommonMeanBitRate,
-                u32_variant(self.settings.bitrate_bps),
-            );
-            set(codec, &CODECAPI_AVEncMPVGOPSize, u32_variant(GOP_FRAMES));
-            set(
-                codec,
-                &CODECAPI_AVEncMPVDefaultBPictureCount,
-                u32_variant(0),
-            );
+            let tweaks = self.tweaks;
+            if tweaks.low_latency {
+                set(codec, &CODECAPI_AVLowLatencyMode, bool_variant());
+            }
+            if tweaks.rate_control {
+                set(
+                    codec,
+                    &CODECAPI_AVEncCommonRateControlMode,
+                    u32_variant(eAVEncCommonRateControlMode_CBR.0 as u32),
+                );
+                set(
+                    codec,
+                    &CODECAPI_AVEncCommonMeanBitRate,
+                    u32_variant(self.settings.bitrate_bps),
+                );
+            }
+            if tweaks.gop {
+                set(codec, &CODECAPI_AVEncMPVGOPSize, u32_variant(GOP_FRAMES));
+                set(
+                    codec,
+                    &CODECAPI_AVEncMPVDefaultBPictureCount,
+                    u32_variant(0),
+                );
+            }
         }
 
         // Encoders want the output type before the input type.
@@ -308,9 +348,11 @@ impl MfEncoder {
             output
                 .SetUINT32(&MF_MT_AVG_BITRATE, self.settings.bitrate_bps)
                 .map_err(|e| hw("bitrate", e))?;
-            output
-                .SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base.0 as u32)
-                .map_err(|e| hw("profile", e))?;
+            if self.tweaks.profile {
+                output
+                    .SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base.0 as u32)
+                    .map_err(|e| hw("profile", e))?;
+            }
             transform
                 .SetOutputType(0, &output, 0)
                 .map_err(|e| hw("SetOutputType", e))?;
@@ -1019,4 +1061,117 @@ pub(crate) fn bool_variant() -> VARIANT {
             boolVal: VARIANT_TRUE,
         },
     )
+}
+
+/// How one encoder did with one set of settings (see [`probe`]).
+#[derive(Debug)]
+pub struct ProbeResult {
+    pub encoder: String,
+    pub variant: &'static str,
+    /// Frames out and the time per frame, or the error.
+    pub result: Result<String, String>,
+}
+
+/// Tries every hardware H.264 encoder with fewer and fewer of the optional
+/// settings, encoding a few synthetic frames from memory: which ones a
+/// driver accepts (to diagnose a machine where none works).
+pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
+    const FRAMES: usize = 30;
+    let variants: [(&'static str, Tweaks); 6] = [
+        ("todas as configurações", Tweaks::ALL),
+        (
+            "sem baixa latência",
+            Tweaks {
+                low_latency: false,
+                ..Tweaks::ALL
+            },
+        ),
+        (
+            "sem controle de bitrate",
+            Tweaks {
+                rate_control: false,
+                ..Tweaks::ALL
+            },
+        ),
+        (
+            "sem GOP/B-frames",
+            Tweaks {
+                gop: false,
+                ..Tweaks::ALL
+            },
+        ),
+        (
+            "sem perfil no tipo",
+            Tweaks {
+                profile: false,
+                ..Tweaks::ALL
+            },
+        ),
+        (
+            "nenhuma opcional",
+            Tweaks {
+                low_latency: false,
+                rate_control: false,
+                gop: false,
+                profile: false,
+            },
+        ),
+    ];
+    let settings = crate::EncoderSettings::default();
+    // Started here so the enumeration below can run.
+    let first = MfEncoder::new(settings)?;
+    let names: Vec<String> = enumerate(None)?.iter().map(friendly_name).collect();
+    drop(first);
+
+    // A moving gradient, so every frame has something to encode.
+    let pixels = width as usize * height as usize;
+    let frame = |n: usize| -> Vec<u8> {
+        let mut data = vec![128u8; pixels * 3 / 2];
+        for (i, y) in data[..pixels].iter_mut().enumerate() {
+            *y = ((i % width as usize + n * 8) % 256) as u8;
+        }
+        data
+    };
+    let mut results = Vec::new();
+    for name in &names {
+        for (variant, tweaks) in variants {
+            let mut encoder = MfEncoder::new(settings)?;
+            encoder.tweaks = tweaks;
+            encoder.only = Some(name.clone());
+            let started = std::time::Instant::now();
+            let mut out = 0;
+            let mut error = None;
+            for n in 0..FRAMES {
+                let data = frame(n);
+                let image = Image {
+                    width,
+                    height,
+                    format: PixelFormat::Nv12,
+                    pixels: Pixels::Memory(&data),
+                };
+                match encoder.encode(&image) {
+                    Ok(Some(_)) => out += 1,
+                    Ok(None) => {}
+                    Err(e) => {
+                        error = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            let result = match error {
+                Some(e) => Err(e),
+                None if out == 0 => Err("nenhum quadro saiu".into()),
+                None => Ok(format!(
+                    "{out}/{FRAMES} quadros, {:.1} ms por quadro",
+                    started.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64
+                )),
+            };
+            results.push(ProbeResult {
+                encoder: name.clone(),
+                variant,
+                result,
+            });
+        }
+    }
+    Ok(results)
 }
