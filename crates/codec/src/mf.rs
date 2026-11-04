@@ -170,6 +170,8 @@ struct Session {
     need_input: u32,
     /// The transform allocates output samples itself.
     provides_samples: bool,
+    /// Gives the transform output samples even if it would provide them.
+    own_output_sample: bool,
     output_size: u32,
     /// Inputs given to the transform whose output has not come back yet.
     in_flight: u32,
@@ -443,6 +445,7 @@ impl MfEncoder {
             codec,
             need_input: 0,
             provides_samples: info.dwFlags & provides != 0 && !self.tweaks.own_output_sample,
+            own_output_sample: self.tweaks.own_output_sample,
             output_size: info.cbSize.max(width * height * 3 / 2),
             in_flight: 0,
             draining: false,
@@ -730,7 +733,7 @@ impl Session {
         let mut sample = None;
         // A format change is answered by accepting the new type and asking for
         // the same output again; it is not announced a second time.
-        for _ in 0..3 {
+        for _ in 0..6 {
             let provided = if self.provides_samples {
                 None
             } else {
@@ -766,6 +769,22 @@ impl Session {
                         .SetOutputType(self.output_id, &new_type, 0)
                         .map_err(|e| hw("SetOutputType after change", e))?;
                     self.refresh_sequence_header();
+                    // The new type may come with other output buffers (who
+                    // provides them, how big): ask again, as FFmpeg does.
+                    let info = self
+                        .transform
+                        .GetOutputStreamInfo(self.output_id)
+                        .map_err(|e| hw("stream info after change", e))?;
+                    tracing::info!(
+                        "formato de saída mudou (flags {:#x}, {} bytes)",
+                        info.dwFlags,
+                        info.cbSize
+                    );
+                    let provides = (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0
+                        | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0)
+                        as u32;
+                    self.provides_samples = info.dwFlags & provides != 0 && !self.own_output_sample;
+                    self.output_size = info.cbSize.max(self.width * self.height * 3 / 2);
                 },
                 Err(e) => {
                     let context = format!(
