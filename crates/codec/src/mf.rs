@@ -121,6 +121,9 @@ pub struct Tweaks {
     pub gop: bool,
     /// Baseline profile asked for in the output type.
     pub profile: bool,
+    /// Media types taken from those the transform offers, then filled in,
+    /// instead of made from scratch.
+    pub offered_types: bool,
 }
 
 impl Tweaks {
@@ -129,6 +132,7 @@ impl Tweaks {
         rate_control: true,
         gop: true,
         profile: true,
+        offered_types: false,
     };
 }
 
@@ -358,7 +362,12 @@ impl MfEncoder {
 
         // Encoders want the output type before the input type.
         unsafe {
-            let output = video_type(&MFVideoFormat_H264, width, height, fps)?;
+            let output = if self.tweaks.offered_types {
+                offered_type(&transform, output_id, true, &MFVideoFormat_H264)?
+            } else {
+                MFCreateMediaType().map_err(|e| hw("MFCreateMediaType", e))?
+            };
+            fill_video_type(&output, &MFVideoFormat_H264, width, height, fps)?;
             output
                 .SetUINT32(&MF_MT_AVG_BITRATE, self.settings.bitrate_bps)
                 .map_err(|e| hw("bitrate", e))?;
@@ -371,7 +380,12 @@ impl MfEncoder {
                 .SetOutputType(output_id, &output, 0)
                 .map_err(|e| hw("SetOutputType", e))?;
 
-            let input = video_type(&MFVideoFormat_NV12, width, height, fps)?;
+            let input = if self.tweaks.offered_types {
+                offered_type(&transform, input_id, false, &MFVideoFormat_NV12)?
+            } else {
+                MFCreateMediaType().map_err(|e| hw("MFCreateMediaType", e))?
+            };
+            fill_video_type(&input, &MFVideoFormat_NV12, width, height, fps)?;
             input
                 .SetUINT32(&MF_MT_DEFAULT_STRIDE, width)
                 .map_err(|e| hw("stride", e))?;
@@ -717,7 +731,13 @@ impl Session {
                         .map_err(|e| hw("SetOutputType after change", e))?;
                     self.refresh_sequence_header();
                 },
-                Err(e) => return Err(hw("ProcessOutput", e)),
+                Err(e) => {
+                    let context = format!(
+                        "ProcessOutput ({} na fila, {} pedidos)",
+                        self.in_flight, self.need_input
+                    );
+                    return Err(hw(&context, e));
+                }
             }
         }
         let Some(sample) = sample else {
@@ -914,14 +934,44 @@ fn friendly_name(activate: &IMFActivate) -> String {
     }
 }
 
-fn video_type(
+/// The first type of `subtype` the transform offers on a stream (input or
+/// output), to be filled in: what some drivers need, instead of a type
+/// made from scratch.
+fn offered_type(
+    transform: &IMFTransform,
+    stream: u32,
+    output: bool,
+    subtype: &GUID,
+) -> Result<IMFMediaType, CodecError> {
+    for index in 0..64 {
+        let offered = unsafe {
+            if output {
+                transform.GetOutputAvailableType(stream, index)
+            } else {
+                transform.GetInputAvailableType(stream, index)
+            }
+        };
+        let Ok(offered) = offered else { break };
+        if unsafe { offered.GetGUID(&MF_MT_SUBTYPE) }.is_ok_and(|g| g == *subtype) {
+            return Ok(offered);
+        }
+    }
+    Err(CodecError::Hardware(format!(
+        "o encoder não oferece o tipo {subtype:?} ({})",
+        if output { "saída" } else { "entrada" }
+    )))
+}
+
+/// Sets what a video type needs: `subtype`, size, frame rate, square
+/// pixels, progressive.
+fn fill_video_type(
+    media_type: &IMFMediaType,
     subtype: &GUID,
     width: u32,
     height: u32,
     fps: u32,
-) -> Result<IMFMediaType, CodecError> {
+) -> Result<(), CodecError> {
     unsafe {
-        let media_type = MFCreateMediaType().map_err(|e| hw("MFCreateMediaType", e))?;
         let set = |r: windows::core::Result<()>, what| r.map_err(|e| hw(what, e));
         set(
             media_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video),
@@ -947,7 +997,7 @@ fn video_type(
             media_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32),
             "interlace mode",
         )?;
-        Ok(media_type)
+        Ok(())
     }
 }
 
@@ -1098,8 +1148,8 @@ pub struct ProbeResult {
 /// How a probe feeds the encoder.
 #[derive(Clone, Copy)]
 enum Feed {
-    /// From memory, with the optional settings given.
-    Memory(Tweaks),
+    /// From memory.
+    Memory,
     /// From memory, with a device of the adapter attached.
     MemoryWithDevice,
     /// NV12 textures of the adapter, with these bind flags.
@@ -1128,6 +1178,11 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
         rate_control: false,
         gop: false,
         profile: false,
+        offered_types: false,
+    };
+    let offered = Tweaks {
+        offered_types: true,
+        ..Tweaks::ALL
     };
     let mut results = Vec::new();
     for name in &names {
@@ -1141,8 +1196,17 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
             // Encoders work in 16-line blocks: 1080 is not a multiple.
             ("memória, 1920x1088", Tweaks::ALL, (1920, 1088)),
             ("memória, 1280x720", Tweaks::ALL, (1280, 720)),
+            ("memória, tipos do encoder", offered, (width, height)),
+            (
+                "memória, tipos do encoder, mínimo",
+                Tweaks {
+                    offered_types: true,
+                    ..none
+                },
+                (width, height),
+            ),
         ] {
-            let result = probe_one(settings, name, None, Feed::Memory(tweaks), w, h);
+            let result = probe_one(settings, name, None, Feed::Memory, tweaks, w, h);
             results.push(ProbeResult {
                 encoder: name.clone(),
                 variant: variant.into(),
@@ -1173,12 +1237,25 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
             });
         }
         for name in on_adapter {
-            for (variant, feed) in [
-                ("memória + dispositivo anexado", Feed::MemoryWithDevice),
-                ("textura (shader/render)", Feed::Texture(shader)),
-                ("textura (video encoder)", Feed::Texture(encoder_bind)),
+            for (variant, feed, tweaks) in [
+                (
+                    "memória + dispositivo anexado",
+                    Feed::MemoryWithDevice,
+                    Tweaks::ALL,
+                ),
+                (
+                    "textura (shader/render)",
+                    Feed::Texture(shader),
+                    Tweaks::ALL,
+                ),
+                (
+                    "textura (video encoder)",
+                    Feed::Texture(encoder_bind),
+                    Tweaks::ALL,
+                ),
+                ("textura, tipos do encoder", Feed::Texture(shader), offered),
             ] {
-                let result = probe_one(settings, &name, Some(&device), feed, width, height);
+                let result = probe_one(settings, &name, Some(&device), feed, tweaks, width, height);
                 results.push(ProbeResult {
                     encoder: format!("{name} na placa {adapter}"),
                     variant: variant.into(),
@@ -1248,16 +1325,16 @@ fn probe_one(
     name: &str,
     device: Option<&ID3D11Device>,
     feed: Feed,
+    tweaks: Tweaks,
     width: u32,
     height: u32,
 ) -> Result<String, String> {
     const FRAMES: usize = 30;
     let mut encoder = MfEncoder::new(settings).map_err(|e| e.to_string())?;
     encoder.only = Some(name.to_owned());
-    match feed {
-        Feed::Memory(tweaks) => encoder.tweaks = tweaks,
-        Feed::MemoryWithDevice => encoder.memory_device = device.cloned(),
-        Feed::Texture(_) => {}
+    encoder.tweaks = tweaks;
+    if let Feed::MemoryWithDevice = feed {
+        encoder.memory_device = device.cloned();
     }
     // A moving gradient, so every frame has something to encode.
     let pixels = width as usize * height as usize;
