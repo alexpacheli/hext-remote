@@ -106,6 +106,8 @@ pub struct MfEncoder {
     tweaks: Tweaks,
     /// Only this encoder (probing).
     only: Option<String>,
+    /// Memory images go with this device attached (probing).
+    memory_device: Option<ID3D11Device>,
 }
 
 /// The optional encoder settings, each of which a driver may refuse.
@@ -200,6 +202,7 @@ impl MfEncoder {
             failed: Vec::new(),
             tweaks: Tweaks::ALL,
             only: None,
+            memory_device: None,
         })
     }
 
@@ -417,7 +420,7 @@ impl VideoEncoder for MfEncoder {
             Pixels::D3d11(texture) => {
                 Some(unsafe { texture.GetDevice() }.map_err(|e| hw("GetDevice", e))?)
             }
-            Pixels::Memory(_) => None,
+            Pixels::Memory(_) => self.memory_device.clone(),
         };
         let mut first_error = None;
         for _ in 0..MAX_ATTEMPTS {
@@ -1063,66 +1066,172 @@ pub(crate) fn bool_variant() -> VARIANT {
     )
 }
 
-/// How one encoder did with one set of settings (see [`probe`]).
+/// How one encoder did one way (see [`probe`]).
 #[derive(Debug)]
 pub struct ProbeResult {
     pub encoder: String,
-    pub variant: &'static str,
+    pub variant: String,
     /// Frames out and the time per frame, or the error.
     pub result: Result<String, String>,
 }
 
-/// Tries every hardware H.264 encoder with fewer and fewer of the optional
-/// settings, encoding a few synthetic frames from memory: which ones a
-/// driver accepts (to diagnose a machine where none works).
+/// How a probe feeds the encoder.
+#[derive(Clone, Copy)]
+enum Feed {
+    /// From memory, with the optional settings given.
+    Memory(Tweaks),
+    /// From memory, with a device of the adapter attached.
+    MemoryWithDevice,
+    /// NV12 textures of the adapter, with these bind flags.
+    Texture(u32),
+}
+
+/// Tries every hardware H.264 encoder several ways, encoding a few
+/// synthetic frames: what a driver accepts, to diagnose a machine where
+/// none works. First enumerated as a whole (as encoding starts out), then
+/// adapter by adapter, with a device of that adapter.
 pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
-    const FRAMES: usize = 30;
-    let variants: [(&'static str, Tweaks); 6] = [
-        ("todas as configurações", Tweaks::ALL),
-        (
-            "sem baixa latência",
-            Tweaks {
-                low_latency: false,
-                ..Tweaks::ALL
-            },
-        ),
-        (
-            "sem controle de bitrate",
-            Tweaks {
-                rate_control: false,
-                ..Tweaks::ALL
-            },
-        ),
-        (
-            "sem GOP/B-frames",
-            Tweaks {
-                gop: false,
-                ..Tweaks::ALL
-            },
-        ),
-        (
-            "sem perfil no tipo",
-            Tweaks {
-                profile: false,
-                ..Tweaks::ALL
-            },
-        ),
-        (
-            "nenhuma opcional",
-            Tweaks {
-                low_latency: false,
-                rate_control: false,
-                gop: false,
-                profile: false,
-            },
-        ),
-    ];
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_VIDEO_ENCODER,
+    };
+
     let settings = crate::EncoderSettings::default();
     // Started here so the enumeration below can run.
     let first = MfEncoder::new(settings)?;
-    let names: Vec<String> = enumerate(None)?.iter().map(friendly_name).collect();
+    let mut names: Vec<String> = enumerate(None)?.iter().map(friendly_name).collect();
+    names.dedup();
+    let adapters = adapters();
     drop(first);
 
+    let none = Tweaks {
+        low_latency: false,
+        rate_control: false,
+        gop: false,
+        profile: false,
+    };
+    let mut results = Vec::new();
+    for name in &names {
+        for (variant, tweaks) in [
+            ("memória, todas as configurações", Tweaks::ALL),
+            ("memória, nenhuma opcional", none),
+        ] {
+            let result = probe_one(settings, name, None, Feed::Memory(tweaks), width, height);
+            results.push(ProbeResult {
+                encoder: name.clone(),
+                variant: variant.into(),
+                result,
+            });
+        }
+    }
+    let shader = (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32;
+    let encoder_bind = D3D11_BIND_VIDEO_ENCODER.0 as u32;
+    for (adapter, device) in adapters {
+        let mut on_adapter: Vec<String> = match enumerate(Some(&device)) {
+            Ok(list) => list.iter().map(friendly_name).collect(),
+            Err(e) => {
+                results.push(ProbeResult {
+                    encoder: format!("(placa {adapter})"),
+                    variant: "listar codificadores".into(),
+                    result: Err(e.to_string()),
+                });
+                continue;
+            }
+        };
+        on_adapter.dedup();
+        if on_adapter.is_empty() {
+            results.push(ProbeResult {
+                encoder: format!("(placa {adapter})"),
+                variant: "listar codificadores".into(),
+                result: Err("nenhum codificador nesta placa".into()),
+            });
+        }
+        for name in on_adapter {
+            for (variant, feed) in [
+                ("memória + dispositivo anexado", Feed::MemoryWithDevice),
+                ("textura (shader/render)", Feed::Texture(shader)),
+                ("textura (video encoder)", Feed::Texture(encoder_bind)),
+            ] {
+                let result = probe_one(settings, &name, Some(&device), feed, width, height);
+                results.push(ProbeResult {
+                    encoder: format!("{name} na placa {adapter}"),
+                    variant: variant.into(),
+                    result,
+                });
+            }
+        }
+    }
+    Ok(results)
+}
+
+/// Every hardware adapter, with a device on it (video support).
+fn adapters() -> Vec<(String, ID3D11Device)> {
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
+        D3D11CreateDevice, ID3D11Multithread,
+    };
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
+    };
+
+    let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for a in 0.. {
+        let Ok(adapter) = (unsafe { factory.EnumAdapters1(a) }) else {
+            break;
+        };
+        let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
+            continue;
+        };
+        if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+            continue;
+        }
+        let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(128);
+        let name = String::from_utf16_lossy(&desc.Description[..len]);
+        let mut device = None;
+        let created = unsafe {
+            D3D11CreateDevice(
+                &adapter,
+                D3D_DRIVER_TYPE_UNKNOWN,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+        };
+        if let (Ok(()), Some(device)) = (created, device) {
+            if let Ok(multithread) = device.cast::<ID3D11Multithread>() {
+                let _ = unsafe { multithread.SetMultithreadProtected(true) };
+            }
+            found.push((name, device));
+        }
+    }
+    found
+}
+
+/// Encodes 30 synthetic frames with encoder `name`, fed as `feed`.
+fn probe_one(
+    settings: EncoderSettings,
+    name: &str,
+    device: Option<&ID3D11Device>,
+    feed: Feed,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
+    const FRAMES: usize = 30;
+    let mut encoder = MfEncoder::new(settings).map_err(|e| e.to_string())?;
+    encoder.only = Some(name.to_owned());
+    match feed {
+        Feed::Memory(tweaks) => encoder.tweaks = tweaks,
+        Feed::MemoryWithDevice => encoder.memory_device = device.cloned(),
+        Feed::Texture(_) => {}
+    }
     // A moving gradient, so every frame has something to encode.
     let pixels = width as usize * height as usize;
     let frame = |n: usize| -> Vec<u8> {
@@ -1132,46 +1241,76 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
         }
         data
     };
-    let mut results = Vec::new();
-    for name in &names {
-        for (variant, tweaks) in variants {
-            let mut encoder = MfEncoder::new(settings)?;
-            encoder.tweaks = tweaks;
-            encoder.only = Some(name.clone());
-            let started = std::time::Instant::now();
-            let mut out = 0;
-            let mut error = None;
-            for n in 0..FRAMES {
-                let data = frame(n);
-                let image = Image {
-                    width,
-                    height,
-                    format: PixelFormat::Nv12,
-                    pixels: Pixels::Memory(&data),
-                };
-                match encoder.encode(&image) {
-                    Ok(Some(_)) => out += 1,
-                    Ok(None) => {}
-                    Err(e) => {
-                        error = Some(e.to_string());
-                        break;
-                    }
-                }
+    let started = std::time::Instant::now();
+    let mut out = 0;
+    for n in 0..FRAMES {
+        let data = frame(n);
+        let texture;
+        let pixels = match (feed, device) {
+            (Feed::Texture(bind), Some(device)) => {
+                texture = nv12_texture(device, width, height, bind, &data)?;
+                Pixels::D3d11(&texture)
             }
-            let result = match error {
-                Some(e) => Err(e),
-                None if out == 0 => Err("nenhum quadro saiu".into()),
-                None => Ok(format!(
-                    "{out}/{FRAMES} quadros, {:.1} ms por quadro",
-                    started.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64
-                )),
-            };
-            results.push(ProbeResult {
-                encoder: name.clone(),
-                variant,
-                result,
-            });
+            _ => Pixels::Memory(&data),
+        };
+        let image = Image {
+            width,
+            height,
+            format: PixelFormat::Nv12,
+            pixels,
+        };
+        match encoder.encode(&image) {
+            Ok(Some(_)) => out += 1,
+            Ok(None) => {}
+            Err(e) => return Err(e.to_string()),
         }
     }
-    Ok(results)
+    if out == 0 {
+        return Err("nenhum quadro saiu".into());
+    }
+    let zero_copy = encoder.session.as_ref().is_some_and(|s| s.gpu_input);
+    Ok(format!(
+        "{out}/{FRAMES} quadros, {:.1} ms por quadro{}",
+        started.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64,
+        if zero_copy { ", zero-copy" } else { "" }
+    ))
+}
+
+/// An NV12 texture on `device` holding `data`.
+fn nv12_texture(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+    bind: u32,
+    data: &[u8],
+) -> Result<ID3D11Texture2D, String> {
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC};
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_NV12,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: bind,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    // NV12 initial data: the Y plane, then the UV plane, same pitch.
+    let initial = D3D11_SUBRESOURCE_DATA {
+        pSysMem: data.as_ptr().cast(),
+        SysMemPitch: width,
+        SysMemSlicePitch: 0,
+    };
+    let mut texture = None;
+    unsafe { device.CreateTexture2D(&desc, Some(&initial), Some(&mut texture)) }
+        .map_err(|e| format!("criar textura NV12: {e}"))?;
+    texture.ok_or_else(|| "criar textura NV12".to_owned())
 }

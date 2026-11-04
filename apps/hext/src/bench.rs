@@ -92,7 +92,7 @@ pub fn run(_args: &BenchArgs) -> Result<()> {
 #[cfg(windows)]
 pub fn encoders() -> Result<()> {
     let (width, height) = (1920, 1080);
-    println!("Testando os codificadores da GPU com {width}x{height}, a partir da memória...\n");
+    println!("Testando os codificadores da GPU com {width}x{height}...\n");
     let results = hext_codec::probe_hardware_encoders(width, height)?;
     if results.is_empty() {
         println!("Nenhum codificador H.264 da GPU encontrado.");
@@ -104,8 +104,8 @@ pub fn encoders() -> Result<()> {
             last = r.encoder.clone();
         }
         match r.result {
-            Ok(ok) => println!("  ok     {:<26} {ok}", r.variant),
-            Err(e) => println!("  FALHA  {:<26} {e}", r.variant),
+            Ok(ok) => println!("  ok     {:<32} {ok}", r.variant),
+            Err(e) => println!("  FALHA  {:<32} {e}", r.variant),
         }
     }
     Ok(())
