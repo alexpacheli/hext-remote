@@ -86,3 +86,32 @@ pub fn run(args: &BenchArgs) -> Result<()> {
 pub fn run(_args: &BenchArgs) -> Result<()> {
     anyhow::bail!("o benchmark de codificação ainda só existe no macOS")
 }
+
+/// `encoders`: which of this machine's GPU encoders work, and with which
+/// optional settings (to diagnose one that falls back to the CPU).
+#[cfg(windows)]
+pub fn encoders() -> Result<()> {
+    let (width, height) = (1920, 1080);
+    println!("Testando os codificadores da GPU com {width}x{height}...\n");
+    let results = hext_codec::probe_hardware_encoders(width, height)?;
+    if results.is_empty() {
+        println!("Nenhum codificador H.264 da GPU encontrado.");
+    }
+    let mut last = String::new();
+    for r in results {
+        if r.encoder != last {
+            println!("{}", r.encoder);
+            last = r.encoder.clone();
+        }
+        match r.result {
+            Ok(ok) => println!("  ok     {:<32} {ok}", r.variant),
+            Err(e) => println!("  FALHA  {:<32} {e}", r.variant),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn encoders() -> Result<()> {
+    anyhow::bail!("por enquanto só no Windows")
+}

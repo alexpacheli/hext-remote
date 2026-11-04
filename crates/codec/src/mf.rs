@@ -28,12 +28,13 @@ use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
     CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate,
     IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown, IMFTransform,
-    METransformHaveOutput, METransformNeedInput, MF_E_TRANSFORM_NEED_MORE_INPUT,
-    MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY, MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE,
-    MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-    MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
-    MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-    MFMediaType_Video, MFSTARTUP_FULL, MFSampleExtension_CleanPoint, MFShutdown, MFStartup,
+    METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
+    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY,
+    MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE,
+    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
+    MFCreateAlignedMemoryBuffer, MFCreateMediaType, MFCreateSample, MFMediaType_Video,
+    MFSTARTUP_FULL, MFSampleExtension_CleanPoint, MFShutdown, MFStartup,
     MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
     MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
     MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
@@ -101,13 +102,59 @@ pub struct MfEncoder {
     tried_gpu_input: bool,
     /// Encoders that failed even through memory: the next ones are tried.
     failed: Vec<String>,
+    /// Which settings to give the encoder (all, normally; fewer when
+    /// probing what a driver accepts).
+    tweaks: Tweaks,
+    /// Only this encoder (probing).
+    only: Option<String>,
+    /// Memory images go with this device attached (probing).
+    memory_device: Option<ID3D11Device>,
 }
+
+/// The optional encoder settings, each of which a driver may refuse.
+#[derive(Debug, Clone, Copy)]
+pub struct Tweaks {
+    /// `MF_LOW_LATENCY` and `CODECAPI_AVLowLatencyMode`.
+    pub low_latency: bool,
+    /// Constant bit rate at the configured rate.
+    pub rate_control: bool,
+    /// A long GOP and no B frames.
+    pub gop: bool,
+    /// Baseline profile asked for in the output type.
+    pub profile: bool,
+    /// Media types taken from those the transform offers, then filled in,
+    /// instead of made from scratch.
+    pub offered_types: bool,
+    /// Our own output sample, even when the transform says it provides one.
+    pub own_output_sample: bool,
+    /// `MFT_MESSAGE_NOTIFY_START_OF_STREAM` after `BEGIN_STREAMING`.
+    pub start_message: bool,
+}
+
+impl Tweaks {
+    pub const ALL: Self = Self {
+        low_latency: true,
+        rate_control: true,
+        gop: true,
+        profile: true,
+        offered_types: false,
+        own_output_sample: false,
+        start_message: true,
+    };
+}
+
+/// How long to wait, after an output format change, for the transform to
+/// announce the output again.
+const AFTER_FORMAT_CHANGE: Duration = Duration::from_millis(100);
 
 /// How many times one image is retried on another way to encode it
 /// (without zero-copy, then another encoder) before giving up on the GPU.
 const MAX_ATTEMPTS: usize = 4;
 
 struct Session {
+    /// The transform's stream numbers.
+    input_id: u32,
+    output_id: u32,
     width: u32,
     height: u32,
     /// The capture's D3D11 device this session was opened for, if any.
@@ -120,13 +167,15 @@ struct Session {
     transform: IMFTransform,
     events: IMFMediaEventGenerator,
     /// Receives the type of each event, delivered by [`EventSink`].
-    event_rx: mpsc::Receiver<windows::core::Result<u32>>,
+    event_rx: mpsc::Receiver<windows::core::Result<(u32, windows::core::HRESULT)>>,
     callback: IMFAsyncCallback,
     codec: Option<ICodecAPI>,
     /// `METransformNeedInput` events not yet answered with an input.
     need_input: u32,
     /// The transform allocates output samples itself.
     provides_samples: bool,
+    /// Gives the transform output samples even if it would provide them.
+    own_output_sample: bool,
     output_size: u32,
     /// Inputs given to the transform whose output has not come back yet.
     in_flight: u32,
@@ -171,6 +220,9 @@ impl MfEncoder {
             zero_copy_failed: Vec::new(),
             tried_gpu_input: false,
             failed: Vec::new(),
+            tweaks: Tweaks::ALL,
+            only: None,
+            memory_device: None,
         })
     }
 
@@ -221,8 +273,10 @@ impl MfEncoder {
         // An encoder on the capture's adapter, or else any (fed from
         // memory); none that already failed.
         let usable = |list: Vec<IMFActivate>| {
-            list.into_iter()
-                .find(|a| !self.failed.contains(&friendly_name(a)))
+            list.into_iter().find(|a| {
+                let name = friendly_name(a);
+                !self.failed.contains(&name) && self.only.as_ref().is_none_or(|only| *only == name)
+            })
         };
         let on_adapter = device.and_then(|device| {
             enumerate(Some(device))
@@ -254,8 +308,19 @@ impl MfEncoder {
             attributes
                 .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
                 .map_err(|e| hw("async unlock", e))?;
-            let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
+            if self.tweaks.low_latency {
+                let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
+            }
         }
+
+        // (Asked after the unlock, which every call before it fails.)
+        // Most transforms number their streams from 0 (and do not say so,
+        // E_NOTIMPL); some do not.
+        let (mut input_ids, mut output_ids) = ([0u32], [0u32]);
+        if unsafe { transform.GetStreamIDs(&mut input_ids, &mut output_ids) }.is_err() {
+            (input_ids, output_ids) = ([0], [0]);
+        }
+        let (input_id, output_id) = (input_ids[0], output_ids[0]);
 
         // The device goes in before the media types.
         let manager = match device {
@@ -283,55 +348,82 @@ impl MfEncoder {
         // Encoder settings are best effort: drivers support different subsets.
         let codec: Option<ICodecAPI> = transform.cast().ok();
         if let Some(codec) = &codec {
-            set(codec, &CODECAPI_AVLowLatencyMode, bool_variant());
-            set(
-                codec,
-                &CODECAPI_AVEncCommonRateControlMode,
-                u32_variant(eAVEncCommonRateControlMode_CBR.0 as u32),
-            );
-            set(
-                codec,
-                &CODECAPI_AVEncCommonMeanBitRate,
-                u32_variant(self.settings.bitrate_bps),
-            );
-            set(codec, &CODECAPI_AVEncMPVGOPSize, u32_variant(GOP_FRAMES));
-            set(
-                codec,
-                &CODECAPI_AVEncMPVDefaultBPictureCount,
-                u32_variant(0),
-            );
+            let tweaks = self.tweaks;
+            if tweaks.low_latency {
+                set(codec, &CODECAPI_AVLowLatencyMode, bool_variant());
+            }
+            if tweaks.rate_control {
+                set(
+                    codec,
+                    &CODECAPI_AVEncCommonRateControlMode,
+                    u32_variant(eAVEncCommonRateControlMode_CBR.0 as u32),
+                );
+                set(
+                    codec,
+                    &CODECAPI_AVEncCommonMeanBitRate,
+                    u32_variant(self.settings.bitrate_bps),
+                );
+            }
+            if tweaks.gop {
+                set(codec, &CODECAPI_AVEncMPVGOPSize, u32_variant(GOP_FRAMES));
+                set(
+                    codec,
+                    &CODECAPI_AVEncMPVDefaultBPictureCount,
+                    u32_variant(0),
+                );
+            }
         }
 
         // Encoders want the output type before the input type.
         unsafe {
-            let output = video_type(&MFVideoFormat_H264, width, height, fps)?;
+            let output = if self.tweaks.offered_types {
+                offered_type(&transform, output_id, true, &MFVideoFormat_H264)?
+            } else {
+                MFCreateMediaType().map_err(|e| hw("MFCreateMediaType", e))?
+            };
+            fill_video_type(&output, &MFVideoFormat_H264, width, height, fps)?;
             output
                 .SetUINT32(&MF_MT_AVG_BITRATE, self.settings.bitrate_bps)
                 .map_err(|e| hw("bitrate", e))?;
-            output
-                .SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base.0 as u32)
-                .map_err(|e| hw("profile", e))?;
+            if self.tweaks.profile {
+                output
+                    .SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base.0 as u32)
+                    .map_err(|e| hw("profile", e))?;
+            }
             transform
-                .SetOutputType(0, &output, 0)
+                .SetOutputType(output_id, &output, 0)
                 .map_err(|e| hw("SetOutputType", e))?;
 
-            let input = video_type(&MFVideoFormat_NV12, width, height, fps)?;
+            let input = if self.tweaks.offered_types {
+                offered_type(&transform, input_id, false, &MFVideoFormat_NV12)?
+            } else {
+                MFCreateMediaType().map_err(|e| hw("MFCreateMediaType", e))?
+            };
+            fill_video_type(&input, &MFVideoFormat_NV12, width, height, fps)?;
             input
                 .SetUINT32(&MF_MT_DEFAULT_STRIDE, width)
                 .map_err(|e| hw("stride", e))?;
             transform
-                .SetInputType(0, &input, 0)
+                .SetInputType(input_id, &input, 0)
                 .map_err(|e| hw("SetInputType (NV12)", e))?;
 
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
                 .map_err(|e| hw("begin streaming", e))?;
-            transform
-                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
-                .map_err(|e| hw("start of stream", e))?;
+            if self.tweaks.start_message {
+                transform
+                    .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
+                    .map_err(|e| hw("start of stream", e))?;
+            }
         }
 
-        let info = unsafe { transform.GetOutputStreamInfo(0) }.map_err(|e| hw("stream info", e))?;
+        let info = unsafe { transform.GetOutputStreamInfo(output_id) }
+            .map_err(|e| hw("stream info", e))?;
+        tracing::info!(
+            "streams: entrada {input_id}, saída {output_id} (flags {:#x}, {} bytes)",
+            info.dwFlags,
+            info.cbSize
+        );
         let provides =
             (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0) as u32;
         let events: IMFMediaEventGenerator =
@@ -343,6 +435,8 @@ impl MfEncoder {
         }
         .into();
         let mut session = Session {
+            input_id,
+            output_id,
             width,
             height,
             device: device.cloned(),
@@ -355,7 +449,8 @@ impl MfEncoder {
             callback,
             codec,
             need_input: 0,
-            provides_samples: info.dwFlags & provides != 0,
+            provides_samples: info.dwFlags & provides != 0 && !self.tweaks.own_output_sample,
+            own_output_sample: self.tweaks.own_output_sample,
             output_size: info.cbSize.max(width * height * 3 / 2),
             in_flight: 0,
             draining: false,
@@ -375,7 +470,7 @@ impl VideoEncoder for MfEncoder {
             Pixels::D3d11(texture) => {
                 Some(unsafe { texture.GetDevice() }.map_err(|e| hw("GetDevice", e))?)
             }
-            Pixels::Memory(_) => None,
+            Pixels::Memory(_) => self.memory_device.clone(),
         };
         let mut first_error = None;
         for _ in 0..MAX_ATTEMPTS {
@@ -508,7 +603,8 @@ impl Session {
         while self.need_input == 0 || (self.gpu_input && self.in_flight >= MAX_TEXTURES_IN_FLIGHT) {
             merge(&mut ready, self.next_event(deadline)?);
         }
-        unsafe { self.transform.ProcessInput(0, sample, 0) }.map_err(|e| hw("ProcessInput", e))?;
+        unsafe { self.transform.ProcessInput(self.input_id, sample, 0) }
+            .map_err(|e| hw("ProcessInput", e))?;
         self.need_input -= 1;
         self.in_flight += 1;
 
@@ -565,6 +661,33 @@ impl Session {
     /// sleeps, whose ~15 ms granularity on Windows would add latency), and the
     /// deadline keeps a stuck driver from hanging the host.
     fn wait_event(&mut self, deadline: Instant) -> Result<Option<u32>, CodecError> {
+        let kind = self.wait_event_status(deadline)?;
+        Ok(match kind {
+            Some((kind, status)) if status.is_err() => {
+                return Err(CodecError::Hardware(format!(
+                    "evento {kind} com erro: {}",
+                    windows::core::Error::from(status)
+                )));
+            }
+            Some((kind, _)) => {
+                let known = [
+                    METransformNeedInput.0,
+                    METransformHaveOutput.0,
+                    METransformDrainComplete.0,
+                ];
+                if !known.contains(&(kind as i32)) {
+                    tracing::debug!("evento {kind} do encoder");
+                }
+                Some(kind)
+            }
+            None => None,
+        })
+    }
+
+    fn wait_event_status(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<Option<(u32, windows::core::HRESULT)>, CodecError> {
         let timeout = deadline.saturating_duration_since(Instant::now());
         match self.event_rx.recv_timeout(timeout) {
             Ok(Ok(kind)) => {
@@ -614,15 +737,15 @@ impl Session {
     fn take_output(&mut self) -> Result<Option<Encoded>, CodecError> {
         let mut sample = None;
         // A format change is answered by accepting the new type and asking for
-        // the same output again; it is not announced a second time.
-        for _ in 0..3 {
+        // the same output again, once the transform announces it (or soon).
+        for _ in 0..6 {
             let provided = if self.provides_samples {
                 None
             } else {
                 Some(empty_sample(self.output_size)?)
             };
             let mut buffer = MFT_OUTPUT_DATA_BUFFER {
-                dwStreamID: 0,
+                dwStreamID: self.output_id,
                 pSample: ManuallyDrop::new(provided),
                 dwStatus: 0,
                 pEvents: ManuallyDrop::new(None),
@@ -645,14 +768,53 @@ impl Session {
                 Err(e) if e.code() == MF_E_TRANSFORM_STREAM_CHANGE => unsafe {
                     let new_type = self
                         .transform
-                        .GetOutputAvailableType(0, 0)
+                        .GetOutputAvailableType(self.output_id, 0)
                         .map_err(|e| hw("new output type", e))?;
                     self.transform
-                        .SetOutputType(0, &new_type, 0)
+                        .SetOutputType(self.output_id, &new_type, 0)
                         .map_err(|e| hw("SetOutputType after change", e))?;
                     self.refresh_sequence_header();
+                    // The new type may come with other output buffers (who
+                    // provides them, how big): ask again, as FFmpeg does.
+                    let info = self
+                        .transform
+                        .GetOutputStreamInfo(self.output_id)
+                        .map_err(|e| hw("stream info after change", e))?;
+                    tracing::info!(
+                        "formato de saída mudou (flags {:#x}, {} bytes)",
+                        info.dwFlags,
+                        info.cbSize
+                    );
+                    let provides = (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0
+                        | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0)
+                        as u32;
+                    self.provides_samples = info.dwFlags & provides != 0 && !self.own_output_sample;
+                    self.output_size = info.cbSize.max(self.width * self.height * 3 / 2);
+                    // An async transform announces the output again, and
+                    // asking before that is "unexpected" (Intel Quick Sync);
+                    // others expect to be asked right away.
+                    let deadline = Instant::now() + AFTER_FORMAT_CHANGE;
+                    loop {
+                        match self.wait_event(deadline)? {
+                            Some(kind) if kind == METransformHaveOutput.0 as u32 => break,
+                            Some(kind) if kind == METransformNeedInput.0 as u32 => {
+                                self.need_input += 1;
+                            }
+                            Some(kind) if kind == METransformDrainComplete.0 as u32 => {
+                                self.draining = false;
+                            }
+                            Some(_) => {}
+                            None => break,
+                        }
+                    }
                 },
-                Err(e) => return Err(hw("ProcessOutput", e)),
+                Err(e) => {
+                    let context = format!(
+                        "ProcessOutput ({} na fila, {} pedidos)",
+                        self.in_flight, self.need_input
+                    );
+                    return Err(hw(&context, e));
+                }
             }
         }
         let Some(sample) = sample else {
@@ -686,7 +848,7 @@ impl Session {
     }
 
     fn refresh_sequence_header(&mut self) {
-        self.sequence_header = unsafe { self.transform.GetOutputCurrentType(0) }
+        self.sequence_header = unsafe { self.transform.GetOutputCurrentType(self.output_id) }
             .ok()
             .and_then(|t| blob(&t, &MF_MT_MPEG_SEQUENCE_HEADER))
             .unwrap_or_default();
@@ -710,7 +872,7 @@ impl Drop for Session {
 #[implement(IMFAsyncCallback)]
 struct EventSink {
     generator: IMFMediaEventGenerator,
-    tx: mpsc::Sender<windows::core::Result<u32>>,
+    tx: mpsc::Sender<windows::core::Result<(u32, windows::core::HRESULT)>>,
 }
 
 impl IMFAsyncCallback_Impl for EventSink_Impl {
@@ -720,8 +882,10 @@ impl IMFAsyncCallback_Impl for EventSink_Impl {
     }
 
     fn Invoke(&self, result: Ref<IMFAsyncResult>) -> windows::core::Result<()> {
+        // The type, and the status the transform gave it (an error shows
+        // up there before any call fails).
         let kind = unsafe { self.generator.EndGetEvent(result.ok()?) }
-            .and_then(|event| unsafe { event.GetType() });
+            .and_then(|event| unsafe { Ok((event.GetType()?, event.GetStatus()?)) });
         // The receiver is gone once the session ended; nothing to do then.
         let _ = self.tx.send(kind);
         Ok(())
@@ -849,14 +1013,44 @@ fn friendly_name(activate: &IMFActivate) -> String {
     }
 }
 
-fn video_type(
+/// The first type of `subtype` the transform offers on a stream (input or
+/// output), to be filled in: what some drivers need, instead of a type
+/// made from scratch.
+fn offered_type(
+    transform: &IMFTransform,
+    stream: u32,
+    output: bool,
+    subtype: &GUID,
+) -> Result<IMFMediaType, CodecError> {
+    for index in 0..64 {
+        let offered = unsafe {
+            if output {
+                transform.GetOutputAvailableType(stream, index)
+            } else {
+                transform.GetInputAvailableType(stream, index)
+            }
+        };
+        let Ok(offered) = offered else { break };
+        if unsafe { offered.GetGUID(&MF_MT_SUBTYPE) }.is_ok_and(|g| g == *subtype) {
+            return Ok(offered);
+        }
+    }
+    Err(CodecError::Hardware(format!(
+        "o encoder não oferece o tipo {subtype:?} ({})",
+        if output { "saída" } else { "entrada" }
+    )))
+}
+
+/// Sets what a video type needs: `subtype`, size, frame rate, square
+/// pixels, progressive.
+fn fill_video_type(
+    media_type: &IMFMediaType,
     subtype: &GUID,
     width: u32,
     height: u32,
     fps: u32,
-) -> Result<IMFMediaType, CodecError> {
+) -> Result<(), CodecError> {
     unsafe {
-        let media_type = MFCreateMediaType().map_err(|e| hw("MFCreateMediaType", e))?;
         let set = |r: windows::core::Result<()>, what| r.map_err(|e| hw(what, e));
         set(
             media_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video),
@@ -882,7 +1076,7 @@ fn video_type(
             media_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32),
             "interlace mode",
         )?;
-        Ok(media_type)
+        Ok(())
     }
 }
 
@@ -890,7 +1084,8 @@ fn video_type(
 /// caller to provide output samples.
 fn empty_sample(size: u32) -> Result<IMFSample, CodecError> {
     unsafe {
-        let buffer = MFCreateMemoryBuffer(size).map_err(|e| hw("MFCreateMemoryBuffer", e))?;
+        let buffer = MFCreateAlignedMemoryBuffer(size, MF_16_BYTE_ALIGNMENT)
+            .map_err(|e| hw("MFCreateAlignedMemoryBuffer", e))?;
         let sample = MFCreateSample().map_err(|e| hw("MFCreateSample", e))?;
         sample.AddBuffer(&buffer).map_err(|e| hw("AddBuffer", e))?;
         Ok(sample)
@@ -934,7 +1129,9 @@ pub(crate) fn memory_sample(
 ) -> Result<IMFSample, CodecError> {
     unsafe {
         let buffer =
-            MFCreateMemoryBuffer(data.len() as u32).map_err(|e| hw("MFCreateMemoryBuffer", e))?;
+            // Aligned as FFmpeg does: some drivers read the image in blocks.
+            MFCreateAlignedMemoryBuffer(data.len() as u32, MF_16_BYTE_ALIGNMENT)
+                .map_err(|e| hw("MFCreateAlignedMemoryBuffer", e))?;
         let mut ptr = std::ptr::null_mut();
         buffer
             .Lock(&mut ptr, None, None)
@@ -1019,4 +1216,317 @@ pub(crate) fn bool_variant() -> VARIANT {
             boolVal: VARIANT_TRUE,
         },
     )
+}
+
+/// How one encoder did one way (see [`probe`]).
+#[derive(Debug)]
+pub struct ProbeResult {
+    pub encoder: String,
+    pub variant: String,
+    /// Frames out and the time per frame, or the error.
+    pub result: Result<String, String>,
+}
+
+/// How a probe feeds the encoder.
+#[derive(Clone, Copy)]
+enum Feed {
+    /// From memory.
+    Memory,
+    /// From memory, with a device of the adapter attached.
+    MemoryWithDevice,
+    /// NV12 textures of the adapter, with these bind flags.
+    Texture(u32),
+}
+
+/// Tries every hardware H.264 encoder several ways, encoding a few
+/// synthetic frames: what a driver accepts, to diagnose a machine where
+/// none works. First enumerated as a whole (as encoding starts out), then
+/// adapter by adapter, with a device of that adapter.
+pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_VIDEO_ENCODER,
+    };
+
+    let settings = crate::EncoderSettings::default();
+    // Started here so the enumeration below can run.
+    let first = MfEncoder::new(settings)?;
+    let mut names: Vec<String> = Vec::new();
+    for name in enumerate(None)?.iter().map(friendly_name) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let adapters = adapters();
+    drop(first);
+
+    let none = Tweaks {
+        low_latency: false,
+        rate_control: false,
+        gop: false,
+        profile: false,
+        offered_types: false,
+        own_output_sample: false,
+        start_message: true,
+    };
+    let offered = Tweaks {
+        offered_types: true,
+        ..Tweaks::ALL
+    };
+    let mut results = Vec::new();
+    for name in &names {
+        for (variant, tweaks, (w, h)) in [
+            (
+                "memória, todas as configurações",
+                Tweaks::ALL,
+                (width, height),
+            ),
+            ("memória, nenhuma opcional", none, (width, height)),
+            // Encoders work in 16-line blocks: 1080 is not a multiple.
+            ("memória, 1920x1088", Tweaks::ALL, (1920, 1088)),
+            ("memória, 1280x720", Tweaks::ALL, (1280, 720)),
+            ("memória, tipos do encoder", offered, (width, height)),
+            (
+                "memória, buffer de saída próprio",
+                Tweaks {
+                    own_output_sample: true,
+                    ..Tweaks::ALL
+                },
+                (width, height),
+            ),
+            (
+                "memória, sem início de stream",
+                Tweaks {
+                    start_message: false,
+                    ..Tweaks::ALL
+                },
+                (width, height),
+            ),
+            (
+                "memória, tipos do encoder, mínimo",
+                Tweaks {
+                    offered_types: true,
+                    ..none
+                },
+                (width, height),
+            ),
+        ] {
+            let result = probe_one(settings, name, None, Feed::Memory, tweaks, w, h);
+            results.push(ProbeResult {
+                encoder: name.clone(),
+                variant: variant.into(),
+                result,
+            });
+        }
+    }
+    let shader = (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32;
+    let encoder_bind = D3D11_BIND_VIDEO_ENCODER.0 as u32;
+    for (adapter, device) in adapters {
+        let mut on_adapter: Vec<String> = match enumerate(Some(&device)) {
+            Ok(list) => list.iter().map(friendly_name).collect(),
+            Err(e) => {
+                results.push(ProbeResult {
+                    encoder: format!("(placa {adapter})"),
+                    variant: "listar codificadores".into(),
+                    result: Err(e.to_string()),
+                });
+                continue;
+            }
+        };
+        on_adapter.sort();
+        on_adapter.dedup();
+        if on_adapter.is_empty() {
+            results.push(ProbeResult {
+                encoder: format!("(placa {adapter})"),
+                variant: "listar codificadores".into(),
+                result: Err("nenhum codificador nesta placa".into()),
+            });
+        }
+        for name in on_adapter {
+            for (variant, feed, tweaks) in [
+                (
+                    "memória + dispositivo anexado",
+                    Feed::MemoryWithDevice,
+                    Tweaks::ALL,
+                ),
+                (
+                    "textura (shader/render)",
+                    Feed::Texture(shader),
+                    Tweaks::ALL,
+                ),
+                (
+                    "textura (video encoder)",
+                    Feed::Texture(encoder_bind),
+                    Tweaks::ALL,
+                ),
+                ("textura, tipos do encoder", Feed::Texture(shader), offered),
+            ] {
+                let result = probe_one(settings, &name, Some(&device), feed, tweaks, width, height);
+                results.push(ProbeResult {
+                    encoder: format!("{name} na placa {adapter}"),
+                    variant: variant.into(),
+                    result,
+                });
+            }
+        }
+    }
+    Ok(results)
+}
+
+/// Every hardware adapter, with a device on it (video support).
+fn adapters() -> Vec<(String, ID3D11Device)> {
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
+        D3D11CreateDevice, ID3D11Multithread,
+    };
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1,
+    };
+
+    let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    let mut seen = Vec::new();
+    for a in 0.. {
+        let Ok(adapter) = (unsafe { factory.EnumAdapters1(a) }) else {
+            break;
+        };
+        let Ok(desc) = (unsafe { adapter.GetDesc1() }) else {
+            continue;
+        };
+        if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+            continue;
+        }
+        // The same GPU can be listed more than once.
+        let luid = (desc.AdapterLuid.LowPart, desc.AdapterLuid.HighPart);
+        if seen.contains(&luid) {
+            continue;
+        }
+        seen.push(luid);
+        let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(128);
+        let name = String::from_utf16_lossy(&desc.Description[..len]);
+        let mut device = None;
+        let created = unsafe {
+            D3D11CreateDevice(
+                &adapter,
+                D3D_DRIVER_TYPE_UNKNOWN,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                None,
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )
+        };
+        if let (Ok(()), Some(device)) = (created, device) {
+            if let Ok(multithread) = device.cast::<ID3D11Multithread>() {
+                let _ = unsafe { multithread.SetMultithreadProtected(true) };
+            }
+            found.push((name, device));
+        }
+    }
+    found
+}
+
+/// Encodes 30 synthetic frames with encoder `name`, fed as `feed`.
+fn probe_one(
+    settings: EncoderSettings,
+    name: &str,
+    device: Option<&ID3D11Device>,
+    feed: Feed,
+    tweaks: Tweaks,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
+    const FRAMES: usize = 30;
+    let mut encoder = MfEncoder::new(settings).map_err(|e| e.to_string())?;
+    encoder.only = Some(name.to_owned());
+    encoder.tweaks = tweaks;
+    if let Feed::MemoryWithDevice = feed {
+        encoder.memory_device = device.cloned();
+    }
+    // A moving gradient, so every frame has something to encode.
+    let pixels = width as usize * height as usize;
+    let frame = |n: usize| -> Vec<u8> {
+        let mut data = vec![128u8; pixels * 3 / 2];
+        for (i, y) in data[..pixels].iter_mut().enumerate() {
+            *y = ((i % width as usize + n * 8) % 256) as u8;
+        }
+        data
+    };
+    let started = std::time::Instant::now();
+    let mut out = 0;
+    for n in 0..FRAMES {
+        let data = frame(n);
+        let texture;
+        let pixels = match (feed, device) {
+            (Feed::Texture(bind), Some(device)) => {
+                texture = nv12_texture(device, width, height, bind, &data)?;
+                Pixels::D3d11(&texture)
+            }
+            _ => Pixels::Memory(&data),
+        };
+        let image = Image {
+            width,
+            height,
+            format: PixelFormat::Nv12,
+            pixels,
+        };
+        match encoder.encode(&image) {
+            Ok(Some(_)) => out += 1,
+            Ok(None) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    if out == 0 {
+        return Err("nenhum quadro saiu".into());
+    }
+    let zero_copy = encoder.session.as_ref().is_some_and(|s| s.gpu_input);
+    Ok(format!(
+        "{out}/{FRAMES} quadros, {:.1} ms por quadro{}",
+        started.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64,
+        if zero_copy { ", zero-copy" } else { "" }
+    ))
+}
+
+/// An NV12 texture on `device` holding `data`.
+fn nv12_texture(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+    bind: u32,
+    data: &[u8],
+) -> Result<ID3D11Texture2D, String> {
+    use windows::Win32::Graphics::Direct3D11::{
+        D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    };
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC};
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_NV12,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: bind,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    // NV12 initial data: the Y plane, then the UV plane, same pitch.
+    let initial = D3D11_SUBRESOURCE_DATA {
+        pSysMem: data.as_ptr().cast(),
+        SysMemPitch: width,
+        SysMemSlicePitch: 0,
+    };
+    let mut texture = None;
+    unsafe { device.CreateTexture2D(&desc, Some(&initial), Some(&mut texture)) }
+        .map_err(|e| format!("criar textura NV12: {e}"))?;
+    texture.ok_or_else(|| "criar textura NV12".to_owned())
 }
