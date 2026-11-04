@@ -10,6 +10,12 @@ use hext_codec::YuvFrame;
 use winit::window::Window;
 
 const SHADER: &str = include_str!("yuv.wgsl");
+const BUTTON_SHADER: &str = include_str!("button.wgsl");
+
+/// The full screen button, in logical pixels, and how far from the top.
+const BUTTON_WIDTH: f64 = 56.0;
+const BUTTON_HEIGHT: f64 = 28.0;
+const BUTTON_TOP: f64 = 6.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -38,6 +44,34 @@ impl VideoRect {
         let ny = (py as f32 - self.y) / self.height;
         ((0.0..=1.0).contains(&nx) && (0.0..=1.0).contains(&ny)).then_some((nx, ny))
     }
+
+    /// Whether a window position is inside, with `margin` pixels to spare.
+    pub fn contains(&self, px: f64, py: f64, margin: f32) -> bool {
+        let (px, py) = (px as f32, py as f32);
+        px >= self.x - margin
+            && px <= self.x + self.width + margin
+            && py >= self.y - margin
+            && py <= self.y + self.height + margin
+    }
+}
+
+/// Where the full screen button goes, at the top center of a window of
+/// `window` physical pixels and that display scale.
+pub fn button_rect(window: (u32, u32), scale: f64) -> VideoRect {
+    let (width, height) = (BUTTON_WIDTH * scale, BUTTON_HEIGHT * scale);
+    VideoRect {
+        x: ((f64::from(window.0) - width) / 2.0).floor() as f32,
+        y: (BUTTON_TOP * scale).floor() as f32,
+        width: width as f32,
+        height: height as f32,
+    }
+}
+
+/// What pressing the full screen button does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonAction {
+    Enter,
+    Leave,
 }
 
 /// Fits a `video` sized picture into a `window`, preserving aspect ratio.
@@ -73,6 +107,10 @@ pub struct Renderer {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     planes: Option<Planes>,
+    button_enter: wgpu::RenderPipeline,
+    button_leave: wgpu::RenderPipeline,
+    /// The button on screen, if any.
+    button: Option<(ButtonAction, VideoRect)>,
 }
 
 impl Renderer {
@@ -167,6 +205,39 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        let button_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("button"),
+            source: wgpu::ShaderSource::Wgsl(BUTTON_SHADER.into()),
+        });
+        let button_pipeline = |entry_point| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("button"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &button_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &button_shader,
+                    entry_point: Some(entry_point),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: view_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let button_enter = button_pipeline("fs_enter");
+        let button_leave = button_pipeline("fs_leave");
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("yuv"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -184,6 +255,9 @@ impl Renderer {
             layout,
             sampler,
             planes: None,
+            button_enter,
+            button_leave,
+            button: None,
         })
     }
 
@@ -194,6 +268,11 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// Shows the full screen button, or hides it, from the next render.
+    pub fn set_button(&mut self, button: Option<(ButtonAction, VideoRect)>) {
+        self.button = button;
     }
 
     /// Where the current video sits in the window, once a frame was uploaded.
@@ -257,6 +336,20 @@ impl Renderer {
                 pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &planes.bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            let (width, height) = (self.config.width as f32, self.config.height as f32);
+            // (A window too small for it goes without.)
+            if let Some((action, rect)) = self.button
+                && rect.x >= 0.0
+                && rect.x + rect.width <= width
+                && rect.y + rect.height <= height
+            {
+                pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
+                pass.set_pipeline(match action {
+                    ButtonAction::Enter => &self.button_enter,
+                    ButtonAction::Leave => &self.button_leave,
+                });
                 pass.draw(0..3, 0..1);
             }
         }
@@ -345,6 +438,15 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_button_sits_at_the_top_center() {
+        let r = button_rect((1000, 800), 2.0);
+        assert_eq!((r.x, r.y, r.width, r.height), (444.0, 12.0, 112.0, 56.0));
+        assert!(r.contains(500.0, 40.0, 0.0));
+        assert!(!r.contains(500.0, 80.0, 0.0));
+        assert!(r.contains(500.0, 80.0, 56.0));
+    }
 
     #[test]
     fn letterbox_wide_window() {
