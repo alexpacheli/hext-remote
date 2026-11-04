@@ -28,12 +28,13 @@ use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
     CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate,
     IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown, IMFTransform,
-    METransformHaveOutput, METransformNeedInput, MF_E_TRANSFORM_NEED_MORE_INPUT,
-    MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY, MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE,
-    MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-    MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
-    MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-    MFMediaType_Video, MFSTARTUP_FULL, MFSampleExtension_CleanPoint, MFShutdown, MFStartup,
+    METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
+    MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY,
+    MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE,
+    MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
+    MFCreateAlignedMemoryBuffer, MFCreateMediaType, MFCreateSample, MFMediaType_Video,
+    MFSTARTUP_FULL, MFSampleExtension_CleanPoint, MFShutdown, MFStartup,
     MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
     MFT_FRIENDLY_NAME_Attribute, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
     MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
@@ -124,6 +125,10 @@ pub struct Tweaks {
     /// Media types taken from those the transform offers, then filled in,
     /// instead of made from scratch.
     pub offered_types: bool,
+    /// Our own output sample, even when the transform says it provides one.
+    pub own_output_sample: bool,
+    /// `MFT_MESSAGE_NOTIFY_START_OF_STREAM` after `BEGIN_STREAMING`.
+    pub start_message: bool,
 }
 
 impl Tweaks {
@@ -133,6 +138,8 @@ impl Tweaks {
         gop: true,
         profile: true,
         offered_types: false,
+        own_output_sample: false,
+        start_message: true,
     };
 }
 
@@ -396,9 +403,11 @@ impl MfEncoder {
             transform
                 .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
                 .map_err(|e| hw("begin streaming", e))?;
-            transform
-                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
-                .map_err(|e| hw("start of stream", e))?;
+            if self.tweaks.start_message {
+                transform
+                    .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
+                    .map_err(|e| hw("start of stream", e))?;
+            }
         }
 
         let info = unsafe { transform.GetOutputStreamInfo(output_id) }
@@ -433,7 +442,7 @@ impl MfEncoder {
             callback,
             codec,
             need_input: 0,
-            provides_samples: info.dwFlags & provides != 0,
+            provides_samples: info.dwFlags & provides != 0 && !self.tweaks.own_output_sample,
             output_size: info.cbSize.max(width * height * 3 / 2),
             in_flight: 0,
             draining: false,
@@ -1034,7 +1043,8 @@ fn fill_video_type(
 /// caller to provide output samples.
 fn empty_sample(size: u32) -> Result<IMFSample, CodecError> {
     unsafe {
-        let buffer = MFCreateMemoryBuffer(size).map_err(|e| hw("MFCreateMemoryBuffer", e))?;
+        let buffer = MFCreateAlignedMemoryBuffer(size, MF_16_BYTE_ALIGNMENT)
+            .map_err(|e| hw("MFCreateAlignedMemoryBuffer", e))?;
         let sample = MFCreateSample().map_err(|e| hw("MFCreateSample", e))?;
         sample.AddBuffer(&buffer).map_err(|e| hw("AddBuffer", e))?;
         Ok(sample)
@@ -1078,7 +1088,9 @@ pub(crate) fn memory_sample(
 ) -> Result<IMFSample, CodecError> {
     unsafe {
         let buffer =
-            MFCreateMemoryBuffer(data.len() as u32).map_err(|e| hw("MFCreateMemoryBuffer", e))?;
+            // Aligned as FFmpeg does: some drivers read the image in blocks.
+            MFCreateAlignedMemoryBuffer(data.len() as u32, MF_16_BYTE_ALIGNMENT)
+                .map_err(|e| hw("MFCreateAlignedMemoryBuffer", e))?;
         let mut ptr = std::ptr::null_mut();
         buffer
             .Lock(&mut ptr, None, None)
@@ -1208,6 +1220,8 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
         gop: false,
         profile: false,
         offered_types: false,
+        own_output_sample: false,
+        start_message: true,
     };
     let offered = Tweaks {
         offered_types: true,
@@ -1226,6 +1240,22 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
             ("memória, 1920x1088", Tweaks::ALL, (1920, 1088)),
             ("memória, 1280x720", Tweaks::ALL, (1280, 720)),
             ("memória, tipos do encoder", offered, (width, height)),
+            (
+                "memória, buffer de saída próprio",
+                Tweaks {
+                    own_output_sample: true,
+                    ..Tweaks::ALL
+                },
+                (width, height),
+            ),
+            (
+                "memória, sem início de stream",
+                Tweaks {
+                    start_message: false,
+                    ..Tweaks::ALL
+                },
+                (width, height),
+            ),
             (
                 "memória, tipos do encoder, mínimo",
                 Tweaks {
