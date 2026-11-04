@@ -300,14 +300,6 @@ impl MfEncoder {
 
         let fps = self.settings.max_fps.round().max(1.0) as u32;
 
-        // Most transforms number their streams from 0 (and do not say so,
-        // E_NOTIMPL); some do not.
-        let (mut input_ids, mut output_ids) = ([0u32], [0u32]);
-        if unsafe { transform.GetStreamIDs(&mut input_ids, &mut output_ids) }.is_err() {
-            (input_ids, output_ids) = ([0], [0]);
-        }
-        let (input_id, output_id) = (input_ids[0], output_ids[0]);
-
         // An async transform refuses every message until unlocked.
         unsafe {
             let attributes = transform
@@ -320,6 +312,15 @@ impl MfEncoder {
                 let _ = attributes.SetUINT32(&MF_LOW_LATENCY, 1);
             }
         }
+
+        // (Asked after the unlock, which every call before it fails.)
+        // Most transforms number their streams from 0 (and do not say so,
+        // E_NOTIMPL); some do not.
+        let (mut input_ids, mut output_ids) = ([0u32], [0u32]);
+        if unsafe { transform.GetStreamIDs(&mut input_ids, &mut output_ids) }.is_err() {
+            (input_ids, output_ids) = ([0], [0]);
+        }
+        let (input_id, output_id) = (input_ids[0], output_ids[0]);
 
         // The device goes in before the media types.
         let manager = match device {
@@ -675,7 +676,7 @@ impl Session {
                     METransformDrainComplete.0,
                 ];
                 if !known.contains(&(kind as i32)) {
-                    tracing::info!("evento {kind} do encoder");
+                    tracing::debug!("evento {kind} do encoder");
                 }
                 Some(kind)
             }
@@ -736,7 +737,7 @@ impl Session {
     fn take_output(&mut self) -> Result<Option<Encoded>, CodecError> {
         let mut sample = None;
         // A format change is answered by accepting the new type and asking for
-        // the same output again; it is not announced a second time.
+        // the same output again, once the transform announces it (or soon).
         for _ in 0..6 {
             let provided = if self.provides_samples {
                 None
@@ -1249,8 +1250,12 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
     let settings = crate::EncoderSettings::default();
     // Started here so the enumeration below can run.
     let first = MfEncoder::new(settings)?;
-    let mut names: Vec<String> = enumerate(None)?.iter().map(friendly_name).collect();
-    names.dedup();
+    let mut names: Vec<String> = Vec::new();
+    for name in enumerate(None)?.iter().map(friendly_name) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
     let adapters = adapters();
     drop(first);
 
@@ -1327,6 +1332,7 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
                 continue;
             }
         };
+        on_adapter.sort();
         on_adapter.dedup();
         if on_adapter.is_empty() {
             results.push(ProbeResult {
@@ -1382,6 +1388,7 @@ fn adapters() -> Vec<(String, ID3D11Device)> {
         return Vec::new();
     };
     let mut found = Vec::new();
+    let mut seen = Vec::new();
     for a in 0.. {
         let Ok(adapter) = (unsafe { factory.EnumAdapters1(a) }) else {
             break;
@@ -1392,6 +1399,12 @@ fn adapters() -> Vec<(String, ID3D11Device)> {
         if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
             continue;
         }
+        // The same GPU can be listed more than once.
+        let luid = (desc.AdapterLuid.LowPart, desc.AdapterLuid.HighPart);
+        if seen.contains(&luid) {
+            continue;
+        }
+        seen.push(luid);
         let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(128);
         let name = String::from_utf16_lossy(&desc.Description[..len]);
         let mut device = None;
