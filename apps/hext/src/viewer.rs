@@ -15,14 +15,14 @@ use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::Os;
 use hext_proto::{Hello, InputEvent, MouseButton, PeerInfo, RejectReason};
 use hext_render::{ButtonAction, Renderer, VideoRect, button_rect};
-use hext_session::SessionError;
 use hext_session::client::{self, ClientHandle};
+use hext_session::{NETWORK_GRACE, ResumeToken, SessionError};
 use hext_signal::{DeviceId, KnownHosts};
 use tracing::{info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Modifiers, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, ModifiersKeyState, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 use zeroize::Zeroizing;
@@ -36,20 +36,62 @@ const PIXELS_PER_NOTCH: f64 = 50.0;
 const BUTTON_HINT: Duration = Duration::from_secs(4);
 /// How close to the top of the window the mouse must go to call the button.
 const BUTTON_EDGE: f64 = 2.0;
+/// How long the second Ctrl+Alt+R has to come.
+const RESTART_CONFIRM: Duration = Duration::from_secs(5);
+/// How long the title waits for the host's answer about restarting.
+const RESTART_ANSWER: Duration = Duration::from_secs(10);
+/// Waits between attempts to come back, doubling up to the last. (The server
+/// takes 10 requests a minute from a device.)
+const BACK_FIRST: Duration = Duration::from_secs(2);
+const BACK_MAX: Duration = Duration::from_secs(10);
 
 enum UserEvent {
     Frame,
     SessionEnded,
+    /// The attempt to come back ended.
+    Back(Box<Result<ClientHandle>>),
+}
+
+/// What it takes to reach the host again: only by ID.
+struct Route {
+    server: String,
+    id: DeviceId,
+    key: hext_crypto::DeviceKey,
+    known: KnownHosts,
+}
+
+/// What [`open`] got.
+struct Opened {
+    endpoint: Endpoint,
+    conn: Connection,
+    code: String,
+    viewer: hext_crypto::PublicKey,
+    route: Option<Route>,
+}
+
+/// How to open the session again.
+struct Back {
+    route: Route,
+    decoder: DecoderPreference,
+    latest: Arc<Mutex<Option<YuvFrame>>>,
+    proxy: EventLoopProxy<UserEvent>,
 }
 
 pub fn run(args: ViewArgs) -> Result<()> {
     let password = read_password(&args)?;
     let runtime = tokio::runtime::Runtime::new()?;
-    let (endpoint, conn, code, viewer) = runtime.block_on(open(&args, password.is_some()))?;
+    let Opened {
+        endpoint,
+        conn,
+        code,
+        viewer,
+        route,
+    } = runtime.block_on(open(&args, password.is_some()))?;
     let password = password.map(|password| PasswordLogin { password, viewer });
     let hello = Hello {
         peer: PeerInfo::local(APP_VERSION, device_name()),
         access_code: code,
+        resume: None,
     };
 
     if args.headless {
@@ -60,19 +102,17 @@ pub fn run(args: ViewArgs) -> Result<()> {
     let proxy = event_loop.create_proxy();
     let latest: Arc<Mutex<Option<YuvFrame>>> = Arc::default();
 
-    let (handle, closed_proxy) = (latest.clone(), proxy.clone());
     let session = runtime.block_on(async {
-        let watch = conn.clone();
-        let session = client::start(conn, hello, password, decoder(args.decoder), move |frame| {
-            *handle.lock().expect("lock") = Some(frame.yuv);
-            let _ = proxy.send_event(UserEvent::Frame);
-        })
+        let session = client::start(
+            conn,
+            hello,
+            password,
+            decoder(args.decoder),
+            show_frames(latest.clone(), proxy.clone()),
+        )
         .await
         .map_err(explain)?;
-        tokio::spawn(async move {
-            watch.closed().await;
-            let _ = closed_proxy.send_event(UserEvent::SessionEnded);
-        });
+        tokio::spawn(end_of(&session, proxy.clone()));
         anyhow::Ok(session)
     })?;
     info!(
@@ -91,11 +131,25 @@ pub fn run(args: ViewArgs) -> Result<()> {
     }
 
     let host_is_mac = session.host.os == Os::MacOs;
+    let back = route.map(|route| {
+        Arc::new(Back {
+            route,
+            decoder: decoder(args.decoder),
+            latest: latest.clone(),
+            proxy: proxy.clone(),
+        })
+    });
     let mut app = Viewer {
         runtime,
         session: Some(session),
         endpoint: Some(endpoint),
         latest,
+        back,
+        coming_back: None,
+        restart_confirm: None,
+        restart_sent: None,
+        failure: None,
+        proxy,
         window: None,
         renderer: None,
         command_key: match args.cmd_key {
@@ -116,15 +170,30 @@ pub fn run(args: ViewArgs) -> Result<()> {
         last_title: Instant::now(),
     };
     event_loop.run_app(&mut app)?;
-    Ok(())
+    match app.failure.take() {
+        Some(e) => Err(e.context("não foi possível voltar à sessão")),
+        None => Ok(()),
+    }
 }
 
 struct Viewer {
     runtime: tokio::runtime::Runtime,
+    /// `None` while coming back.
     session: Option<ClientHandle>,
     /// Closed (gracefully, relay included) when the window closes.
     endpoint: Option<Endpoint>,
     latest: Arc<Mutex<Option<YuvFrame>>>,
+    /// How to open the session again; `None`: connected by IP.
+    back: Option<Arc<Back>>,
+    /// What the title says while coming back.
+    coming_back: Option<&'static str>,
+    /// The first Ctrl+Alt+R counts until then.
+    restart_confirm: Option<Instant>,
+    /// When the host was asked to restart.
+    restart_sent: Option<Instant>,
+    /// Why the session could not be opened again.
+    failure: Option<anyhow::Error>,
+    proxy: EventLoopProxy<UserEvent>,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     command_key: CommandKey,
@@ -157,6 +226,64 @@ impl Viewer {
         let left_alt = pressed(self.modifiers.lalt_state())
             || (state.alt_key() && !pressed(self.modifiers.ralt_state()));
         state.control_key() && left_alt
+    }
+
+    /// Ctrl+Alt+R: the first says what it does, the second does it. A window
+    /// in full screen shows no title, so it comes out of it.
+    fn ask_restart(&mut self) {
+        let now = Instant::now();
+        let confirmed = self.restart_confirm.take().is_some_and(|until| until > now);
+        if confirmed {
+            if let Some(session) = &self.session {
+                session.request_restart();
+                self.restart_sent = Some(now);
+            }
+        } else {
+            self.restart_confirm = Some(now + RESTART_CONFIRM);
+            self.leave_fullscreen();
+        }
+        self.last_title = now - Duration::from_secs(1);
+        self.update_title();
+    }
+
+    fn leave_fullscreen(&mut self) {
+        if self
+            .window
+            .as_ref()
+            .is_some_and(|w| w.fullscreen().is_some())
+        {
+            self.toggle_fullscreen();
+        }
+    }
+
+    /// The session ended and the host expects it back: tries, with the
+    /// window as it is, until it opens or `token` runs out.
+    fn come_back(
+        &mut self,
+        back: Arc<Back>,
+        endpoint: Endpoint,
+        token: ResumeToken,
+        time: Duration,
+    ) {
+        self.coming_back = Some(if time > NETWORK_GRACE {
+            "Aguardando a máquina voltar…"
+        } else {
+            "Conexão perdida, reconectando…"
+        });
+        self.restart_confirm = None;
+        self.restart_sent = None;
+        if let Some(session) = self.session.take() {
+            self.runtime.spawn(async move {
+                let _ = session.close().await;
+            });
+        }
+        self.leave_fullscreen();
+        self.last_title = Instant::now() - Duration::from_secs(1);
+        self.update_title();
+        self.runtime.spawn(async move {
+            let result = reconnect(&back, &endpoint, token, time).await;
+            let _ = back.proxy.send_event(UserEvent::Back(Box::new(result)));
+        });
     }
 
     fn send(&self, event: InputEvent) {
@@ -233,9 +360,32 @@ impl Viewer {
             return;
         }
         self.last_title = Instant::now();
-        let (Some(window), Some(session)) = (&self.window, &self.session) else {
+        let Some(window) = &self.window else { return };
+        if let Some(waiting) = self.coming_back {
+            window.set_title(&format!("Hext Remote — {waiting}"));
             return;
-        };
+        }
+        let Some(session) = &self.session else { return };
+        if self.restart_confirm.is_some() {
+            window.set_title("Hext Remote — Aperte Ctrl+Alt+R de novo para reiniciar o computador");
+            return;
+        }
+        if self.restart_sent.is_some() {
+            match session.restart_answer() {
+                Some(true) => {
+                    window.set_title("Hext Remote — Reiniciando o computador…");
+                    return;
+                }
+                Some(false) => {
+                    window.set_title("Hext Remote — O computador não reiniciou");
+                    return;
+                }
+                None => {
+                    window.set_title("Hext Remote — Pedindo para reiniciar…");
+                    return;
+                }
+            }
+        }
         let mut stats = session.stats.lock().expect("lock");
         let path = path_label(session);
         let view_only = if session.permissions.control {
@@ -295,9 +445,32 @@ impl ApplicationHandler<UserEvent> for Viewer {
             // Draw right away instead of waiting for a redraw request: lower latency.
             UserEvent::Frame => self.draw(true),
             UserEvent::SessionEnded => {
-                info!("sessão encerrada pelo host");
-                event_loop.exit();
+                let ending = self.session.as_ref().and_then(ClientHandle::comes_back);
+                match (ending, self.back.clone(), self.endpoint.clone()) {
+                    (Some((token, time)), Some(back), Some(endpoint)) => {
+                        self.come_back(back, endpoint, token, time);
+                    }
+                    _ => {
+                        info!("sessão encerrada pelo host");
+                        event_loop.exit();
+                    }
+                }
             }
+            UserEvent::Back(result) => match *result {
+                Ok(session) => {
+                    info!("sessão retomada");
+                    // (On the window's thread, outside the runtime.)
+                    self.runtime.spawn(end_of(&session, self.proxy.clone()));
+                    self.session = Some(session);
+                    self.coming_back = None;
+                    self.last_title = Instant::now() - Duration::from_secs(1);
+                    self.update_title();
+                }
+                Err(e) => {
+                    self.failure = Some(e);
+                    event_loop.exit();
+                }
+            },
         }
     }
 
@@ -389,6 +562,16 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     self.send(InputEvent::SecureAttention);
                     return;
                 }
+                // Ctrl+Alt+R: restart the host, if it allows.
+                if event.state == ElementState::Pressed
+                    && code == KeyCode::KeyR
+                    && self.ctrl_alt()
+                    && self.session.as_ref().is_some_and(|s| s.permissions.restart)
+                {
+                    self.local_key = Some(code);
+                    self.ask_restart();
+                    return;
+                }
                 // Ctrl+Alt+Enter: full screen, and back.
                 if event.state == ElementState::Pressed
                     && matches!(code, KeyCode::Enter | KeyCode::NumpadEnter)
@@ -422,7 +605,32 @@ impl ApplicationHandler<UserEvent> for Viewer {
             self.button_hint = None;
             self.update_button();
         }
-        event_loop.set_control_flow(match self.button_hint {
+        if self
+            .restart_confirm
+            .is_some_and(|until| until <= Instant::now())
+        {
+            self.restart_confirm = None;
+            self.last_title = Instant::now() - Duration::from_secs(1);
+            self.update_title();
+        }
+        // What the title says of it lasts a while.
+        if self
+            .restart_sent
+            .is_some_and(|sent| sent.elapsed() >= RESTART_ANSWER)
+        {
+            self.restart_sent = None;
+            self.last_title = Instant::now() - Duration::from_secs(1);
+            self.update_title();
+        }
+        // The answer comes with no event of its own, on a still screen.
+        let answer = self
+            .restart_sent
+            .map(|_| Instant::now() + Duration::from_secs(1));
+        let wake = [self.button_hint, self.restart_confirm, answer]
+            .into_iter()
+            .flatten()
+            .min();
+        event_loop.set_control_flow(match wake {
             Some(until) => ControlFlow::WaitUntil(until),
             None => ControlFlow::Wait,
         });
@@ -438,6 +646,77 @@ impl ApplicationHandler<UserEvent> for Viewer {
             self.runtime.block_on(endpoint.close());
         }
     }
+}
+
+/// Hands decoded frames to the window.
+fn show_frames(
+    latest: Arc<Mutex<Option<YuvFrame>>>,
+    proxy: EventLoopProxy<UserEvent>,
+) -> impl FnMut(client::DecodedFrame) + Send + 'static {
+    move |frame| {
+        *latest.lock().expect("lock") = Some(frame.yuv);
+        let _ = proxy.send_event(UserEvent::Frame);
+    }
+}
+
+/// Tells the window when this session's connection ends.
+fn end_of(
+    session: &ClientHandle,
+    proxy: EventLoopProxy<UserEvent>,
+) -> impl Future<Output = ()> + Send + 'static {
+    let closed = session.closed();
+    async move {
+        closed.await;
+        let _ = proxy.send_event(UserEvent::SessionEnded);
+    }
+}
+
+/// Tries to open the session again until `time` runs out: the host may be
+/// booting, or the network still down.
+async fn reconnect(
+    back: &Back,
+    endpoint: &Endpoint,
+    token: ResumeToken,
+    time: Duration,
+) -> Result<ClientHandle> {
+    let deadline = Instant::now() + time;
+    let mut wait = BACK_FIRST;
+    loop {
+        match try_back(back, endpoint, token).await {
+            Ok(session) => return Ok(session),
+            Err(e) if is_final(&e) || Instant::now() + wait >= deadline => return Err(e),
+            Err(e) => info!("ainda sem voltar: {e:#}"),
+        }
+        tokio::time::sleep(wait).await;
+        wait = (wait * 2).min(BACK_MAX);
+    }
+}
+
+async fn try_back(back: &Back, endpoint: &Endpoint, token: ResumeToken) -> Result<ClientHandle> {
+    let route = &back.route;
+    let client = crate::signaling::login(&route.server, &route.key, &device_name()).await?;
+    let (conn, code) =
+        crate::signaling::connect(client, route.id, &route.known, endpoint, true).await?;
+    let hello = Hello {
+        peer: PeerInfo::local(APP_VERSION, device_name()),
+        access_code: code,
+        resume: Some(token),
+    };
+    let frames = show_frames(back.latest.clone(), back.proxy.clone());
+    Ok(client::start(conn, hello, None, back.decoder, frames).await?)
+}
+
+/// Whether the host said no: trying again would not change that.
+fn is_final(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<SessionError>(),
+        Some(SessionError::Net(
+            NetError::Rejected(_)
+                | NetError::PasswordNeeded
+                | NetError::HostNotConfirmed
+                | NetError::IncompatibleVersion { .. }
+        ))
+    )
 }
 
 /// Whether a key event is the rest of a shortcut of the viewer (`held`): its
@@ -513,18 +792,15 @@ fn explain(e: SessionError) -> anyhow::Error {
 
 /// Connects to the host: by ID through the server (`--server`), or by IP
 /// with the access code and the host's key. `unattended`: with the password.
-/// Returns the code to present to the host, and this device's key.
-async fn open(
-    args: &ViewArgs,
-    unattended: bool,
-) -> Result<(Endpoint, Connection, String, hext_crypto::PublicKey)> {
+async fn open(args: &ViewArgs, unattended: bool) -> Result<Opened> {
     // The arguments first, before any network.
     let target = target(args)?;
     if unattended && !matches!(target, Target::Id { .. }) {
         bail!("a senha de acesso não assistido só vale conectando pelo ID");
     }
     let key = crate::device_key(args.device_key.as_deref())?;
-    let (endpoint, connected) = match target {
+    let viewer = key.public_key();
+    let (endpoint, connected, route) = match target {
         Target::Id { id, server } => {
             // Logged in (and so registered, which the default relay
             // requires) before the endpoint reaches the relay.
@@ -537,7 +813,13 @@ async fn open(
             };
             let connected =
                 crate::signaling::connect(client, id, &known, &endpoint, unattended).await;
-            (endpoint, connected)
+            let route = Route {
+                server: server.to_owned(),
+                id,
+                key,
+                known,
+            };
+            (endpoint, connected, Some(route))
         }
         Target::Ip { addr, host, code } => {
             // Not registered through a server: no default relay.
@@ -546,11 +828,17 @@ async fn open(
                 .await
                 .with_context(|| format!("falha ao conectar em {addr}"))
                 .map(|conn| (conn, code));
-            (endpoint, connected)
+            (endpoint, connected, None)
         }
     };
     match connected {
-        Ok((conn, code)) => Ok((endpoint, conn, code, key.public_key())),
+        Ok((conn, code)) => Ok(Opened {
+            endpoint,
+            conn,
+            code,
+            viewer,
+            route,
+        }),
         Err(e) => {
             endpoint.close().await;
             Err(e)

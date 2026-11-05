@@ -11,15 +11,18 @@ use hext_crypto::PublicKey;
 use hext_crypto::pake::Verifier;
 use hext_input::Area;
 use hext_net::video::VideoSender;
-use hext_net::{Admission, Connection, NetError};
+use hext_net::{Admission, Connection, ConnectionError, NetError};
 use hext_proto::{
-    Control, Hello, InputEvent, PeerInfo, Permissions, RejectReason, StreamKind, VideoFrame,
+    Control, ENDED_ON_HOST, Hello, InputEvent, PeerInfo, Permissions, RejectReason, StreamKind,
+    VideoFrame,
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::{Lockout, Result, SessionError, codes_match};
+use crate::{KeptResume, Lockout, Result, ResumeTokens, SessionError, codes_match};
 
+/// How long the viewer has to hear that the host ended the session.
+const BYE_WAIT: Duration = Duration::from_secs(1);
 /// How often a still screen repeats the number of its last frame.
 const IDLE_NOTICE: Duration = Duration::from_millis(250);
 
@@ -38,6 +41,21 @@ pub struct HostConfig {
     /// Sessions without anyone accepting, with the password; `None`: this
     /// host has no such thing (it only exists installed).
     pub unattended: Option<UnattendedAccess>,
+    /// The tokens viewers come back with.
+    pub resumes: ResumeTokens,
+    /// Restarts this computer; `None`: this host cannot (it takes the
+    /// service, to be back afterwards).
+    pub restart: Option<Arc<dyn Restart>>,
+}
+
+/// What a restart takes on the host.
+pub trait Restart: Send + Sync {
+    /// Keeps `kept` for after the restart, and restarts the computer.
+    /// `who`: the viewer who asked, as the audit names it.
+    fn restart(&self, kept: &KeptResume, who: &str) -> std::result::Result<(), String>;
+    /// The host's user ended the session: what [`Self::restart`] kept is no
+    /// longer good, even if the computer does restart.
+    fn revoke(&self);
 }
 
 /// What the unattended password takes on the host.
@@ -315,18 +333,34 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // the viewer it was issued to.
     let viewer = hext_net::remote_key(&conn);
     let mut grant: Option<crate::Grant> = None;
+    let mut resumed = false;
     let handshake = hext_net::host_handshake(&conn, config.peer.clone(), |hello: &Hello| {
         let code = config.access_code.as_deref();
         if code.is_some_and(|code| codes_match(code, &hello.access_code)) {
             return Ok(Admission::Allow(Permissions::CONTROL));
         }
-        grant = config.session_codes.redeem(&hello.access_code, &viewer);
-        let grant = grant.as_ref().ok_or(RejectReason::WrongCode)?;
-        if grant.needs_password {
-            admit_with_password(config.unattended.as_ref(), &viewer, grant)
-        } else {
-            Ok(Admission::Allow(grant.permissions))
+        grant = config
+            .session_codes
+            .redeem(&hello.access_code, &viewer)
+            .map(|mut grant| {
+                grant.permissions.restart &= config.restart.is_some();
+                grant
+            });
+        let granted = grant.as_ref().ok_or(RejectReason::WrongCode)?;
+        if !granted.needs_password {
+            return Ok(Admission::Allow(granted.permissions));
         }
+        // Nobody accepted: the token of a session it had, or the password.
+        let back = hello
+            .resume
+            .and_then(|token| config.resumes.take(&token, &viewer));
+        if let Some(back) = back {
+            let permissions = back.permissions;
+            grant = Some(back);
+            resumed = true;
+            return Ok(Admission::Allow(permissions));
+        }
+        admit_with_password(config.unattended.as_ref(), &viewer, granted)
     })
     .await;
     // What counts as a guess is known only now.
@@ -353,10 +387,21 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         (handshake, None) => handshake?,
     };
     let client = hello.peer;
-    let audit = unattended.map(|access| access.password.clone());
+    let audit = config
+        .unattended
+        .as_ref()
+        .filter(|_| resumed)
+        .or(unattended)
+        .map(|access| access.password.clone());
+    if let (true, Some(access), Some(grant)) = (resumed, &config.unattended, &grant) {
+        access
+            .password
+            .audit(&format!("sessão retomada: {}", who(grant)));
+    }
+    let returnable = grant.clone();
     let session = match grant {
         Some(grant) => {
-            if let Some(audit) = &audit {
+            if let Some(audit) = audit.as_ref().filter(|_| !resumed) {
                 audit.audit(&format!("sessão iniciada: {}", who(&grant)));
             }
             ActiveSession {
@@ -419,6 +464,20 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         session.permissions,
     ));
 
+    // Through the server: this viewer can come back. (A failure to tell it
+    // is the connection failing, which the loop below sees.)
+    let (token_hash, displaced) = match returnable {
+        Some(grant) => {
+            let (token, hash, displaced) = config.resumes.open(viewer, grant);
+            let _ = control.send(&Control::ResumeToken(token)).await;
+            (Some(hash), displaced)
+        }
+        None => (None, Arc::default()),
+    };
+    let mut lost = false;
+    // Once: the system refuses a second restart while one is under way.
+    let mut restarting = false;
+
     let result = loop {
         tokio::select! {
             msg = control.recv() => match msg {
@@ -432,14 +491,37 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                     conn.close(0u32.into(), b"bye");
                     break Ok(());
                 }
+                Ok(Control::Restart) => {
+                    restarting = restarting || restart(&config, &session, token_hash.as_ref());
+                    let ok = restarting;
+                    if let Err(e) = control.send(&Control::RestartAnswer { ok }).await {
+                        break Err(e.into());
+                    }
+                }
                 Ok(other) => debug!("mensagem inesperada: {other:?}"),
                 // A peer that left is a clean end; anything else is an error.
                 Err(e) if e.is_peer_closed() => break Ok(()),
                 Err(e) => break Err(e.into()),
             },
             _ = conn.closed() => break Ok(()),
+            _ = displaced.notified() => {
+                info!("o técnico voltou por outra conexão");
+                lost = true;
+                break Ok(());
+            }
             _ = end.notified() => {
                 info!("sessão encerrada no host");
+                if let Some(restart) = &config.restart {
+                    restart.revoke();
+                }
+                // Reliably, unlike the closing itself: a viewer that missed
+                // it would wait for a return that will not happen.
+                let told = async {
+                    let _ = control.send(&Control::Bye).await;
+                    conn.closed().await;
+                };
+                let _ = tokio::time::timeout(BYE_WAIT, told).await;
+                conn.close(0u32.into(), ENDED_ON_HOST);
                 break Ok(());
             }
             // Without video or input the session is useless: end it.
@@ -447,6 +529,19 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             done = &mut input => break task_end("input", done),
         }
     };
+
+    // (Asked before closing, which would hide how the connection ended.)
+    lost |= matches!(
+        conn.close_reason(),
+        Some(ConnectionError::TimedOut | ConnectionError::Reset)
+    );
+    if let Some(hash) = &token_hash {
+        if lost {
+            config.resumes.lost(hash);
+        } else {
+            config.resumes.forget(hash);
+        }
+    }
 
     writer.abort();
     // (A finished task was already awaited by the loop and must not be
@@ -463,6 +558,30 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     }
     info!("desconectado: {}", client.device_name);
     result.map(|()| client)
+}
+
+/// Restarts the computer for this session's viewer, if it may. The session
+/// goes on until the computer goes down, and is not lost if that is called
+/// off on the host.
+fn restart(config: &HostConfig, session: &ActiveSession, token: Option<&crate::TokenHash>) -> bool {
+    let kept = token.and_then(|hash| config.resumes.kept(hash));
+    let (true, Some(restart), Some(kept)) = (session.permissions.restart, &config.restart, kept)
+    else {
+        warn!("pedido para reiniciar recusado: {}", session.name);
+        return false;
+    };
+    let who = format!(
+        "\"{}\" (ID {})",
+        session.name,
+        session.id.as_deref().unwrap_or("")
+    );
+    match restart.restart(&kept, &who) {
+        Ok(()) => true,
+        Err(e) => {
+            warn!("reiniciar: {e}");
+            false
+        }
+    }
 }
 
 fn capture_loop(

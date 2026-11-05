@@ -121,7 +121,10 @@ identidade, e o ID deixa de valer). Os logs ficam em `C:\ProgramData\HextRemote`
 `agent.log`), uma pasta que só administradores abrem.
 
 Com o serviço, o técnico vê e controla também a **tela de login, o bloqueio e os prompts do UAC**, e manda
-`Ctrl+Alt+Del` com **Ctrl+Alt+End** (ou Ctrl+Alt+Delete no Mac). O acesso pelo IP com código fica
+`Ctrl+Alt+Del` com **Ctrl+Alt+End** (ou Ctrl+Alt+Delete no Mac). Com a permissão de reiniciar, aperte
+**Ctrl+Alt+R** duas vezes em até 5 segundos: o computador reinicia, fecha os programas abertos sem pedir para
+salvar, e o técnico volta sozinho quando ele estiver online, sem novo aceite. Quedas de rede também
+reconectam sozinhas. O acesso pelo IP com código fica
 desligado no serviço: só pelo ID, com aceite.
 
 ### Acesso não assistido

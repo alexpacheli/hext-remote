@@ -63,7 +63,10 @@ const pages = {
     start() {
       $("refuse").addEventListener("click", () => this.reply(null));
       $("accept").addEventListener("click", () =>
-        this.reply({ control: $("control").checked }),
+        this.reply({
+          control: $("control").checked,
+          restart: $("restart").checked,
+        }),
       );
     },
     reply(choice) {
@@ -79,6 +82,9 @@ const pages = {
       $("name").textContent = view.ask.name;
       $("id").textContent = view.ask.id;
       $("control").checked = true;
+      $("restart").checked = false;
+      $("restart").disabled = !view.ask.can_restart;
+      $("restart-label").classList.toggle("soon", !view.ask.can_restart);
       $("accept").disabled = true;
       setTimeout(() => {
         $("accept").disabled = false;

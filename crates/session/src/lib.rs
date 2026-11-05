@@ -7,10 +7,14 @@
 pub mod client;
 pub mod host;
 mod lockout;
+mod resume;
 mod session_codes;
 mod stats;
 
 pub use lockout::Lockout;
+pub use resume::{
+    KeptResume, NETWORK_GRACE, RESTART_LIFETIME, ResumeToken, ResumeTokens, TokenHash,
+};
 pub use session_codes::{Grant, SessionCodes};
 pub use stats::Stats;
 
