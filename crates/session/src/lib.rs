@@ -5,6 +5,7 @@
 //!   caller's input events → input stream.
 
 pub mod client;
+pub mod files;
 pub mod host;
 mod lockout;
 mod resume;

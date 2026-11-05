@@ -52,6 +52,9 @@ windows = { workspace = true, features = [
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 # The pages embedded in the executable, also without the Tauri CLI.
 tauri = { version = "2", features = ["custom-protocol"] }
+tauri-plugin-dialog = "2"
+# The question before taking a file, over the session's window.
+rfd = { version = "0.17", default-features = false }
 tauri-plugin-single-instance = "2"
 
 [target.'cfg(any(windows, target_os = "macos"))'.build-dependencies]

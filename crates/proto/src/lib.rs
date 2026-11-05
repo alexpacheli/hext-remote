@@ -5,7 +5,7 @@
 //!   [preamble](encode_preamble) from each side and then carries [`Control`]
 //!   messages as length-prefixed frames (see [`frame`]);
 //! - **unidirectional streams**, each starting with a [`StreamKind`] byte:
-//!   input events (client → host);
+//!   input events (client → host) and files (either way, one stream each);
 //! - unreliable **QUIC datagrams** carrying [`Datagram`] messages: video
 //!   ([`VideoPacket`]s: each [`VideoFrame`] split into shards with
 //!   Reed-Solomon parity, so a lost packet neither stalls later frames nor
@@ -18,10 +18,13 @@ use serde::{Deserialize, Serialize};
 pub mod frame;
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u16 = 9;
+pub const PROTOCOL_VERSION: u16 = 10;
 
 /// The longest text the clipboard shares, in bytes: it fits a control frame.
 pub const MAX_CLIPBOARD_TEXT: usize = 512 * 1024;
+
+/// The most of a file carried by one [`FileMessage::Chunk`].
+pub const MAX_FILE_CHUNK: usize = 64 * 1024;
 
 /// TLS ALPN identifier. It carries no version: versions are compared through
 /// the preamble, so mismatched peers still connect and can report why they fail.
@@ -66,12 +69,15 @@ pub enum StreamKind {
     // datagrams.
     /// Client → host, carries [`InputEvent`]s.
     Input = 2,
+    /// Either way, carries one file as [`FileMessage`]s.
+    File = 3,
 }
 
 impl StreamKind {
     pub fn from_byte(byte: u8) -> Option<Self> {
         match byte {
             2 => Some(Self::Input),
+            3 => Some(Self::File),
             _ => None,
         }
     }
@@ -79,7 +85,7 @@ impl StreamKind {
     /// Largest frame accepted on a stream of this kind.
     pub const fn max_frame_len(self) -> usize {
         match self {
-            Self::Input => frame::MAX_FRAME_LEN,
+            Self::Input | Self::File => frame::MAX_FRAME_LEN,
         }
     }
 }
@@ -205,6 +211,30 @@ pub enum Control {
     /// Either way: the clipboard changed to this text (takes
     /// [`Permissions::clipboard`], at most [`MAX_CLIPBOARD_TEXT`] bytes).
     Clipboard { text: String },
+    /// What became of file `id` ([`FileMessage::Start`]), from the side that
+    /// got it.
+    FileAnswer { id: u64, outcome: FileOutcome },
+}
+
+/// What the receiving side did with a file.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOutcome {
+    Saved,
+    /// No permission, or a name that is not just a name.
+    Refused,
+    /// Nobody is logged on to that computer to have a Downloads folder.
+    NoUser,
+    /// It could not be written, or did not arrive whole.
+    Failed,
+}
+
+/// What a [`StreamKind::File`] stream carries: [`Self::Start`], the file in
+/// [`Self::Chunk`]s, and [`Self::End`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum FileMessage {
+    Start { id: u64, name: String, size: u64 },
+    Chunk(#[serde(with = "serde_bytes")] Vec<u8>),
+    End { sha256: [u8; 32] },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,6 +389,10 @@ mod tests {
             Control::Clipboard {
                 text: "copiado".into(),
             },
+            Control::FileAnswer {
+                id: 3,
+                outcome: FileOutcome::NoUser,
+            },
             Control::HelloAck {
                 peer: PeerInfo::local("0.1.0", "laptop"),
                 permissions: Permissions {
@@ -384,6 +418,24 @@ mod tests {
         for msg in msgs {
             let bytes = encode(&msg).unwrap();
             assert_eq!(decode::<Control>(&bytes).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn file_roundtrip() {
+        let msgs = [
+            FileMessage::Start {
+                id: 3,
+                name: "relatório.pdf".into(),
+                size: 1 << 40,
+            },
+            FileMessage::Chunk(vec![7; MAX_FILE_CHUNK]),
+            FileMessage::End { sha256: [9; 32] },
+        ];
+        for msg in msgs {
+            let bytes = encode(&msg).unwrap();
+            assert!(bytes.len() <= frame::MAX_FRAME_LEN);
+            assert_eq!(decode::<FileMessage>(&bytes).unwrap(), msg);
         }
     }
 
@@ -444,6 +496,10 @@ mod tests {
         assert_eq!(
             StreamKind::from_byte(StreamKind::Input as u8),
             Some(StreamKind::Input)
+        );
+        assert_eq!(
+            StreamKind::from_byte(StreamKind::File as u8),
+            Some(StreamKind::File)
         );
         assert_eq!(StreamKind::from_byte(0), None);
         // The old video stream is refused.

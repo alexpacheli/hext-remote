@@ -222,6 +222,7 @@ async fn serve(
                 let grant = Grant {
                     permissions: Permissions {
                         clipboard: true,
+                        files: true,
                         restart: true,
                         ..Permissions::CONTROL
                     },

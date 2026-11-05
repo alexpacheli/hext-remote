@@ -49,6 +49,7 @@ async fn start_host() -> (
         unattended: None,
         resumes: Default::default(),
         restart: None,
+        files: None,
     });
     let server = tokio::spawn(async move {
         let conn = endpoint.accept().await.unwrap().await.unwrap();
@@ -122,6 +123,7 @@ async fn host_ending_the_session_is_not_an_error() {
         unattended: None,
         resumes: Default::default(),
         restart: None,
+        files: None,
     });
     let host_side = tokio::spawn(async move {
         let conn = endpoint.accept().await.unwrap().await.unwrap();

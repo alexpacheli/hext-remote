@@ -13,6 +13,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hext_proto::Permissions;
@@ -22,6 +23,7 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, RunEvent, State, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_dialog::DialogExt;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::warn;
@@ -33,8 +35,11 @@ use crate::ui_link::{FromUi, HOST_LOCKED, SessionView, ToUi, UiHub, VIEWER_CONNE
 
 /// Tells the pages to read [`View`] again.
 const CHANGED: &str = "changed";
+/// How long the bar says how a file ended, before going back to saying what
+/// the session may do.
+const TRANSFER_SHOWN: Duration = Duration::from_secs(8);
 /// The session bar: width and height, in logical pixels.
-const BAR_OPEN: (f64, f64) = (480.0, 56.0);
+const BAR_OPEN: (f64, f64) = (540.0, 56.0);
 const BAR_FOLDED: (f64, f64) = (210.0, 32.0);
 
 /// Who owns the sessions.
@@ -82,6 +87,12 @@ struct View {
     viewer: ViewerState,
     /// The computers this one accessed, the latest first.
     recent: Vec<Computer>,
+    /// How the last file of the session went.
+    transfer: Option<String>,
+    /// Counts what the bar should unfold for.
+    transfer_news: u64,
+    /// Counts the sessions: a file is chosen for the one that was on.
+    sessions: u64,
 }
 
 struct Shared {
@@ -288,15 +299,43 @@ fn received(app: &AppHandle, msg: ToUi) {
         }
         ToUi::SessionStarted(session) => {
             view.session = Some(session);
+            view.sessions += 1;
             open_bar(app);
         }
         ToUi::SessionEnded => {
             view.session = None;
+            view.transfer = None;
             dismiss(app, "bar");
+        }
+        ToUi::Transfer {
+            text,
+            news,
+            finished,
+        } => {
+            view.transfer = Some(text);
+            view.transfer_news += u64::from(news);
+            if finished {
+                forget_transfer(app.clone(), view.transfer_news);
+            }
         }
     }
     drop(view);
     changed(app);
+}
+
+/// After a while, unless there is news since: what the session may do is what
+/// the bar is there to say.
+fn forget_transfer(app: AppHandle, news: u64) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(TRANSFER_SHOWN).await;
+        let shared = app.state::<Shared>();
+        let mut view = shared.view.lock().expect("lock");
+        if view.transfer_news == news {
+            view.transfer = None;
+            drop(view);
+            changed(&app);
+        }
+    });
 }
 
 /// Trades messages until the other end goes.
@@ -381,6 +420,7 @@ fn view(shared: State<'_, Shared>) -> View {
 struct Choice {
     control: bool,
     clipboard: bool,
+    files: bool,
     restart: bool,
 }
 
@@ -399,8 +439,8 @@ fn answer(
     let permissions = choice.map(|choice| Permissions {
         control: choice.control,
         clipboard: choice.clipboard,
+        files: choice.files,
         restart: choice.restart,
-        ..Permissions::VIEW_ONLY
     });
     settle(&app, &shared, ask, permissions);
 }
@@ -460,6 +500,32 @@ fn fold_bar(window: WebviewWindow, folded: bool) {
 fn end_session(window: WebviewWindow, shared: State<'_, Shared>) {
     if window.label() == "bar" {
         shared.send(FromUi::EndSession);
+    }
+}
+
+/// Lets the user choose files to send to the viewer. (On a thread that may
+/// wait: the window stays open for as long as the user takes.)
+#[tauri::command(async)]
+fn send_files(app: AppHandle, window: WebviewWindow, shared: State<'_, Shared>) {
+    if window.label() != "bar" {
+        return;
+    }
+    let session = shared.view.lock().expect("lock").sessions;
+    let chosen = app
+        .dialog()
+        .file()
+        .set_title("Enviar arquivos para o técnico")
+        .set_parent(&window)
+        .blocking_pick_files();
+    // Chosen for that technician, not for one who came in the meantime.
+    if shared.view.lock().expect("lock").sessions != session {
+        return;
+    }
+    for path in chosen.into_iter().flatten() {
+        match path.into_path() {
+            Ok(path) => shared.send(FromUi::SendFile(path)),
+            Err(e) => warn!("arquivo escolhido: {e}"),
+        }
     }
 }
 
@@ -623,6 +689,7 @@ pub fn run(link: Link) -> Result<()> {
                 open_home(app);
             }
         }))
+        .plugin(tauri_plugin_dialog::init())
         .manage(Shared {
             view: Mutex::new(View {
                 recent: Recent::load().into_list(),
@@ -636,6 +703,7 @@ pub fn run(link: Link) -> Result<()> {
             answer,
             end_session,
             fold_bar,
+            send_files,
             connect,
             forget
         ])

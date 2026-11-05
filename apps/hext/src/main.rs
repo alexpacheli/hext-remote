@@ -320,6 +320,30 @@ fn device_key(path: Option<&std::path::Path>) -> Result<hext_crypto::DeviceKey> 
     Ok(key)
 }
 
+/// The Downloads folder of the user `token` says, or of this process's.
+#[cfg(windows)]
+#[allow(unsafe_code)] // Win32 calls
+fn downloads_of(token: Option<windows::Win32::Foundation::HANDLE>) -> Option<std::path::PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_Downloads, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+    let path = unsafe { SHGetKnownFolderPath(&FOLDERID_Downloads, KF_FLAG_DEFAULT, token) }.ok()?;
+    let text = unsafe { path.to_string() };
+    unsafe { CoTaskMemFree(Some(path.0.cast())) };
+    text.ok().map(Into::into)
+}
+
+/// This user's Downloads folder.
+#[cfg(windows)]
+fn downloads() -> Option<std::path::PathBuf> {
+    downloads_of(None)
+}
+
+/// This user's Downloads folder.
+#[cfg(not(windows))]
+fn downloads() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join("Downloads"))
+}
+
 fn device_name() -> String {
     gethostname::gethostname().to_string_lossy().into_owned()
 }

@@ -246,6 +246,10 @@ body.folded .session .short {
   display: block;
 }
 
+body[data-page="bar"].folded #send {
+  display: none;
+}
+
 body[data-page="bar"].folded button {
   padding: 1px 10px;
 }
