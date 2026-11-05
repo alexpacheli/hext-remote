@@ -222,9 +222,18 @@ body[data-page="bar"] {
 .session {
   flex: 1;
   min-width: 0;
+}
+
+.session span {
+  display: block;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.session .doing {
+  font-size: 12px;
+  opacity: 0.75;
 }
 
 body[data-page="bar"] button {

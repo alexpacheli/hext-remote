@@ -210,7 +210,7 @@ fn open_bar(app: &AppHandle) {
         let bar = window(&app, "bar", "bar.html", |builder| {
             builder
                 .title("Hext Remote: sessão ativa")
-                .inner_size(WIDTH, 44.0)
+                .inner_size(WIDTH, 56.0)
                 .decorations(false)
                 .resizable(false)
                 .maximizable(false)

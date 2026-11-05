@@ -113,11 +113,16 @@ const pages = {
       }
       const { name, id, permissions, unattended } = view.session;
       const who = id ? `${name} (ID ${id})` : name;
-      const doing = permissions.control ? "vendo e controlando" : "vendo";
-      const how = unattended ? " (entrou com a senha)" : "";
-      const shared = permissions.clipboard ? ", com a área de transferência" : "";
-      $("session").textContent = `${who} está ${doing} este computador${how}${shared}`;
-      $("session").title = $("session").textContent;
+      const doing = [
+        permissions.control ? "Vendo e controlando" : "Vendo",
+        permissions.clipboard && "área de transferência",
+        unattended && "entrou com a senha",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      $("who").textContent = who;
+      $("doing").textContent = doing;
+      $("session").title = `${who}: ${doing}`;
     },
   },
 };
