@@ -1,19 +1,29 @@
 //! Client (viewer) side of a session.
 
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hext_codec::{DecoderPreference, YuvFrame};
 use hext_net::video::{Event, Reassembler};
-use hext_net::{Connection, ControlStream, FramedSend, NetError, PasswordLogin};
+use hext_net::{Connection, ConnectionError, ControlStream, FramedSend, NetError, PasswordLogin};
 use hext_proto::{
-    Control, Datagram, Hello, InputEvent, PeerInfo, Permissions, StreamKind, VideoFrame,
+    Control, Datagram, ENDED_ON_HOST, Hello, InputEvent, PeerInfo, Permissions, StreamKind,
+    VideoFrame,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::{Result, SessionError, Stats};
+use crate::{NETWORK_GRACE, RESTART_LIFETIME, Result, ResumeToken, SessionError, Stats};
+
+/// What the host said about coming back and about restarting.
+#[derive(Debug, Default)]
+struct Resume {
+    token: Option<ResumeToken>,
+    /// The host's answer to the last request to restart.
+    restart: Option<bool>,
+}
 
 /// A decoded picture ready to be shown.
 pub struct DecodedFrame {
@@ -29,6 +39,8 @@ pub struct ClientHandle {
     pub stats: Arc<Mutex<Stats>>,
     conn: Connection,
     input: mpsc::UnboundedSender<InputEvent>,
+    restart: mpsc::UnboundedSender<()>,
+    resume: Arc<Mutex<Resume>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<()>>,
     /// The last round-trip time seen, for while paths change.
@@ -54,6 +66,56 @@ impl ClientHandle {
     /// The path in use: direct (peer to peer) or through the relay.
     pub fn path(&self) -> Option<hext_net::PathInfo> {
         hext_net::path(&self.conn)
+    }
+
+    /// Asks the host to restart the computer. It refuses without
+    /// [`Permissions::restart`].
+    pub fn request_restart(&self) {
+        let mut resume = self.resume.lock().expect("lock");
+        if resume.restart == Some(true) {
+            return; // already on its way
+        }
+        resume.restart = None;
+        let _ = self.restart.send(());
+    }
+
+    /// The host's answer to [`Self::request_restart`], once it came.
+    pub fn restart_answer(&self) -> Option<bool> {
+        self.resume.lock().expect("lock").restart
+    }
+
+    /// Completes when the connection ends, however it does.
+    pub fn closed(&self) -> impl Future<Output = ()> + Send + 'static {
+        let conn = self.conn.clone();
+        async move {
+            conn.closed().await;
+        }
+    }
+
+    /// The token to come back with, once the host gave it.
+    pub fn token(&self) -> Option<ResumeToken> {
+        self.resume.lock().expect("lock").token
+    }
+
+    /// Once the connection ended: the token to come back with and how long
+    /// there is to use it, if this end was not meant as the last.
+    pub fn comes_back(&self) -> Option<(ResumeToken, Duration)> {
+        let resume = self.resume.lock().expect("lock");
+        let token = resume.token?;
+        let reason = self.conn.close_reason();
+        if let Some(ConnectionError::ApplicationClosed(close)) = &reason
+            && close.reason.as_ref() == ENDED_ON_HOST
+        {
+            return None;
+        }
+        if resume.restart == Some(true) {
+            return Some((token, RESTART_LIFETIME));
+        }
+        matches!(
+            reason,
+            Some(ConnectionError::TimedOut | ConnectionError::Reset)
+        )
+        .then_some((token, NETWORK_GRACE))
     }
 
     /// `true` once the session ended (host left, network lost or closed).
@@ -86,6 +148,8 @@ pub async fn start(
 
     let stats = Arc::new(Mutex::new(Stats::default()));
     let (input_tx, input_rx) = mpsc::unbounded_channel();
+    let (restart_tx, restart_rx) = mpsc::unbounded_channel();
+    let resume = Arc::new(Mutex::new(Resume::default()));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = oneshot::channel();
     let task = tokio::spawn(run(
@@ -93,6 +157,8 @@ pub async fn start(
         control,
         input_stream,
         input_rx,
+        restart_rx,
+        resume.clone(),
         shutdown_rx,
         stats.clone(),
         decoder,
@@ -115,6 +181,8 @@ pub async fn start(
         stats,
         conn,
         input: input_tx,
+        restart: restart_tx,
+        resume,
         shutdown: Some(shutdown_tx),
         task,
         last_rtt: Mutex::new(Duration::ZERO),
@@ -127,6 +195,8 @@ async fn run(
     mut control: ControlStream,
     mut input_stream: FramedSend,
     mut input_rx: mpsc::UnboundedReceiver<InputEvent>,
+    mut restart_rx: mpsc::UnboundedReceiver<()>,
+    resume: Arc<Mutex<Resume>>,
     mut shutdown: oneshot::Receiver<()>,
     stats: Arc<Mutex<Stats>>,
     decoder: DecoderPreference,
@@ -170,8 +240,19 @@ async fn run(
                     break peer_closed_is_ok(&conn, e);
                 }
             }
+            Some(()) = restart_rx.recv() => {
+                if let Err(e) = control.send(&Control::Restart).await {
+                    break peer_closed_is_ok(&conn, e);
+                }
+            }
             msg = control.recv() => match msg {
                 Ok(Control::Bye) => break Ok(()),
+                Ok(Control::ResumeToken(token)) => {
+                    resume.lock().expect("lock").token = Some(token);
+                }
+                Ok(Control::RestartAnswer { ok }) => {
+                    resume.lock().expect("lock").restart = Some(ok);
+                }
                 Ok(other) => debug!("mensagem inesperada: {other:?}"),
                 Err(e) => break peer_closed_is_ok(&conn, e),
             },

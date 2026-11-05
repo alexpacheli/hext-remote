@@ -8,7 +8,7 @@ use hext_codec::{EncoderPreference, EncoderSettings};
 use hext_net::{EndpointConfig, NetError};
 use hext_proto::{PeerInfo, RejectReason};
 use hext_session::host::{self, HostConfig, LocalDesktop};
-use hext_session::{SessionCodes, SessionError};
+use hext_session::{ResumeTokens, SessionCodes, SessionError};
 use ring::rand::{SecureRandom, SystemRandom};
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
@@ -115,6 +115,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
     println!();
 
     let session_codes = SessionCodes::default();
+    let resumes = ResumeTokens::default();
     let encoder = EncoderSettings {
         bitrate_bps: args.bitrate_mbps * 1_000_000,
         max_fps: args.fps as f32,
@@ -135,6 +136,8 @@ pub async fn run(args: HostArgs) -> Result<()> {
         }),
         presence: None,
         unattended: None,
+        resumes: resumes.clone(),
+        restart: None,
     });
     // One session at a time, handshake included: attempts are serialized,
     // which together with the penalty rate-limits code guessing.
@@ -148,7 +151,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
             key.clone(),
             device_name(),
             (endpoint.clone(), has_relay),
-            session_codes,
+            (session_codes, resumes),
             slot.clone(),
             Box::new(crate::signaling::Terminal::new()),
         ));
@@ -201,6 +204,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
     hext_input::preflight();
 
     let session_codes = SessionCodes::default();
+    let resumes = ResumeTokens::default();
     let config = Arc::new(HostConfig {
         peer: PeerInfo::local(APP_VERSION, name.clone()),
         access_code: None,
@@ -212,6 +216,8 @@ pub async fn portable(hub: UiHub) -> Result<()> {
         }),
         presence: Some(Arc::new(hub.clone())),
         unattended: None,
+        resumes: resumes.clone(),
+        restart: None,
     });
     let slot = Arc::new(Semaphore::new(1));
     tokio::spawn(crate::signaling::host(
@@ -219,7 +225,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
         key,
         name,
         (endpoint.clone(), has_relay),
-        session_codes,
+        (session_codes, resumes),
         slot.clone(),
         Box::new(UiAsk(hub)),
     ));

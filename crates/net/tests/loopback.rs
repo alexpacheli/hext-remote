@@ -17,6 +17,7 @@ fn hello(code: &str) -> Hello {
     Hello {
         peer: PeerInfo::local("test", "client"),
         access_code: code.to_owned(),
+        resume: None,
     }
 }
 

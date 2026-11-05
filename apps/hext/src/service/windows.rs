@@ -23,9 +23,9 @@ use hext_crypto::{FileKeyStore, load_or_create, machine_dir};
 use hext_net::EndpointConfig;
 use hext_proto::{PeerInfo, Permissions};
 use hext_session::host::{
-    ActiveSession, BoxFuture, HostConfig, Presence, UnattendedAccess, UnattendedPassword,
+    ActiveSession, BoxFuture, HostConfig, Presence, Restart, UnattendedAccess, UnattendedPassword,
 };
-use hext_session::{Lockout, SessionCodes};
+use hext_session::{Grant, KeptResume, Lockout, RESTART_LIFETIME, ResumeTokens, SessionCodes};
 use hext_signal::DeviceId;
 use ring::rand::{SecureRandom, SystemRandom};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
@@ -535,6 +535,102 @@ impl UnattendedPassword for MachinePassword {
     }
 }
 
+/// What is kept of a token for after a restart. Only its hash: the file lets
+/// nobody in, and the folder is closed anyway.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct KeptFile {
+    hash: [u8; 32],
+    viewer: [u8; 32],
+    permissions: Permissions,
+    name: String,
+    id: String,
+    needs_password: bool,
+    /// Seconds since 1970 (nothing else counts across a restart).
+    until: u64,
+}
+
+fn kept_file() -> Result<PathBuf> {
+    Ok(machine_dir()?.join("resume.json"))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Takes back the token kept before a restart, if it is still good.
+fn restore_resume(resumes: &ResumeTokens) {
+    let Ok(path) = kept_file() else { return };
+    let Ok(text) = std::fs::read(&path) else {
+        return;
+    };
+    // Good for one boot, however this goes.
+    let _ = std::fs::remove_file(&path);
+    let kept: KeptFile = match serde_json::from_slice(&text) {
+        Ok(kept) => kept,
+        Err(e) => {
+            warn!("{}: {e}", path.display());
+            return;
+        }
+    };
+    let left = kept.until.saturating_sub(unix_now());
+    if left == 0 {
+        return;
+    }
+    resumes.restore(
+        KeptResume {
+            hash: kept.hash,
+            viewer: hext_crypto::PublicKey::from_bytes(kept.viewer),
+            grant: Grant {
+                permissions: kept.permissions,
+                name: kept.name,
+                id: kept.id,
+                needs_password: kept.needs_password,
+            },
+        },
+        Duration::from_secs(left),
+    );
+}
+
+/// Restarts this computer, with the token waiting on the other side.
+struct MachineRestart;
+
+impl Restart for MachineRestart {
+    fn restart(&self, kept: &KeptResume, who: &str) -> std::result::Result<(), String> {
+        let file = KeptFile {
+            hash: kept.hash,
+            viewer: *kept.viewer.as_bytes(),
+            permissions: kept.grant.permissions,
+            name: kept.grant.name.clone(),
+            id: kept.grant.id.clone(),
+            needs_password: kept.grant.needs_password,
+            until: unix_now() + RESTART_LIFETIME.as_secs(),
+        };
+        let path = kept_file().map_err(|e| e.to_string())?;
+        let text = serde_json::to_vec(&file).map_err(|e| e.to_string())?;
+        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        audit(&format!("reinício pedido: {who}"));
+        // From the system's own folder: nothing on PATH gets to run as SYSTEM.
+        let root = std::env::var_os("SystemRoot").ok_or("SystemRoot não definido")?;
+        let done = Command::new(Path::new(&root).join("System32").join("shutdown.exe"))
+            .args(["/r", "/t", "5", "/d", "p:0:0"])
+            .status()
+            .map_err(|e| format!("shutdown: {e}"))?;
+        if !done.success() {
+            self.revoke();
+            return Err(format!("shutdown: {done}"));
+        }
+        Ok(())
+    }
+
+    fn revoke(&self) {
+        if let Ok(path) = kept_file() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// The session on the bar and, for where the bar cannot be seen, on the
 /// agent's indicator.
 struct Indicators {
@@ -714,6 +810,8 @@ async fn serve() -> Result<()> {
     }));
     let encoder = EncoderSettings::default();
     let session_codes = SessionCodes::default();
+    let resumes = ResumeTokens::default();
+    restore_resume(&resumes);
     let host_key = key.public_key();
     let config = Arc::new(HostConfig {
         peer: PeerInfo::local(APP_VERSION, name.clone()),
@@ -734,6 +832,8 @@ async fn serve() -> Result<()> {
             lockout: Lockout::default(),
             password: Arc::new(MachinePassword),
         }),
+        resumes: resumes.clone(),
+        restart: Some(Arc::new(MachineRestart)),
     });
     let slot = Arc::new(Semaphore::new(1));
     tokio::spawn(crate::signaling::host(
@@ -741,7 +841,7 @@ async fn serve() -> Result<()> {
         key,
         name,
         (endpoint.clone(), true),
-        session_codes,
+        (session_codes, resumes),
         slot.clone(),
         Box::new(ConsoleAsk(ui)),
     ));

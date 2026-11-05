@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod frame;
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 
 /// TLS ALPN identifier. It carries no version: versions are compared through
 /// the preamble, so mismatched peers still connect and can report why they fail.
@@ -44,6 +44,10 @@ pub fn decode_preamble(bytes: [u8; PREAMBLE_LEN]) -> Result<u16, CodecError> {
     }
     Ok(u16::from_le_bytes([bytes[2], bytes[3]]))
 }
+
+/// Why a connection closes when the host's user ended the session: nobody
+/// should come back to it, whatever was under way.
+pub const ENDED_ON_HOST: &[u8] = b"ended on host";
 
 /// Default UDP port a host listens on for direct (LAN) connections.
 pub const DEFAULT_PORT: u16 = 7420;
@@ -149,6 +153,8 @@ pub struct Hello {
     pub peer: PeerInfo,
     /// Code shown by the host; it must match before anything is shared.
     pub access_code: String,
+    /// Coming back to a session: the token it gave ([`Control::ResumeToken`]).
+    pub resume: Option<[u8; 32]>,
 }
 
 /// Messages on the reliable control stream.
@@ -187,6 +193,12 @@ pub enum Control {
         #[serde(with = "serde_bytes")]
         confirmation: Vec<u8>,
     },
+    /// Host → client: how to come back to this session, once.
+    ResumeToken([u8; 32]),
+    /// Client → host: restart the computer (takes [`Permissions::restart`]).
+    Restart,
+    /// Host → client: whether the computer is restarting.
+    RestartAnswer { ok: bool },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,8 +344,12 @@ mod tests {
             Control::Hello(Hello {
                 peer: PeerInfo::local("0.1.0", "desk"),
                 access_code: "123456789".into(),
+                resume: Some([7; 32]),
             }),
             Control::RequestKeyframe,
+            Control::ResumeToken([9; 32]),
+            Control::Restart,
+            Control::RestartAnswer { ok: true },
             Control::HelloAck {
                 peer: PeerInfo::local("0.1.0", "laptop"),
                 permissions: Permissions {

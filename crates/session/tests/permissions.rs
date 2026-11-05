@@ -115,6 +115,8 @@ async fn session_with(permissions: Permissions) -> Running {
         desktop: Arc::new(desktop),
         presence: Some(indicator.clone()),
         unattended: None,
+        resumes: Default::default(),
+        restart: None,
     });
     let accepting = host_endpoint.clone();
     let host = tokio::spawn(async move {
@@ -130,6 +132,7 @@ async fn session_with(permissions: Permissions) -> Running {
         Hello {
             peer: PeerInfo::local("test", "viewer"),
             access_code: code,
+            resume: None,
         },
         None,
         DecoderPreference::Software,

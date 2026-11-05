@@ -44,6 +44,8 @@ async fn accepted_by_id_then_streams() {
         }),
         presence: None,
         unattended: None,
+        resumes: Default::default(),
+        restart: None,
     });
     tokio::spawn(async move {
         while let Some(incoming) = endpoint.accept().await {
@@ -107,6 +109,7 @@ async fn accepted_by_id_then_streams() {
     let hello = |code: &str| Hello {
         peer: PeerInfo::local("test", "viewer"),
         access_code: code.to_owned(),
+        resume: None,
     };
     let client_endpoint = hext_net::bind(&viewer_key, &EndpointConfig::default())
         .await

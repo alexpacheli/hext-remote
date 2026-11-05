@@ -13,7 +13,7 @@ use hext_crypto::{DeviceKey, PublicKey};
 use hext_net::{Connection, Endpoint};
 use hext_proto::Permissions;
 use hext_session::host::BoxFuture;
-use hext_session::{Grant, SessionCodes};
+use hext_session::{Grant, ResumeTokens, SessionCodes};
 use hext_signal::{Check, Client, ClientMsg, DeviceId, KnownHosts, Rejection, Role, ServerMsg};
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{info, warn};
@@ -28,6 +28,8 @@ const RETRY_FIRST: Duration = Duration::from_secs(2);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 /// How long the host waits for its relay before answering a request.
 const RELAY_WAIT: Duration = Duration::from_secs(5);
+/// How long a viewer coming back waits for the session it left to wind down.
+const DISPLACE_WAIT: Duration = Duration::from_secs(5);
 /// How long to try reaching the host (directly or through the relay).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -109,7 +111,7 @@ pub async fn host(
     key: Arc<DeviceKey>,
     name: String,
     (endpoint, has_relay): (Endpoint, bool),
-    codes: SessionCodes,
+    (codes, resumes): (SessionCodes, ResumeTokens),
     slot: Arc<Semaphore>,
     mut ask: Box<dyn Ask>,
 ) {
@@ -129,7 +131,7 @@ pub async fn host(
                     &mut client,
                     ask.as_mut(),
                     (&endpoint, has_relay),
-                    &codes,
+                    (&codes, &resumes),
                     &slot,
                 )
                 .await
@@ -149,7 +151,7 @@ async fn serve(
     client: &mut Client,
     ask: &mut dyn Ask,
     (endpoint, has_relay): (&Endpoint, bool),
-    codes: &SessionCodes,
+    (codes, resumes): (&SessionCodes, &ResumeTokens),
     slot: &Semaphore,
 ) -> Result<(), hext_signal::ClientError> {
     loop {
@@ -164,17 +166,31 @@ async fn serve(
             continue;
         };
         let from_name = shown_name(&from_name);
+        // The session it lost may still be on here: the host is the last to
+        // know.
+        let back = unattended && resumes.displace(&from_key);
+        if back {
+            let freed = async {
+                while slot.available_permits() == 0 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            };
+            let _ = tokio::time::timeout(DISPLACE_WAIT, freed).await;
+        }
         if slot.available_permits() == 0 {
             info!("pedido de {from_name} ({from}) recusado: já existe uma sessão");
             client.send(&ClientMsg::Reject { request }).await?;
             continue;
         }
         if unattended {
-            // Nobody to ask: the password decides, in the session.
-            let answer = if ask.unattended() {
+            // Nobody to ask: the token or the password decides, in the session.
+            let answer = if back || ask.unattended() {
                 info!("pedido de {from_name} ({from}) com a senha de acesso não assistido");
                 let grant = Grant {
-                    permissions: Permissions::CONTROL,
+                    permissions: Permissions {
+                        restart: true,
+                        ..Permissions::CONTROL
+                    },
                     name: from_name,
                     id: from.to_string(),
                     needs_password: true,

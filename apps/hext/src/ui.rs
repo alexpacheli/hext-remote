@@ -50,6 +50,8 @@ struct AskView {
     name: String,
     id: String,
     seconds: u64,
+    /// This computer can restart at a viewer's request (installed only).
+    can_restart: bool,
 }
 
 /// The viewer opened from the home screen.
@@ -271,6 +273,7 @@ fn received(app: &AppHandle, msg: ToUi) {
                 name,
                 id,
                 seconds,
+                can_restart: app.state::<Shared>().managed,
             });
             open_ask(app);
         }
@@ -374,6 +377,7 @@ fn view(shared: State<'_, Shared>) -> View {
 #[derive(Debug, Clone, Copy, Deserialize)]
 struct Choice {
     control: bool,
+    restart: bool,
 }
 
 /// The user's answer to request `ask`; `None`: refused.
@@ -390,6 +394,7 @@ fn answer(
     }
     let permissions = choice.map(|choice| Permissions {
         control: choice.control,
+        restart: choice.restart,
         ..Permissions::VIEW_ONLY
     });
     settle(&app, &shared, ask, permissions);
