@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 pub mod frame;
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
+
+/// The longest text the clipboard shares, in bytes: it fits a control frame.
+pub const MAX_CLIPBOARD_TEXT: usize = 512 * 1024;
 
 /// TLS ALPN identifier. It carries no version: versions are compared through
 /// the preamble, so mismatched peers still connect and can report why they fail.
@@ -199,6 +202,9 @@ pub enum Control {
     Restart,
     /// Host → client: whether the computer is restarting.
     RestartAnswer { ok: bool },
+    /// Either way: the clipboard changed to this text (takes
+    /// [`Permissions::clipboard`], at most [`MAX_CLIPBOARD_TEXT`] bytes).
+    Clipboard { text: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,6 +356,9 @@ mod tests {
             Control::ResumeToken([9; 32]),
             Control::Restart,
             Control::RestartAnswer { ok: true },
+            Control::Clipboard {
+                text: "copiado".into(),
+            },
             Control::HelloAck {
                 peer: PeerInfo::local("0.1.0", "laptop"),
                 permissions: Permissions {

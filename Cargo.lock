@@ -204,6 +204,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "arboard"
+version = "3.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeb9553e62312c8756a5979254fc6d7da8bbeb5986a1e17037fab932f7037917"
+dependencies = [
+ "clipboard-win",
+ "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "parking_lot 0.12.5",
+ "percent-encoding",
+ "windows-sys 0.61.2",
+ "x11rb",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -934,6 +951,15 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
+
+[[package]]
+name = "clipboard-win"
+version = "5.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
+dependencies = [
+ "error-code",
+]
 
 [[package]]
 name = "cmov"
@@ -1712,6 +1738,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "error-code"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
+
+[[package]]
 name = "event-listener"
 version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2449,6 +2481,7 @@ dependencies = [
  "clap",
  "gethostname",
  "hext-capture",
+ "hext-clipboard",
  "hext-codec",
  "hext-crypto",
  "hext-input",
@@ -2486,6 +2519,16 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-screen-capture-kit",
  "thiserror 2.0.21",
+ "tracing",
+ "windows",
+]
+
+[[package]]
+name = "hext-clipboard"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "hext-proto",
  "tracing",
  "windows",
 ]
@@ -2599,6 +2642,7 @@ name = "hext-session"
 version = "0.1.0"
 dependencies = [
  "hext-capture",
+ "hext-clipboard",
  "hext-codec",
  "hext-crypto",
  "hext-input",
@@ -4185,6 +4229,7 @@ dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
 ]

@@ -188,6 +188,7 @@ async fn serve(
                 info!("pedido de {from_name} ({from}) com a senha de acesso não assistido");
                 let grant = Grant {
                     permissions: Permissions {
+                        clipboard: true,
                         restart: true,
                         ..Permissions::CONTROL
                     },

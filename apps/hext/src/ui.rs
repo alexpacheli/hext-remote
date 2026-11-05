@@ -377,6 +377,7 @@ fn view(shared: State<'_, Shared>) -> View {
 #[derive(Debug, Clone, Copy, Deserialize)]
 struct Choice {
     control: bool,
+    clipboard: bool,
     restart: bool,
 }
 
@@ -394,6 +395,7 @@ fn answer(
     }
     let permissions = choice.map(|choice| Permissions {
         control: choice.control,
+        clipboard: choice.clipboard,
         restart: choice.restart,
         ..Permissions::VIEW_ONLY
     });

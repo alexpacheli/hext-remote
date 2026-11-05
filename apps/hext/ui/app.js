@@ -65,6 +65,7 @@ const pages = {
       $("accept").addEventListener("click", () =>
         this.reply({
           control: $("control").checked,
+          clipboard: $("clipboard").checked,
           restart: $("restart").checked,
         }),
       );
@@ -82,6 +83,7 @@ const pages = {
       $("name").textContent = view.ask.name;
       $("id").textContent = view.ask.id;
       $("control").checked = true;
+      $("clipboard").checked = false;
       $("restart").checked = false;
       $("restart").disabled = !view.ask.can_restart;
       $("restart-label").classList.toggle("soon", !view.ask.can_restart);
@@ -113,7 +115,8 @@ const pages = {
       const who = id ? `${name} (ID ${id})` : name;
       const doing = permissions.control ? "vendo e controlando" : "vendo";
       const how = unattended ? " (entrou com a senha)" : "";
-      $("session").textContent = `${who} está ${doing} este computador${how}`;
+      const shared = permissions.clipboard ? ", com a área de transferência" : "";
+      $("session").textContent = `${who} está ${doing} este computador${how}${shared}`;
       $("session").title = $("session").textContent;
     },
   },

@@ -31,9 +31,13 @@ pub enum ToAgent {
     Start {
         id: u64,
         stream: Stream,
+        /// Tell text copied here (the session has the permission).
+        clipboard: bool,
     },
     Keyframe,
     Input(InputEvent),
+    /// Text from the viewer, for this session's clipboard.
+    Clipboard(String),
     /// Stop streaming (the session ended).
     Stop,
     /// The indicator for where the interface cannot be seen (the sign-in
@@ -57,6 +61,8 @@ pub enum FromAgent {
     /// A frame of stream `id` (frames of an older one may still be on the
     /// way when the next starts).
     Frame { id: u64, frame: VideoFrame },
+    /// Text copied during stream `id`.
+    Clipboard { id: u64, text: String },
     /// Someone pressed Encerrar on the indicator.
     EndSession,
 }
@@ -153,6 +159,7 @@ struct Session {
     id: u64,
     stream: Stream,
     frames: mpsc::Sender<VideoFrame>,
+    clipboard: Option<mpsc::Sender<String>>,
     /// Told when the first agent answers `Start`.
     started: Option<oneshot::Sender<Result<(), String>>>,
     /// Frame numbers as the viewer sees them: a new agent starts over at 0.
@@ -174,6 +181,7 @@ impl AgentHub {
                 let _ = tx.send(ToAgent::Start {
                     id: session.id,
                     stream: session.stream,
+                    clipboard: session.clipboard.is_some(),
                 });
             }
             if state.indicator.is_some() {
@@ -219,6 +227,13 @@ impl AgentHub {
                     // Waits while the network is busy: backpressure on the
                     // agent through the pipe.
                     let _ = frames.send(frame).await;
+                }
+                Ok(Some(FromAgent::Clipboard { id, text })) => {
+                    let state = self.state.lock().expect("lock");
+                    let session = state.session.as_ref().filter(|s| s.id == id);
+                    if let Some(clipboard) = session.and_then(|s| s.clipboard.as_ref()) {
+                        let _ = clipboard.try_send(text);
+                    }
                 }
                 Ok(Some(FromAgent::EndSession)) => {
                     if let Some(end) = &self.end_session {
@@ -299,9 +314,11 @@ impl Desktop for AgentDesktop {
     fn open(
         &self,
         frames: mpsc::Sender<VideoFrame>,
+        clipboard: Option<mpsc::Sender<String>>,
     ) -> BoxFuture<'_, hext_session::Result<Box<dyn Screen>>> {
         Box::pin(async move {
             let (started_tx, started_rx) = oneshot::channel();
+            let share = clipboard.is_some();
             {
                 let mut state = self.hub.state.lock().expect("lock");
                 let id = state.next_stream;
@@ -310,6 +327,7 @@ impl Desktop for AgentDesktop {
                     id,
                     stream: self.stream,
                     frames,
+                    clipboard,
                     started: Some(started_tx),
                     seq: 0,
                 });
@@ -318,6 +336,7 @@ impl Desktop for AgentDesktop {
                     let _ = agent.send(ToAgent::Start {
                         id,
                         stream: self.stream,
+                        clipboard: share,
                     });
                 }
             }
@@ -367,6 +386,10 @@ impl Screen for AgentScreen {
         self.hub.send(ToAgent::Input(*event));
     }
 
+    fn set_clipboard(&mut self, text: String) {
+        self.hub.send(ToAgent::Clipboard(text));
+    }
+
     fn close(self: Box<Self>) -> BoxFuture<'static, ()> {
         // The agent releases held keys when it stops.
         self.end();
@@ -397,16 +420,31 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
             Err(e) => break Err(e),
         };
         match msg {
-            ToAgent::Start { id, stream } => {
+            ToAgent::Start {
+                id,
+                stream,
+                clipboard,
+            } => {
                 stop(&mut screen).await;
                 let (frames_tx, mut frames_rx) = mpsc::channel::<VideoFrame>(1);
-                let answer = match stream.desktop().open(frames_tx).await {
+                let (copied_tx, mut copied_rx) = mpsc::channel::<String>(4);
+                let copied_tx = clipboard.then_some(copied_tx);
+                let answer = match stream.desktop().open(frames_tx, copied_tx).await {
                     Ok(opened) => {
                         info!("transmitindo a tela");
                         let out = out_tx.clone();
                         let forward = Task(tokio::spawn(async move {
-                            while let Some(frame) = frames_rx.recv().await {
-                                if out.send(FromAgent::Frame { id, frame }).await.is_err() {
+                            loop {
+                                let msg = tokio::select! {
+                                    frame = frames_rx.recv() => match frame {
+                                        Some(frame) => FromAgent::Frame { id, frame },
+                                        None => break,
+                                    },
+                                    Some(text) = copied_rx.recv() => {
+                                        FromAgent::Clipboard { id, text }
+                                    }
+                                };
+                                if out.send(msg).await.is_err() {
                                     break;
                                 }
                             }
@@ -435,6 +473,11 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
             ToAgent::Input(event) => {
                 if let Some((screen, _)) = &mut screen {
                     screen.inject(&event);
+                }
+            }
+            ToAgent::Clipboard(text) => {
+                if let Some((screen, _)) = &mut screen {
+                    screen.set_clipboard(text);
                 }
             }
             ToAgent::Stop => stop(&mut screen).await,
@@ -496,13 +539,14 @@ mod tests {
         let start = ToAgent::Start {
             id: 7,
             stream: test_stream(),
+            clipboard: false,
         };
         write_msg(&mut a, &start).await.unwrap();
         write_msg(&mut a, &ToAgent::Keyframe).await.unwrap();
         drop(a);
         assert!(matches!(
             read_msg::<_, ToAgent>(&mut b).await.unwrap(),
-            Some(ToAgent::Start { id: 7, stream }) if stream.test_pattern
+            Some(ToAgent::Start { id: 7, stream, .. }) if stream.test_pattern
         ));
         assert!(matches!(
             read_msg::<_, ToAgent>(&mut b).await.unwrap(),
@@ -541,7 +585,7 @@ mod tests {
         let first = agent(&hub);
         let desktop = hub.desktop(test_stream());
         let (tx, mut frames) = mpsc::channel(1);
-        let screen = desktop.open(tx).await.unwrap();
+        let screen = desktop.open(tx, None).await.unwrap();
         let a = next(&mut frames).await;
         assert!(a.keyframe);
         let b = next(&mut frames).await;
@@ -576,7 +620,7 @@ mod tests {
         );
         let _agent = agent(&hub);
         let (tx, _frames) = mpsc::channel(1);
-        let mut screen = hub.desktop(test_stream()).open(tx).await.unwrap();
+        let mut screen = hub.desktop(test_stream()).open(tx, None).await.unwrap();
         screen.inject(&InputEvent::SecureAttention);
         assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
         screen.close().await;
@@ -590,7 +634,7 @@ mod tests {
         tokio::spawn(async move { attached.attach(service_end).await });
         let desktop = hub.desktop(test_stream());
         let (tx, mut frames) = mpsc::channel(4);
-        let opening = tokio::spawn(async move { desktop.open(tx).await.map(|_| ()) });
+        let opening = tokio::spawn(async move { desktop.open(tx, None).await.map(|_| ()) });
 
         // A fake agent: a frame still on the way from an older stream,
         // then the answer and a frame of this one.
@@ -630,12 +674,51 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_clipboard_goes_through_the_agent_both_ways() {
+        let hub = AgentHub::default();
+        let (service_end, agent_end) = tokio::io::duplex(1 << 20);
+        let attached = hub.clone();
+        tokio::spawn(async move { attached.attach(service_end).await });
+        let desktop = hub.desktop(test_stream());
+        let (tx, _frames) = mpsc::channel(1);
+        let (copied_tx, mut copied) = mpsc::channel(1);
+        let opening = tokio::spawn(async move { desktop.open(tx, Some(copied_tx)).await });
+
+        let (mut reader, mut writer) = tokio::io::split(agent_end);
+        let Some(ToAgent::Start {
+            id,
+            clipboard: true,
+            ..
+        }) = read_msg(&mut reader).await.unwrap()
+        else {
+            panic!("expected Start with the clipboard");
+        };
+        let started = FromAgent::Started { id, result: Ok(()) };
+        write_msg(&mut writer, &started).await.unwrap();
+        let mut screen = opening.await.unwrap().unwrap();
+
+        // An older stream's text goes nowhere.
+        for (id, text) in [(id + 1, "antigo"), (id, "copiado")] {
+            let text = text.into();
+            let msg = FromAgent::Clipboard { id, text };
+            write_msg(&mut writer, &msg).await.unwrap();
+        }
+        assert_eq!(copied.recv().await.as_deref(), Some("copiado"));
+
+        screen.set_clipboard("colado".into());
+        assert!(matches!(
+            read_msg::<_, ToAgent>(&mut reader).await.unwrap(),
+            Some(ToAgent::Clipboard(text)) if text == "colado"
+        ));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_session_waits_for_an_agent() {
         let hub = AgentHub::default();
         let desktop = hub.desktop(test_stream());
         let (tx, mut frames) = mpsc::channel(1);
-        let opening = tokio::spawn(async move { desktop.open(tx).await.map(|_| ()) });
+        let opening = tokio::spawn(async move { desktop.open(tx, None).await.map(|_| ()) });
         tokio::time::sleep(Duration::from_millis(200)).await;
         let _agent = agent(&hub);
         opening.await.unwrap().unwrap();

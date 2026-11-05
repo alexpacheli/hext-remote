@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use hext_clipboard::Clipboard;
 use hext_codec::{DecoderPreference, YuvFrame};
 use hext_input::keymap::{self, CommandKey};
 use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
@@ -103,7 +104,7 @@ pub fn run(args: ViewArgs) -> Result<()> {
     let latest: Arc<Mutex<Option<YuvFrame>>> = Arc::default();
 
     let session = runtime.block_on(async {
-        let session = client::start(
+        let mut session = client::start(
             conn,
             hello,
             password,
@@ -113,6 +114,7 @@ pub fn run(args: ViewArgs) -> Result<()> {
         .await
         .map_err(explain)?;
         tokio::spawn(end_of(&session, proxy.clone()));
+        tokio::spawn(share_clipboard(&mut session));
         anyhow::Ok(session)
     })?;
     info!(
@@ -457,10 +459,11 @@ impl ApplicationHandler<UserEvent> for Viewer {
                 }
             }
             UserEvent::Back(result) => match *result {
-                Ok(session) => {
+                Ok(mut session) => {
                     info!("sessão retomada");
                     // (On the window's thread, outside the runtime.)
                     self.runtime.spawn(end_of(&session, self.proxy.clone()));
+                    self.runtime.spawn(share_clipboard(&mut session));
                     self.session = Some(session);
                     self.coming_back = None;
                     self.last_title = Instant::now() - Duration::from_secs(1);
@@ -668,6 +671,30 @@ fn end_of(
     async move {
         closed.await;
         let _ = proxy.send_event(UserEvent::SessionEnded);
+    }
+}
+
+/// Keeps this computer's clipboard and the host's in step, for as long as
+/// the session lasts and if it may.
+fn share_clipboard(session: &mut ClientHandle) -> impl Future<Output = ()> + Send + 'static {
+    let link = session
+        .clipboard()
+        .filter(|_| session.permissions.clipboard);
+    async move {
+        let Some((outgoing, mut incoming)) = link else {
+            return;
+        };
+        let watched = Clipboard::watch(move |text| {
+            let _ = outgoing.send(text);
+        });
+        match watched {
+            Ok(clipboard) => {
+                while let Some(text) = incoming.recv().await {
+                    clipboard.set(text);
+                }
+            }
+            Err(e) => warn!("área de transferência: {e}"),
+        }
     }
 }
 
