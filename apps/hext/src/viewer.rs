@@ -789,10 +789,9 @@ fn ask_file(
     _window: &Window,
     _text: String,
     answer: oneshot::Sender<bool>,
-) -> impl Future<Output = ()> + Send + 'static {
-    async move {
-        let _ = answer.send(false);
-    }
+) -> std::future::Ready<()> {
+    let _ = answer.send(false);
+    std::future::ready(())
 }
 
 /// Trades files with the host, for as long as the session lasts: what it
