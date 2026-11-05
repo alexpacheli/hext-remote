@@ -410,6 +410,16 @@ async fn a_viewer_comes_back_with_its_token_without_the_password() {
         host.attempt_back(&viewer, token).await,
         Err(SessionError::Net(NetError::Rejected(RejectReason::Denied)))
     ));
+
+    // What came back is audited to its end, whoever let it in.
+    back.close().await.unwrap();
+    let audit = host.audit(3).await;
+    assert!(
+        audit
+            .iter()
+            .any(|line| line.starts_with("sessão encerrada")),
+        "{audit:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

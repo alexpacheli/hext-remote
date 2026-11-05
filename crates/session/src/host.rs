@@ -387,7 +387,12 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         (handshake, None) => handshake?,
     };
     let client = hello.peer;
-    let audit = unattended.map(|access| access.password.clone());
+    let audit = config
+        .unattended
+        .as_ref()
+        .filter(|_| resumed)
+        .or(unattended)
+        .map(|access| access.password.clone());
     if let (true, Some(access), Some(grant)) = (resumed, &config.unattended, &grant) {
         access
             .password
