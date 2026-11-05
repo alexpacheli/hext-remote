@@ -22,6 +22,7 @@ use hext_crypto::pake::Verifier;
 use hext_crypto::{FileKeyStore, load_or_create, machine_dir};
 use hext_net::EndpointConfig;
 use hext_proto::{PeerInfo, Permissions};
+use hext_session::files::{FileAccess, Transfer};
 use hext_session::host::{
     ActiveSession, BoxFuture, HostConfig, Presence, Restart, UnattendedAccess, UnattendedPassword,
 };
@@ -39,10 +40,10 @@ use windows::Win32::Security::Authorization::{
     GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows::Win32::Security::{
-    DuplicateTokenEx, GetTokenInformation, IsWellKnownSid, OWNER_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SecurityImpersonation, SetTokenInformation,
-    TOKEN_ALL_ACCESS, TOKEN_USER, TokenPrimary, TokenSessionId, TokenUser,
-    WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser, IsWellKnownSid,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, RevertToSelf, SECURITY_ATTRIBUTES,
+    SecurityImpersonation, SetTokenInformation, TOKEN_ALL_ACCESS, TOKEN_USER, TokenPrimary,
+    TokenSessionId, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
 };
 use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
@@ -657,6 +658,81 @@ impl Presence for Indicators {
         self.agents.set_indicator(None);
         self.ui.ended();
     }
+
+    fn outgoing(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<PathBuf>> {
+        self.ui.outgoing()
+    }
+
+    fn transfer(&self, transfer: &Transfer) {
+        self.ui.transfer(transfer);
+    }
+}
+
+/// Files as the user at this computer has them: the service's rights go
+/// nowhere near them. That user decides where Downloads leads, and the viewer
+/// what the files are called; as SYSTEM, the two together could write
+/// anywhere. A file chosen on the bar opens only if that user could open it.
+struct UserFiles;
+
+impl UserFiles {
+    fn token() -> Option<UserToken> {
+        UserToken::of(unsafe { WTSGetActiveConsoleSessionId() })
+    }
+}
+
+/// `work` with the rights of `token`'s user.
+fn as_user_of(token: &UserToken, work: &mut dyn FnMut()) -> std::io::Result<()> {
+    /// A thread left as the user would serve the rest of the service
+    /// with the wrong rights, and one left as nobody cannot be trusted.
+    struct BackToSelf;
+    impl Drop for BackToSelf {
+        fn drop(&mut self) {
+            if unsafe { RevertToSelf() }.is_err() {
+                std::process::abort();
+            }
+        }
+    }
+    unsafe { ImpersonateLoggedOnUser(token.0) }?;
+    let _back = BackToSelf;
+    work();
+    Ok(())
+}
+
+/// [`UserFiles`] for one file: the user it began with.
+struct HeldUser {
+    token: UserToken,
+    downloads: Option<PathBuf>,
+}
+
+impl FileAccess for HeldUser {
+    fn downloads(&self) -> Option<PathBuf> {
+        self.downloads.clone()
+    }
+
+    fn as_user(&self, work: &mut dyn FnMut()) -> std::io::Result<()> {
+        as_user_of(&self.token, work)
+    }
+
+    fn for_one_file(&self) -> Option<Arc<dyn FileAccess>> {
+        None
+    }
+}
+
+impl FileAccess for UserFiles {
+    fn downloads(&self) -> Option<PathBuf> {
+        crate::downloads_of(Some(Self::token()?.0))
+    }
+
+    fn as_user(&self, work: &mut dyn FnMut()) -> std::io::Result<()> {
+        let token = Self::token().ok_or(std::io::ErrorKind::NotConnected)?;
+        as_user_of(&token, work)
+    }
+
+    fn for_one_file(&self) -> Option<Arc<dyn FileAccess>> {
+        let token = Self::token()?;
+        let downloads = crate::downloads_of(Some(token.0));
+        Some(Arc::new(HeldUser { token, downloads }))
+    }
 }
 
 // ---------------------------------------------------------------- service
@@ -836,6 +912,7 @@ async fn serve() -> Result<()> {
         }),
         resumes: resumes.clone(),
         restart: Some(Arc::new(MachineRestart)),
+        files: Some(Arc::new(UserFiles)),
     });
     let slot = Arc::new(Semaphore::new(1));
     tokio::spawn(crate::signaling::host(
@@ -1086,6 +1163,10 @@ async fn launch_ui(session: u32, ui: &UiHub) -> Result<Option<Running>> {
 
 /// The token of the user logged on to a session.
 struct UserToken(HANDLE);
+
+// A kernel handle, good on any thread, and only closed on drop.
+unsafe impl Send for UserToken {}
+unsafe impl Sync for UserToken {}
 
 impl Drop for UserToken {
     fn drop(&mut self) {

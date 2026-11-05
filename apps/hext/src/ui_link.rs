@@ -7,9 +7,11 @@
 //! a crash), so the [`UiHub`] keeps what a new one must show.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use hext_proto::Permissions;
+use hext_session::files::{Stage, Transfer};
 use hext_session::host::{ActiveSession, BoxFuture, Presence};
 use hext_signal::DeviceId;
 use serde::{Deserialize, Serialize};
@@ -49,6 +51,13 @@ pub enum ToUi {
     },
     SessionStarted(SessionView),
     SessionEnded,
+    /// How a file is going. `news`: more than the percentage moved on.
+    /// `finished`: it got to its end, one way or the other.
+    Transfer {
+        text: String,
+        news: bool,
+        finished: bool,
+    },
 }
 
 /// Interface → owner of the sessions.
@@ -61,6 +70,9 @@ pub enum FromUi {
     },
     /// The user pressed Encerrar.
     EndSession,
+    /// The user chose a file to send to the viewer. It is opened with this
+    /// user's rights, not with its owner's.
+    SendFile(PathBuf),
 }
 
 /// The session going on, as shown on the indicator.
@@ -85,6 +97,10 @@ struct State {
     id: Option<String>,
     notice: Option<String>,
     session: Option<(SessionView, Arc<Notify>)>,
+    /// Where the files the user sends go, during a session.
+    outgoing: Option<mpsc::UnboundedSender<PathBuf>>,
+    /// The other end of `outgoing`, until the session takes it.
+    to_session: Option<mpsc::UnboundedReceiver<PathBuf>>,
     /// The request on screen, waiting for its answer.
     asking: Option<(u64, oneshot::Sender<Option<Permissions>>)>,
     next_ask: u64,
@@ -161,6 +177,11 @@ impl UiHub {
             FromUi::EndSession => {
                 if let Some((_, end)) = &state.session {
                     end.notify_one();
+                }
+            }
+            FromUi::SendFile(path) => {
+                if let Some(outgoing) = &state.outgoing {
+                    let _ = outgoing.send(path);
                 }
             }
         }
@@ -271,8 +292,11 @@ impl Presence for UiHub {
             permissions: session.permissions,
             unattended: session.unattended,
         };
+        let (outgoing, to_session) = mpsc::unbounded_channel();
         let mut state = self.0.lock().expect("lock");
         state.session = Some((view.clone(), end.clone()));
+        state.outgoing = Some(outgoing);
+        state.to_session = Some(to_session);
         state.send(ToUi::SessionStarted(view));
         end
     }
@@ -280,7 +304,21 @@ impl Presence for UiHub {
     fn ended(&self) {
         let mut state = self.0.lock().expect("lock");
         state.session = None;
+        state.outgoing = None;
+        state.to_session = None;
         state.send(ToUi::SessionEnded);
+    }
+
+    fn outgoing(&self) -> Option<mpsc::UnboundedReceiver<PathBuf>> {
+        self.0.lock().expect("lock").to_session.take()
+    }
+
+    fn transfer(&self, transfer: &Transfer) {
+        self.0.lock().expect("lock").send(ToUi::Transfer {
+            text: transfer.to_string(),
+            news: transfer.is_news(),
+            finished: !matches!(transfer.stage, Stage::Going { .. }),
+        });
     }
 }
 
@@ -459,6 +497,27 @@ mod tests {
             .expect("ended");
         hub.ended();
         assert_eq!(next(&mut ui).await, ToUi::SessionEnded);
+    }
+
+    #[tokio::test]
+    async fn the_files_chosen_go_to_the_session_on_now() {
+        let hub = UiHub::default();
+        let (mut ui, _attached) = connect(&hub);
+        settled(&hub).await;
+        // Chosen with no session: goes nowhere.
+        let chosen = FromUi::SendFile("antes.txt".into());
+        write_msg(&mut ui, &chosen).await.unwrap();
+        hub.set_id(id());
+        assert!(matches!(next(&mut ui).await, ToUi::Id(_)));
+
+        let _end = hub.started(&session());
+        let mut files = hub.outgoing().expect("this session's");
+        assert!(hub.outgoing().is_none(), "once");
+        let chosen = FromUi::SendFile("durante.txt".into());
+        write_msg(&mut ui, &chosen).await.unwrap();
+        assert_eq!(files.recv().await, Some("durante.txt".into()));
+        hub.ended();
+        assert_eq!(files.recv().await, None, "over with the session");
     }
 
     #[tokio::test]

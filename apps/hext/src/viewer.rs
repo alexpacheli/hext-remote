@@ -8,6 +8,8 @@ use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tokio::sync::oneshot;
+
 use anyhow::{Context, Result, bail};
 use hext_clipboard::Clipboard;
 use hext_codec::{DecoderPreference, YuvFrame};
@@ -17,6 +19,7 @@ use hext_proto::Os;
 use hext_proto::{Hello, InputEvent, MouseButton, PeerInfo, RejectReason};
 use hext_render::{ButtonAction, Renderer, VideoRect, button_rect};
 use hext_session::client::{self, ClientHandle};
+use hext_session::files::{Confirm, OwnFiles, Stage, Transfer, size_text};
 use hext_session::{NETWORK_GRACE, ResumeToken, SessionError};
 use hext_signal::{DeviceId, KnownHosts};
 use tracing::{info, warn};
@@ -45,12 +48,21 @@ const RESTART_ANSWER: Duration = Duration::from_secs(10);
 /// takes 10 requests a minute from a device.)
 const BACK_FIRST: Duration = Duration::from_secs(2);
 const BACK_MAX: Duration = Duration::from_secs(10);
+/// How long the title says how a file ended.
+const TRANSFER_SHOWN: Duration = Duration::from_secs(8);
 
 enum UserEvent {
     Frame,
     SessionEnded,
     /// The attempt to come back ended.
     Back(Box<Result<ClientHandle>>),
+    /// News of a file.
+    Transfer(Transfer),
+    /// The host wants to send this file: receive it?
+    AskFile {
+        text: String,
+        answer: oneshot::Sender<bool>,
+    },
 }
 
 /// What it takes to reach the host again: only by ID.
@@ -115,6 +127,7 @@ pub fn run(args: ViewArgs) -> Result<()> {
         .map_err(explain)?;
         tokio::spawn(end_of(&session, proxy.clone()));
         tokio::spawn(share_clipboard(&mut session));
+        tokio::spawn(share_files(&mut session, proxy.clone()));
         anyhow::Ok(session)
     })?;
     info!(
@@ -150,6 +163,7 @@ pub fn run(args: ViewArgs) -> Result<()> {
         coming_back: None,
         restart_confirm: None,
         restart_sent: None,
+        transfer: None,
         failure: None,
         proxy,
         window: None,
@@ -193,6 +207,9 @@ struct Viewer {
     restart_confirm: Option<Instant>,
     /// When the host was asked to restart.
     restart_sent: Option<Instant>,
+    /// What the title says of the files, and until when (`None`: until the
+    /// next news).
+    transfer: Option<(String, Option<Instant>)>,
     /// Why the session could not be opened again.
     failure: Option<anyhow::Error>,
     proxy: EventLoopProxy<UserEvent>,
@@ -246,6 +263,22 @@ impl Viewer {
         }
         self.last_title = now - Duration::from_secs(1);
         self.update_title();
+    }
+
+    /// Puts `text` on the title, until `until`.
+    fn show_transfer(&mut self, text: String, until: Option<Instant>) {
+        self.transfer = Some((text, until));
+        self.update_title();
+    }
+
+    /// A file was dropped on the window.
+    fn send_file(&mut self, path: std::path::PathBuf) {
+        let until = Some(Instant::now() + TRANSFER_SHOWN);
+        match &self.session {
+            Some(session) if session.permissions.files => session.send_file(path),
+            Some(_) => self.show_transfer("Sem permissão para enviar arquivos".into(), until),
+            None => self.show_transfer("Sem conexão: arquivo não enviado".into(), until),
+        }
     }
 
     fn leave_fullscreen(&mut self) {
@@ -388,6 +421,10 @@ impl Viewer {
                 }
             }
         }
+        if let Some((text, _)) = &self.transfer {
+            window.set_title(&format!("Hext Remote — {text}"));
+            return;
+        }
         let mut stats = session.stats.lock().expect("lock");
         let path = path_label(session);
         let view_only = if session.permissions.control {
@@ -464,6 +501,8 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     // (On the window's thread, outside the runtime.)
                     self.runtime.spawn(end_of(&session, self.proxy.clone()));
                     self.runtime.spawn(share_clipboard(&mut session));
+                    self.runtime
+                        .spawn(share_files(&mut session, self.proxy.clone()));
                     self.session = Some(session);
                     self.coming_back = None;
                     self.last_title = Instant::now() - Duration::from_secs(1);
@@ -474,6 +513,16 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     event_loop.exit();
                 }
             },
+            UserEvent::Transfer(transfer) => {
+                let until = (!matches!(transfer.stage, Stage::Going { .. }))
+                    .then(|| Instant::now() + TRANSFER_SHOWN);
+                self.show_transfer(transfer.to_string(), until);
+            }
+            UserEvent::AskFile { text, answer } => {
+                if let Some(window) = &self.window {
+                    self.runtime.spawn(ask_file(window, text, answer));
+                }
+            }
         }
     }
 
@@ -488,6 +537,7 @@ impl ApplicationHandler<UserEvent> for Viewer {
                 self.draw(false);
             }
             WindowEvent::RedrawRequested => self.draw(false),
+            WindowEvent::DroppedFile(path) => self.send_file(path),
             WindowEvent::Focused(false) => {
                 self.local_key = None;
                 self.send(InputEvent::ReleaseAll);
@@ -625,11 +675,17 @@ impl ApplicationHandler<UserEvent> for Viewer {
             self.last_title = Instant::now() - Duration::from_secs(1);
             self.update_title();
         }
+        let shown_until = self.transfer.as_ref().and_then(|(_, until)| *until);
+        if shown_until.is_some_and(|until| until <= Instant::now()) {
+            self.transfer = None;
+            self.last_title = Instant::now() - Duration::from_secs(1);
+            self.update_title();
+        }
         // The answer comes with no event of its own, on a still screen.
         let answer = self
             .restart_sent
             .map(|_| Instant::now() + Duration::from_secs(1));
-        let wake = [self.button_hint, self.restart_confirm, answer]
+        let wake = [self.button_hint, self.restart_confirm, answer, shown_until]
             .into_iter()
             .flatten()
             .min();
@@ -696,6 +752,73 @@ fn share_clipboard(session: &mut ClientHandle) -> impl Future<Output = ()> + Sen
             Err(e) => warn!("área de transferência: {e}"),
         }
     }
+}
+
+/// Asks over the session's window; a question left unanswered is a no.
+#[cfg(any(windows, target_os = "macos"))]
+fn ask_file(
+    window: &Window,
+    text: String,
+    answer: oneshot::Sender<bool>,
+) -> impl Future<Output = ()> + Send + 'static {
+    use rfd::{AsyncMessageDialog, MessageButtons, MessageDialogResult, MessageLevel};
+    const RECEIVE: &str = "Receber";
+    let shown = AsyncMessageDialog::new()
+        .set_title("Hext Remote")
+        .set_description(text)
+        .set_level(MessageLevel::Warning)
+        .set_buttons(MessageButtons::OkCancelCustom(
+            RECEIVE.into(),
+            "Recusar".into(),
+        ))
+        .set_parent(window)
+        .show();
+    async move {
+        let yes = match shown.await {
+            MessageDialogResult::Ok => true,
+            MessageDialogResult::Custom(label) => label == RECEIVE,
+            _ => false,
+        };
+        let _ = answer.send(yes);
+    }
+}
+
+/// Nothing to ask with: no file is taken.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn ask_file(
+    _window: &Window,
+    _text: String,
+    answer: oneshot::Sender<bool>,
+) -> std::future::Ready<()> {
+    let _ = answer.send(false);
+    std::future::ready(())
+}
+
+/// Trades files with the host, for as long as the session lasts: what it
+/// sends, if this user says yes, goes to their Downloads.
+fn share_files(
+    session: &mut ClientHandle,
+    proxy: EventLoopProxy<UserEvent>,
+) -> impl Future<Output = ()> + Send + 'static {
+    let host = session.host.device_name.clone();
+    let asking = proxy.clone();
+    let confirm: Confirm = Arc::new(move |name, size| {
+        let text = format!(
+            "{host} quer enviar um arquivo para este computador:\n\n{name} ({})\n\n\
+             Receba só se esperava por ele. Ele vai para a pasta Downloads.",
+            size_text(size)
+        );
+        let (answer, said) = oneshot::channel();
+        let _ = asking.send_event(UserEvent::AskFile { text, answer });
+        Box::pin(async move { said.await.unwrap_or(false) })
+    });
+    session.files(
+        Arc::new(OwnFiles(crate::downloads())),
+        Arc::new(move |transfer| {
+            let _ = proxy.send_event(UserEvent::Transfer(transfer));
+        }),
+        confirm,
+    )
 }
 
 /// Tries to open the session again until `time` runs out: the host may be

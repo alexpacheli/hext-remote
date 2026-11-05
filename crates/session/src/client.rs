@@ -1,6 +1,7 @@
 //! Client (viewer) side of a session.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -8,13 +9,14 @@ use hext_codec::{DecoderPreference, YuvFrame};
 use hext_net::video::{Event, Reassembler};
 use hext_net::{Connection, ConnectionError, ControlStream, FramedSend, NetError, PasswordLogin};
 use hext_proto::{
-    Control, Datagram, ENDED_ON_HOST, Hello, InputEvent, PeerInfo, Permissions, StreamKind,
-    VideoFrame,
+    Control, Datagram, ENDED_ON_HOST, FileOutcome, Hello, InputEvent, PeerInfo, Permissions,
+    StreamKind, VideoFrame,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+use crate::files::{self, Confirm, FileAccess, FileEnd, Tell};
 use crate::{NETWORK_GRACE, RESTART_LIFETIME, Result, ResumeToken, SessionError, Stats};
 
 /// What the host said about coming back and about restarting.
@@ -26,6 +28,13 @@ struct Resume {
     /// Why the connection ended, if it did before this side closed it:
     /// closing replaces the reason it reports.
     ended: Option<ConnectionError>,
+}
+
+/// The session's side of the file traffic, until [`ClientHandle::files`].
+struct FileLink {
+    paths: mpsc::UnboundedReceiver<PathBuf>,
+    answers: mpsc::UnboundedReceiver<(u64, FileOutcome)>,
+    outcomes: mpsc::UnboundedSender<(u64, FileOutcome)>,
 }
 
 /// A decoded picture ready to be shown.
@@ -46,6 +55,9 @@ pub struct ClientHandle {
     clipboard_out: mpsc::UnboundedSender<String>,
     /// Taken by [`Self::clipboard`].
     clipboard_in: Option<mpsc::Receiver<String>>,
+    send_file: mpsc::UnboundedSender<PathBuf>,
+    /// Taken by [`Self::files`].
+    file_link: Option<FileLink>,
     resume: Arc<Mutex<Resume>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<()>>,
@@ -80,6 +92,39 @@ impl ClientHandle {
     pub fn clipboard(&mut self) -> Option<(mpsc::UnboundedSender<String>, mpsc::Receiver<String>)> {
         let incoming = self.clipboard_in.take()?;
         Some((self.clipboard_out.clone(), incoming))
+    }
+
+    /// Queues a file for the host. It takes [`Self::files`] running, and
+    /// [`Permissions::files`].
+    pub fn send_file(&self, path: PathBuf) {
+        let _ = self.send_file.send(path);
+    }
+
+    /// The file traffic of this session, to be run for as long as it lasts:
+    /// what comes goes to `access`, once `confirm` says yes (the host gave
+    /// the permission, so the viewer's person has the say), and `tell` hears
+    /// how each file goes. Once; afterwards, it does nothing.
+    pub fn files(
+        &mut self,
+        access: Arc<dyn FileAccess>,
+        tell: Tell,
+        confirm: Confirm,
+    ) -> impl Future<Output = ()> + Send + 'static {
+        let end = self.file_link.take().map(|link| FileEnd {
+            conn: self.conn.clone(),
+            allowed: self.permissions.files,
+            access: Some(access),
+            paths: link.paths,
+            answers: link.answers,
+            outcomes: link.outcomes,
+            tell,
+            confirm: Some(confirm),
+        });
+        async move {
+            if let Some(end) = end {
+                files::run(end).await;
+            }
+        }
     }
 
     /// Asks the host to restart the computer. It refuses without
@@ -166,6 +211,9 @@ pub async fn start(
     let (restart_tx, restart_rx) = mpsc::unbounded_channel();
     let (clipboard_out, clipboard_out_rx) = mpsc::unbounded_channel();
     let (clipboard_in_tx, clipboard_in) = mpsc::channel(4);
+    let (send_file, paths) = mpsc::unbounded_channel();
+    let (answers_tx, answers) = mpsc::unbounded_channel();
+    let (outcomes, outcomes_rx) = mpsc::unbounded_channel();
     let resume = Arc::new(Mutex::new(Resume::default()));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = oneshot::channel();
@@ -177,6 +225,8 @@ pub async fn start(
         restart_rx,
         clipboard_out_rx,
         clipboard_in_tx,
+        answers_tx,
+        outcomes_rx,
         resume.clone(),
         shutdown_rx,
         stats.clone(),
@@ -203,6 +253,12 @@ pub async fn start(
         restart: restart_tx,
         clipboard_out,
         clipboard_in: Some(clipboard_in),
+        send_file,
+        file_link: Some(FileLink {
+            paths,
+            answers,
+            outcomes,
+        }),
         resume,
         shutdown: Some(shutdown_tx),
         task,
@@ -219,6 +275,8 @@ async fn run(
     mut restart_rx: mpsc::UnboundedReceiver<()>,
     mut clipboard_out: mpsc::UnboundedReceiver<String>,
     clipboard_in: mpsc::Sender<String>,
+    file_answers: mpsc::UnboundedSender<(u64, FileOutcome)>,
+    mut file_outcomes: mpsc::UnboundedReceiver<(u64, FileOutcome)>,
     resume: Arc<Mutex<Resume>>,
     mut shutdown: oneshot::Receiver<()>,
     stats: Arc<Mutex<Stats>>,
@@ -273,9 +331,17 @@ async fn run(
                     break peer_closed_is_ok(&conn, e);
                 }
             }
+            Some((id, outcome)) = file_outcomes.recv() => {
+                if let Err(e) = control.send(&Control::FileAnswer { id, outcome }).await {
+                    break peer_closed_is_ok(&conn, e);
+                }
+            }
             msg = control.recv() => match msg {
                 Ok(Control::Clipboard { text }) => {
                     let _ = clipboard_in.try_send(text);
+                }
+                Ok(Control::FileAnswer { id, outcome }) => {
+                    let _ = file_answers.send((id, outcome));
                 }
                 // The host ended it on purpose: nothing to come back to.
                 Ok(Control::Bye) => {

@@ -7,6 +7,7 @@ use anyhow::Result;
 use hext_codec::{EncoderPreference, EncoderSettings};
 use hext_net::{EndpointConfig, NetError};
 use hext_proto::{PeerInfo, RejectReason};
+use hext_session::files::OwnFiles;
 use hext_session::host::{self, HostConfig, LocalDesktop};
 use hext_session::{ResumeTokens, SessionCodes, SessionError};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -138,6 +139,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
         unattended: None,
         resumes: resumes.clone(),
         restart: None,
+        files: None,
     });
     // One session at a time, handshake included: attempts are serialized,
     // which together with the penalty rate-limits code guessing.
@@ -219,6 +221,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
         unattended: None,
         resumes: resumes.clone(),
         restart: None,
+        files: Some(Arc::new(OwnFiles(crate::downloads()))),
     });
     let slot = Arc::new(Semaphore::new(1));
     tokio::spawn(crate::signaling::host(

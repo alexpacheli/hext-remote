@@ -48,6 +48,12 @@ impl FramedSend {
         Ok(())
     }
 
+    /// Where this stream stands among the others (0 by default): lower
+    /// goes after them. Already-closed streams are fine.
+    pub fn set_priority(&mut self, priority: i32) {
+        let _ = self.send.set_priority(priority);
+    }
+
     /// Closes our half of the stream. Already-closed streams are fine.
     pub fn finish(&mut self) {
         let _ = self.send.finish();
@@ -69,6 +75,11 @@ impl FramedRecv {
             max,
             buf: Vec::new(),
         }
+    }
+
+    /// Tells the other side to stop sending on this stream.
+    pub fn stop(&mut self) {
+        let _ = self.recv.stop(0u32.into());
     }
 
     /// Receives the next message.

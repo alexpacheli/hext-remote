@@ -127,6 +127,11 @@ salvar, e o técnico volta sozinho quando ele estiver online, sem novo aceite. Q
 reconectam sozinhas. O acesso pelo IP com código fica
 desligado no serviço: só pelo ID, com aceite.
 
+Com a permissão de arquivos, arraste um arquivo para a janela da sessão: ele vai para a pasta Downloads do
+usuário logado no host. No host, **Enviar arquivo** na barra manda um arquivo para o técnico, que confirma
+antes de receber em Downloads. Nada é substituído: um nome repetido chega como `a (1).txt`. Pastas não são
+enviadas, e uma transferência interrompida não é retomada.
+
 ### Acesso não assistido
 
 Com a senha, o técnico entra sem que ninguém aceite no computador. Quem liga é o dono, como administrador:
