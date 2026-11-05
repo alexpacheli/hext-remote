@@ -246,7 +246,11 @@ async fn run(
                 }
             }
             msg = control.recv() => match msg {
-                Ok(Control::Bye) => break Ok(()),
+                // The host ended it on purpose: nothing to come back to.
+                Ok(Control::Bye) => {
+                    resume.lock().expect("lock").token = None;
+                    break Ok(());
+                }
                 Ok(Control::ResumeToken(token)) => {
                     resume.lock().expect("lock").token = Some(token);
                 }

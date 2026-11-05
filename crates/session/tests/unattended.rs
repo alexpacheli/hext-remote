@@ -4,6 +4,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::sync::Notify;
+
 use hext_codec::{DecoderPreference, EncoderSettings};
 use hext_crypto::DeviceKey;
 use hext_crypto::pake::Verifier;
@@ -53,6 +55,18 @@ impl host::Restart for Restarts {
     }
 }
 
+/// The indicator's Encerrar.
+#[derive(Default)]
+struct Bar(Arc<Notify>);
+
+impl host::Presence for Bar {
+    fn started(&self, _: &host::ActiveSession) -> Arc<Notify> {
+        self.0.clone()
+    }
+
+    fn ended(&self) {}
+}
+
 struct Host {
     endpoint: Endpoint,
     codes: SessionCodes,
@@ -60,6 +74,7 @@ struct Host {
     resumes: ResumeTokens,
     kept: Arc<Kept>,
     restarts: Arc<Restarts>,
+    encerrar: Arc<Notify>,
     /// The viewers' endpoints: a session dies with its own.
     viewers: Mutex<Vec<Endpoint>>,
 }
@@ -76,6 +91,7 @@ impl Host {
         let (codes, lockout) = (SessionCodes::default(), Lockout::default());
         let resumes = ResumeTokens::default();
         let restarts = Arc::new(Restarts::default());
+        let encerrar = Arc::new(Notify::new());
         let kept = Arc::new(Kept {
             password,
             audit: Mutex::default(),
@@ -89,7 +105,7 @@ impl Host {
                 test_pattern: true,
                 encoder: EncoderSettings::default(),
             }),
-            presence: None,
+            presence: Some(Arc::new(Bar(encerrar.clone()))),
             unattended: Some(UnattendedAccess {
                 key: key.public_key(),
                 lockout: lockout.clone(),
@@ -116,6 +132,7 @@ impl Host {
             resumes,
             kept,
             restarts,
+            encerrar,
             viewers: Mutex::default(),
         }
     }
@@ -338,6 +355,25 @@ async fn with_the_permission_it_restarts_once() {
     assert_eq!(session.restart_answer(), Some(true));
     assert_eq!(host.restarts.asked.lock().unwrap().len(), 1);
     assert!(!*host.restarts.revoked.lock().unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn encerrar_during_a_restart_is_the_end() {
+    let host = Host::start(None).await;
+    let viewer = DeviceKey::generate().unwrap();
+    let permissions = Permissions {
+        restart: true,
+        ..Permissions::CONTROL
+    };
+    let session = host.attempt_with(&viewer, permissions).await.unwrap();
+    token_of(&session).await;
+    session.request_restart();
+    assert!(restart_answer(&session).await);
+
+    host.encerrar.notify_one();
+    session.closed().await;
+    assert!(*host.restarts.revoked.lock().unwrap());
+    assert_eq!(session.comes_back(), None);
 }
 
 /// The token the host gave `session`, once it arrived.

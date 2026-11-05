@@ -21,6 +21,8 @@ use tracing::{debug, info, warn};
 
 use crate::{KeptResume, Lockout, Result, ResumeTokens, SessionError, codes_match};
 
+/// How long the viewer has to hear that the host ended the session.
+const BYE_WAIT: Duration = Duration::from_secs(1);
 /// How often a still screen repeats the number of its last frame.
 const IDLE_NOTICE: Duration = Duration::from_millis(250);
 
@@ -507,6 +509,13 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                 if let Some(restart) = &config.restart {
                     restart.revoke();
                 }
+                // Reliably, unlike the closing itself: a viewer that missed
+                // it would wait for a return that will not happen.
+                let told = async {
+                    let _ = control.send(&Control::Bye).await;
+                    conn.closed().await;
+                };
+                let _ = tokio::time::timeout(BYE_WAIT, told).await;
                 conn.close(0u32.into(), ENDED_ON_HOST);
                 break Ok(());
             }
