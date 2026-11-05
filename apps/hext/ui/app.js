@@ -66,6 +66,7 @@ const pages = {
         this.reply({
           control: $("control").checked,
           clipboard: $("clipboard").checked,
+          files: $("files").checked,
           restart: $("restart").checked,
         }),
       );
@@ -84,6 +85,7 @@ const pages = {
       $("id").textContent = view.ask.id;
       $("control").checked = true;
       $("clipboard").checked = false;
+      $("files").checked = false;
       $("restart").checked = false;
       $("restart").disabled = !view.ask.can_restart;
       $("restart-label").classList.toggle("soon", !view.ask.can_restart);
@@ -108,6 +110,7 @@ const pages = {
     seen: null,
     start() {
       $("end").addEventListener("click", () => invoke("end_session"));
+      $("send").addEventListener("click", () => invoke("send_files"));
       document.body.addEventListener("mouseenter", () => this.unfold());
       document.body.addEventListener("mouseleave", () => this.foldIn(1500));
     },
@@ -136,16 +139,19 @@ const pages = {
       const doing = [
         permissions.control ? "Vendo e controlando" : "Vendo",
         permissions.clipboard && "área de transferência",
+        permissions.files && "arquivos",
         unattended && "entrou com a senha",
       ]
         .filter(Boolean)
         .join(" · ");
       $("who").textContent = who;
-      $("doing").textContent = doing;
-      $("session").title = `${who}: ${doing}`;
+      $("doing").textContent = view.transfer ?? doing;
+      $("send").hidden = !permissions.files;
+      $("session").title = [`${who}: ${doing}`, view.transfer].filter(Boolean).join(" — ");
       // Who is there and what they can do are read first, in full.
-      if ($("session").title !== this.seen) {
-        this.seen = $("session").title;
+      const shown = `${who}: ${doing} (${view.transfer_news})`;
+      if (shown !== this.seen) {
+        this.seen = shown;
         this.unfold();
         this.foldIn(6000);
       }

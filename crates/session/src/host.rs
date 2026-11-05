@@ -1,6 +1,7 @@
 //! Host side of a session.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,7 @@ use hext_proto::{
 use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
+use crate::files::{self, Direction, FileAccess, FileEnd, Stage, Tell, Transfer};
 use crate::{KeptResume, Lockout, Result, ResumeTokens, SessionError, codes_match};
 
 /// How long the viewer has to hear that the host ended the session.
@@ -47,6 +49,8 @@ pub struct HostConfig {
     /// Restarts this computer; `None`: this host cannot (it takes the
     /// service, to be back afterwards).
     pub restart: Option<Arc<dyn Restart>>,
+    /// Where files from viewers go; `None`: this host takes none.
+    pub files: Option<Arc<dyn FileAccess>>,
 }
 
 /// What a restart takes on the host.
@@ -106,6 +110,13 @@ pub trait Presence: Send + Sync {
     fn started(&self, session: &ActiveSession) -> Arc<Notify>;
     /// The session ended (however it did).
     fn ended(&self);
+    /// The files the host's user wants to send during the session started
+    /// last. Once for each session.
+    fn outgoing(&self) -> Option<mpsc::UnboundedReceiver<PathBuf>> {
+        None
+    }
+    /// How a file is going.
+    fn transfer(&self, _transfer: &Transfer) {}
 }
 
 /// The session on the indicator, until dropped.
@@ -394,6 +405,7 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             .redeem(&hello.access_code, &viewer)
             .map(|mut grant| {
                 grant.permissions.restart &= config.restart.is_some();
+                grant.permissions.files &= config.files.is_some();
                 grant
             });
         let granted = grant.as_ref().ok_or(RejectReason::WrongCode)?;
@@ -471,7 +483,9 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         },
     };
     // Written however the session ends.
-    let _audit_end = audit.map(|audit| AuditEnd(audit, session.name.clone()));
+    let _audit_end = audit
+        .clone()
+        .map(|audit| AuditEnd(audit, session.name.clone()));
     // (Not the path: right after the handshake it is usually the relay,
     // and a direct one follows; the viewer's title shows it live.)
     info!(
@@ -513,10 +527,35 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             }
         }
     });
+    // A file cut off with the session is told about after it ended.
+    let session_on = Arc::new(AtomicBool::new(true));
+    let (file_answers, answers) = mpsc::unbounded_channel();
+    let (outcomes, mut file_outcomes) = mpsc::unbounded_channel();
+    let file_end = FileEnd {
+        conn: conn.clone(),
+        allowed: session.permissions.files,
+        access: config.files.clone(),
+        paths: config
+            .presence
+            .as_ref()
+            .and_then(|presence| presence.outgoing())
+            .filter(|_| session.permissions.files)
+            .unwrap_or_else(|| mpsc::unbounded_channel().1),
+        answers,
+        outcomes,
+        tell: tell_about_files(
+            config.presence.clone(),
+            audit,
+            session.name.clone(),
+            session_on.clone(),
+        ),
+        confirm: None,
+    };
     let mut input = tokio::spawn(receive_input(
         conn.clone(),
         screen.clone(),
         session.permissions,
+        file_end,
     ));
 
     // Through the server: this viewer can come back. (A failure to tell it
@@ -561,6 +600,9 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                         screen.set_clipboard(text);
                     }
                 }
+                Ok(Control::FileAnswer { id, outcome }) => {
+                    let _ = file_answers.send((id, outcome));
+                }
                 Ok(other) => debug!("mensagem inesperada: {other:?}"),
                 // A peer that left is a clean end; anything else is an error.
                 Err(e) if e.is_peer_closed() => break Ok(()),
@@ -568,6 +610,11 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             },
             Some(text) = clipboard_rx.recv() => {
                 if let Err(e) = control.send(&Control::Clipboard { text }).await {
+                    break Err(e.into());
+                }
+            }
+            Some((id, outcome)) = file_outcomes.recv() => {
+                if let Err(e) = control.send(&Control::FileAnswer { id, outcome }).await {
                     break Err(e.into());
                 }
             }
@@ -598,6 +645,7 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         }
     };
 
+    session_on.store(false, Ordering::Relaxed);
     // (Asked before closing, which would hide how the connection ended.)
     lost |= matches!(
         conn.close_reason(),
@@ -626,6 +674,31 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     }
     info!("desconectado: {}", client.device_name);
     result.map(|()| client)
+}
+
+/// Shows how each file goes while the session lasts, and writes down the
+/// ones that went, for the owner of a computer nobody was at.
+fn tell_about_files(
+    presence: Option<Arc<dyn Presence>>,
+    audit: Option<Arc<dyn UnattendedPassword>>,
+    who: String,
+    session_on: Arc<AtomicBool>,
+) -> Tell {
+    Arc::new(move |transfer: Transfer| {
+        if let Some(presence) = presence
+            .as_ref()
+            .filter(|_| session_on.load(Ordering::Relaxed))
+        {
+            presence.transfer(&transfer);
+        }
+        if let (Some(audit), Stage::Done) = (&audit, &transfer.stage) {
+            let done = match transfer.direction {
+                Direction::Sending => "arquivo enviado",
+                Direction::Receiving => "arquivo recebido",
+            };
+            audit.audit(&format!("{done}: \"{}\", \"{who}\"", transfer.name));
+        }
+    })
 }
 
 /// Restarts the computer for this session's viewer, if it may. The session
@@ -875,6 +948,7 @@ async fn receive_input(
     conn: Connection,
     screen: SharedScreen,
     permissions: Permissions,
+    file_end: FileEnd,
 ) -> Result<()> {
     let (kind, mut stream) = hext_net::accept_uni(&conn).await?;
     if kind != StreamKind::Input {
@@ -882,6 +956,10 @@ async fn receive_input(
             "unexpected {kind:?} stream"
         )));
     }
+    // Only now: the input stream is the first, and the next ones are these.
+    // (Not stopped with the session: the connection ending ends it, and it
+    // leaves no temporary file behind.)
+    tokio::spawn(files::run(file_end));
     loop {
         let event: InputEvent = stream.recv().await?;
         if !permissions.control {

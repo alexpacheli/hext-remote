@@ -117,6 +117,7 @@ impl Host {
             }),
             resumes: resumes.clone(),
             restart: Some(restarts.clone()),
+            files: None,
         });
         let accepting = endpoint.clone();
         tokio::spawn(async move {

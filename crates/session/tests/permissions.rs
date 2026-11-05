@@ -132,6 +132,7 @@ async fn session_with(permissions: Permissions) -> Running {
         unattended: None,
         resumes: Default::default(),
         restart: None,
+        files: None,
     });
     let accepting = host_endpoint.clone();
     let host = tokio::spawn(async move {

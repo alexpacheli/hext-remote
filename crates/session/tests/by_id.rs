@@ -46,6 +46,7 @@ async fn accepted_by_id_then_streams() {
         unattended: None,
         resumes: Default::default(),
         restart: None,
+        files: None,
     });
     tokio::spawn(async move {
         while let Some(incoming) = endpoint.accept().await {
