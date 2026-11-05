@@ -112,7 +112,7 @@ pub fn run(args: ViewArgs) -> Result<()> {
         )
         .await
         .map_err(explain)?;
-        watch_end(&session, proxy.clone());
+        tokio::spawn(end_of(&session, proxy.clone()));
         anyhow::Ok(session)
     })?;
     info!(
@@ -456,7 +456,8 @@ impl ApplicationHandler<UserEvent> for Viewer {
             UserEvent::Back(result) => match *result {
                 Ok(session) => {
                     info!("sessão retomada");
-                    watch_end(&session, self.proxy.clone());
+                    // (On the window's thread, outside the runtime.)
+                    self.runtime.spawn(end_of(&session, self.proxy.clone()));
                     self.session = Some(session);
                     self.coming_back = None;
                     self.last_title = Instant::now() - Duration::from_secs(1);
@@ -656,12 +657,15 @@ fn show_frames(
 }
 
 /// Tells the window when this session's connection ends.
-fn watch_end(session: &ClientHandle, proxy: EventLoopProxy<UserEvent>) {
+fn end_of(
+    session: &ClientHandle,
+    proxy: EventLoopProxy<UserEvent>,
+) -> impl Future<Output = ()> + Send + 'static {
     let closed = session.closed();
-    tokio::spawn(async move {
+    async move {
         closed.await;
         let _ = proxy.send_event(UserEvent::SessionEnded);
-    });
+    }
 }
 
 /// Tries to open the session again until `time` runs out: the host may be
