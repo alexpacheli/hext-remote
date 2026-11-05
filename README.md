@@ -124,6 +124,21 @@ Com o serviço, o técnico vê e controla também a **tela de login, o bloqueio 
 `Ctrl+Alt+Del` com **Ctrl+Alt+End** (ou Ctrl+Alt+Delete no Mac). O acesso pelo IP com código fica
 desligado no serviço: só pelo ID, com aceite.
 
+### Acesso não assistido
+
+Com a senha, o técnico entra sem que ninguém aceite no computador. Quem liga é o dono, como administrador:
+
+```sh
+HextRemote.exe service password        # define a senha (ou troca)
+HextRemote.exe service password --off  # desliga
+```
+
+No técnico, preencha a senha na tela inicial ou use `view <ID> --password-stdin`. A senha nunca trafega
+(SPAKE2) e, depois de 5 erros, o computador espera 1, 5 e 15 minutos. Durante a sessão, a barra mostra
+quem está conectado, também na tela de login e com o computador bloqueado, e cada acesso fica registrado
+em `C:\ProgramData\HextRemote\audit.log`. A tela inicial guarda o nome e o ID dos computadores acessados,
+nunca a senha.
+
 Na janela do visualizador, **Ctrl+Alt+Enter** entra e sai da tela cheia, com a imagem ocupando a tela
 inteira sem distorcer. Levar o mouse até a borda de cima, no centro, mostra um botão que faz o mesmo.
 

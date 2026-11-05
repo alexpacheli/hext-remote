@@ -126,6 +126,7 @@ async fn request_accept_and_decline() {
         .send(&ClientMsg::Connect {
             request: 1,
             to: host.id(),
+            unattended: false,
         })
         .await
         .unwrap();
@@ -134,10 +135,12 @@ async fn request_accept_and_decline() {
         from,
         from_key,
         from_name,
+        unattended,
     } = recv(&mut host).await
     else {
         panic!("expected a request");
     };
+    assert!(!unattended);
     assert_eq!(
         (from, from_key, from_name.as_str()),
         (viewer.id(), viewer_key.public_key(), "Técnico")
@@ -163,6 +166,7 @@ async fn request_accept_and_decline() {
         .send(&ClientMsg::Connect {
             request: 2,
             to: host.id(),
+            unattended: false,
         })
         .await
         .unwrap();
@@ -218,7 +222,11 @@ async fn offline_and_unknown_ids_look_the_same() {
         let mut reason = None;
         for _ in 0..50 {
             viewer
-                .send(&ClientMsg::Connect { request, to })
+                .send(&ClientMsg::Connect {
+                    request,
+                    to,
+                    unattended: false,
+                })
                 .await
                 .unwrap();
             if let ServerMsg::Rejected { reason: r, .. } = recv(&mut viewer).await {
@@ -236,9 +244,13 @@ async fn cannot_connect_to_itself() {
     let (url, _) = server().await;
     let mut me = login(&url, &DeviceKey::generate().unwrap(), "Me").await;
     let to = me.id();
-    me.send(&ClientMsg::Connect { request: 5, to })
-        .await
-        .unwrap();
+    me.send(&ClientMsg::Connect {
+        request: 5,
+        to,
+        unattended: false,
+    })
+    .await
+    .unwrap();
     assert_eq!(
         recv(&mut me).await,
         ServerMsg::Rejected {
@@ -256,7 +268,11 @@ async fn guessing_ids_is_rate_limited() {
     for request in 0..12u64 {
         let to = DeviceId::new(200_000_000 + request as u32).unwrap();
         viewer
-            .send(&ClientMsg::Connect { request, to })
+            .send(&ClientMsg::Connect {
+                request,
+                to,
+                unattended: false,
+            })
             .await
             .unwrap();
         if let ServerMsg::Rejected { reason, .. } = recv(&mut viewer).await {
@@ -278,7 +294,11 @@ async fn reconnecting_does_not_reset_the_limit() {
             let request = round * 10 + i;
             let to = DeviceId::new(300_000_000 + request as u32).unwrap();
             viewer
-                .send(&ClientMsg::Connect { request, to })
+                .send(&ClientMsg::Connect {
+                    request,
+                    to,
+                    unattended: false,
+                })
                 .await
                 .unwrap();
             if let ServerMsg::Rejected { reason, .. } = recv(&mut viewer).await {
@@ -298,13 +318,21 @@ async fn one_waiting_request_per_viewer_and_host() {
     let mut viewer = login(&url, &DeviceKey::generate().unwrap(), "V").await;
     let to = host.id();
     viewer
-        .send(&ClientMsg::Connect { request: 1, to })
+        .send(&ClientMsg::Connect {
+            request: 1,
+            to,
+            unattended: false,
+        })
         .await
         .unwrap();
     assert!(matches!(recv(&mut host).await, ServerMsg::Request { .. }));
     // Asking again while the first waits does not pile up on the host.
     viewer
-        .send(&ClientMsg::Connect { request: 2, to })
+        .send(&ClientMsg::Connect {
+            request: 2,
+            to,
+            unattended: false,
+        })
         .await
         .unwrap();
     assert_eq!(
@@ -320,7 +348,11 @@ async fn one_waiting_request_per_viewer_and_host() {
 async fn ask(viewer: &mut Client, host: &mut Client, request: u64, accept: bool) -> ServerMsg {
     let to = host.id();
     viewer
-        .send(&ClientMsg::Connect { request, to })
+        .send(&ClientMsg::Connect {
+            request,
+            to,
+            unattended: false,
+        })
         .await
         .unwrap();
     let ServerMsg::Request { request: asked, .. } = recv(host).await else {
@@ -342,7 +374,11 @@ async fn ask(viewer: &mut Client, host: &mut Client, request: u64, accept: bool)
 /// Sends a request that the server refuses at once; its reason.
 async fn refused(viewer: &mut Client, to: DeviceId, request: u64) -> Rejection {
     viewer
-        .send(&ClientMsg::Connect { request, to })
+        .send(&ClientMsg::Connect {
+            request,
+            to,
+            unattended: false,
+        })
         .await
         .unwrap();
     match recv(viewer).await {
@@ -384,7 +420,11 @@ async fn a_flooded_host_closes_to_strangers_only() {
     // Asking again while a request waits does not count either.
     let mut waiting = strangers.remove(1);
     waiting
-        .send(&ClientMsg::Connect { request: 0, to })
+        .send(&ClientMsg::Connect {
+            request: 0,
+            to,
+            unattended: false,
+        })
         .await
         .unwrap();
     let ServerMsg::Request { request: asked, .. } = recv(&mut host).await else {
@@ -455,6 +495,7 @@ async fn a_viewer_leaving_cancels_its_request() {
         .send(&ClientMsg::Connect {
             request: 1,
             to: host.id(),
+            unattended: false,
         })
         .await
         .unwrap();
@@ -475,6 +516,7 @@ async fn unanswered_requests_time_out() {
         .send(&ClientMsg::Connect {
             request: 3,
             to: host.id(),
+            unattended: false,
         })
         .await
         .unwrap();
@@ -513,6 +555,7 @@ async fn only_the_host_can_answer() {
         .send(&ClientMsg::Connect {
             request: 1,
             to: host.id(),
+            unattended: false,
         })
         .await
         .unwrap();
@@ -555,6 +598,7 @@ async fn a_viewer_with_the_same_key_leaves_the_host_alone() {
         .send(&ClientMsg::Connect {
             request: 1,
             to: host.id(),
+            unattended: false,
         })
         .await
         .unwrap();
@@ -562,7 +606,11 @@ async fn a_viewer_with_the_same_key_leaves_the_host_alone() {
     // …and the viewer can still ask.
     let to = other.id();
     viewer
-        .send(&ClientMsg::Connect { request: 2, to })
+        .send(&ClientMsg::Connect {
+            request: 2,
+            to,
+            unattended: false,
+        })
         .await
         .unwrap();
     assert!(matches!(recv(&mut other).await, ServerMsg::Request { .. }));
@@ -579,7 +627,11 @@ async fn a_viewer_with_the_same_key_leaves_the_host_alone() {
     .unwrap();
     let to = lone.id();
     other
-        .send(&ClientMsg::Connect { request: 3, to })
+        .send(&ClientMsg::Connect {
+            request: 3,
+            to,
+            unattended: false,
+        })
         .await
         .unwrap();
     assert_eq!(
@@ -653,6 +705,7 @@ async fn a_wrong_signature_is_refused() {
         device_name: "X".into(),
         app_version: "0".into(),
         accepts_requests: true,
+        notices: true,
     };
     raw::send_text(&mut ws, hello.to_json()).await;
     let reply: ServerMsg = serde_json::from_str(&raw::recv_text(&mut ws).await.unwrap()).unwrap();
@@ -671,6 +724,7 @@ async fn messages_before_login_close_the_connection() {
         ClientMsg::Connect {
             request: 1,
             to: DeviceId::new(482_913_557).unwrap(),
+            unattended: false,
         }
         .to_json(),
     )
@@ -694,4 +748,114 @@ async fn health() {
     stream.read_to_string(&mut response).await.unwrap();
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert!(response.ends_with("ok"));
+}
+
+#[tokio::test]
+async fn unattended_requests_reach_the_host_marked_and_leave_no_trust() {
+    let (url, _) = server().await;
+    let mut host = login(&url, &DeviceKey::generate().unwrap(), "Host").await;
+    let mut viewer = login(&url, &DeviceKey::generate().unwrap(), "Técnico").await;
+    let to = host.id();
+
+    // A viewer past the host with a request of this kind has shown nothing
+    // of the password: it keeps being limited like a stranger.
+    for request in 1..=3 {
+        viewer
+            .send(&ClientMsg::Connect {
+                request,
+                to,
+                unattended: true,
+            })
+            .await
+            .unwrap();
+        let ServerMsg::Request {
+            request: asked,
+            unattended,
+            ..
+        } = recv(&mut host).await
+        else {
+            panic!("expected a request");
+        };
+        assert!(unattended);
+        host.send(&ClientMsg::Accept {
+            request: asked,
+            addrs: Vec::new(),
+            session_code: "s3cr3t".into(),
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            recv(&mut viewer).await,
+            ServerMsg::Accepted { .. }
+        ));
+    }
+    viewer
+        .send(&ClientMsg::Connect {
+            request: 4,
+            to,
+            unattended: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        recv(&mut viewer).await,
+        ServerMsg::Rejected {
+            request: 4,
+            reason: Rejection::TooManyRequests
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_host_without_unattended_access_says_so() {
+    let (url, _) = server().await;
+    let mut host = login(&url, &DeviceKey::generate().unwrap(), "Host").await;
+    let mut viewer = login(&url, &DeviceKey::generate().unwrap(), "Técnico").await;
+    viewer
+        .send(&ClientMsg::Connect {
+            request: 1,
+            to: host.id(),
+            unattended: true,
+        })
+        .await
+        .unwrap();
+    let ServerMsg::Request { request, .. } = recv(&mut host).await else {
+        panic!("expected a request");
+    };
+    host.send(&ClientMsg::NoUnattended { request })
+        .await
+        .unwrap();
+    assert_eq!(
+        recv(&mut viewer).await,
+        ServerMsg::Rejected {
+            request: 1,
+            reason: Rejection::UnattendedOff
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_locked_host_tells_the_viewer_while_it_waits() {
+    let (url, _) = server().await;
+    let mut host = login(&url, &DeviceKey::generate().unwrap(), "Host").await;
+    let mut viewer = login(&url, &DeviceKey::generate().unwrap(), "Técnico").await;
+    viewer
+        .send(&ClientMsg::Connect {
+            request: 1,
+            to: host.id(),
+            unattended: false,
+        })
+        .await
+        .unwrap();
+    let ServerMsg::Request { request, .. } = recv(&mut host).await else {
+        panic!("expected a request");
+    };
+    // Only for the request of this host: another number goes nowhere.
+    host.send(&ClientMsg::Waiting {
+        request: request + 1,
+    })
+    .await
+    .unwrap();
+    host.send(&ClientMsg::Waiting { request }).await.unwrap();
+    assert_eq!(recv(&mut viewer).await, ServerMsg::Waiting { request: 1 });
 }

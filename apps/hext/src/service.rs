@@ -7,7 +7,12 @@ use anyhow::Result;
 use crate::ServiceAction;
 
 #[cfg(windows)]
+mod banner;
+#[cfg(windows)]
 mod windows;
+
+#[cfg(windows)]
+pub use banner::Banner;
 
 /// Above this size a log starts over (the previous one kept as `.old`).
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -58,6 +63,7 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ServiceAction::Install => windows::install(),
             ServiceAction::Uninstall { purge } => windows::uninstall(purge),
             ServiceAction::Status => windows::status(),
+            ServiceAction::Password { off } => windows::password(off),
             ServiceAction::Run => windows::run(),
         }
     }

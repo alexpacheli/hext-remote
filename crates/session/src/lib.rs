@@ -6,9 +6,11 @@
 
 pub mod client;
 pub mod host;
+mod lockout;
 mod session_codes;
 mod stats;
 
+pub use lockout::Lockout;
 pub use session_codes::{Grant, SessionCodes};
 pub use stats::Stats;
 

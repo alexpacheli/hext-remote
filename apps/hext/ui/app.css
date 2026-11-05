@@ -231,3 +231,64 @@ body[data-page="bar"] button {
   flex: none;
   padding: 4px 12px;
 }
+
+/* The computers accessed */
+
+form .wide {
+  flex: 1 0 100%;
+}
+
+form {
+  flex-wrap: wrap;
+}
+
+input[type="password"] {
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #c9ced6);
+  border-radius: 6px;
+  font: inherit;
+  background: transparent;
+  color: inherit;
+}
+
+.recent {
+  margin: 0;
+  padding: 0;
+  max-height: 150px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.recent li {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.recent .pick {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  padding: 6px 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.recent .pick:hover {
+  text-decoration: underline;
+}
+
+.recent .forget {
+  border: 0;
+  padding: 2px 8px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}

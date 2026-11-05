@@ -46,6 +46,7 @@ async fn start_host() -> (
             encoder: EncoderSettings::default(),
         }),
         presence: None,
+        unattended: None,
     });
     let server = tokio::spawn(async move {
         let conn = endpoint.accept().await.unwrap().await.unwrap();
@@ -70,6 +71,7 @@ async fn streams_and_decodes_video() {
             peer: PeerInfo::local("test", "client"),
             access_code: "111 222 333".into(),
         },
+        None,
         // Hardware where the machine has it (CI Macs may), else OpenH264.
         DecoderPreference::Auto,
         move |frame| {
@@ -114,6 +116,7 @@ async fn host_ending_the_session_is_not_an_error() {
             encoder: EncoderSettings::default(),
         }),
         presence: None,
+        unattended: None,
     });
     let host_side = tokio::spawn(async move {
         let conn = endpoint.accept().await.unwrap().await.unwrap();
@@ -132,6 +135,7 @@ async fn host_ending_the_session_is_not_an_error() {
             peer: PeerInfo::local("test", "client"),
             access_code: CODE.into(),
         },
+        None,
         DecoderPreference::Software,
         |_| {},
     )

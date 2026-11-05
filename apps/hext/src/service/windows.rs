@@ -18,11 +18,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use hext_codec::EncoderSettings;
+use hext_crypto::pake::Verifier;
 use hext_crypto::{FileKeyStore, load_or_create, machine_dir};
 use hext_net::EndpointConfig;
 use hext_proto::{PeerInfo, Permissions};
-use hext_session::SessionCodes;
-use hext_session::host::{BoxFuture, HostConfig};
+use hext_session::host::{
+    ActiveSession, BoxFuture, HostConfig, Presence, UnattendedAccess, UnattendedPassword,
+};
+use hext_session::{Lockout, SessionCodes};
 use hext_signal::DeviceId;
 use ring::rand::{SecureRandom, SystemRandom};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
@@ -63,8 +66,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MESSAGEBOX_RESULT,
 };
 use windows::core::{PCWSTR, PWSTR, w};
+use zeroize::Zeroizing;
 
-use crate::agent::{AgentHub, Stream};
+use crate::agent::{AgentHub, Indicator, Stream};
 use crate::signaling::Ask;
 use crate::ui_link::UiHub;
 use crate::{APP_VERSION, DEFAULT_RELAY, DEFAULT_SERVER, device_name};
@@ -82,6 +86,15 @@ const ANSWER_SECS: u32 = crate::signaling::ANSWER_TIME.as_secs() as u32;
 fn id_file() -> Result<PathBuf> {
     Ok(machine_dir()?.join("id.txt"))
 }
+
+/// What is kept of the unattended password; no file: the access is off.
+fn password_file() -> Result<PathBuf> {
+    Ok(machine_dir()?.join("unattended.key"))
+}
+
+/// The shortest password taken: guesses are limited, but it may be all that
+/// stands between the internet and this computer.
+const MIN_PASSWORD: usize = 10;
 
 /// Where the installed program lives.
 fn program_dir() -> Result<PathBuf> {
@@ -396,6 +409,10 @@ pub fn uninstall(purge: bool) -> Result<()> {
     } else {
         println!("O serviço não está instalado.");
     }
+    // Unattended access does not come back with a later install.
+    if let Ok(file) = password_file() {
+        let _ = Verifier::remove(&file);
+    }
     let dir = program_dir()?;
     if dir.exists() && std::fs::remove_dir_all(&dir).is_err() {
         println!("Não deu para apagar {} (em uso?)", dir.display());
@@ -424,7 +441,126 @@ pub fn status() -> Result<()> {
         Ok(id) => println!("ID deste computador: {}", id.trim()),
         Err(_) => println!("ID: ainda não (ou rode como administrador para ler)"),
     }
+    match std::fs::metadata(password_file()?) {
+        Ok(_) => println!("Acesso não assistido: ligado"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("Acesso não assistido: desligado");
+        }
+        Err(_) => println!("Acesso não assistido: rode como administrador para ver"),
+    }
     Ok(())
+}
+
+/// Turns unattended access on (with a new password) or `off`. It takes an
+/// administrator, because it holds for the whole computer. The service reads
+/// the file on each request: nothing to restart.
+pub fn password(off: bool) -> Result<()> {
+    require_admin()?;
+    if !exists() {
+        bail!("instale o serviço primeiro (HextRemote service install)");
+    }
+    let file = password_file()?;
+    if off {
+        Verifier::remove(&file)?;
+        audit("acesso não assistido desligado");
+        println!("Acesso não assistido desligado.");
+        return Ok(());
+    }
+    let password = Zeroizing::new(rpassword::prompt_password("Nova senha: ")?);
+    if password.chars().count() < MIN_PASSWORD {
+        bail!("a senha precisa de ao menos {MIN_PASSWORD} caracteres");
+    }
+    let again = Zeroizing::new(rpassword::prompt_password("Repita a senha: ")?);
+    if *password != *again {
+        bail!("as senhas não são iguais");
+    }
+    Verifier::new(&password)?.save(&file)?;
+    audit("senha do acesso não assistido definida");
+    println!("Acesso não assistido ligado.");
+    println!("Durante a sessão, este computador mostra quem está conectado.");
+    Ok(())
+}
+
+/// A line in the audit log, for the owner of the computer.
+fn audit(entry: &str) {
+    use std::io::Write;
+    info!("auditoria: {entry}");
+    let Some(mut log) = super::log_file("audit") else {
+        warn!("auditoria: o arquivo não abriu");
+        return;
+    };
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if let Err(e) = writeln!(log, "{} {entry}", utc(seconds)) {
+        warn!("auditoria: {e}");
+    }
+}
+
+/// `seconds` since 1970 as a UTC date and time.
+fn utc(seconds: u64) -> String {
+    let (days, time) = (seconds / 86_400, seconds % 86_400);
+    // From days to a civil date: years of 400 years' cycles, March first.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year}-{month:02}-{day:02} {:02}:{:02}:{:02}Z",
+        time / 3600,
+        time / 60 % 60,
+        time % 60
+    )
+}
+
+/// The password as the service sees it.
+struct MachinePassword;
+
+impl UnattendedPassword for MachinePassword {
+    fn verifier(&self) -> Option<Verifier> {
+        let file = password_file().ok()?;
+        Verifier::load(&file).unwrap_or_else(|e| {
+            warn!("{e}");
+            None
+        })
+    }
+
+    fn audit(&self, entry: &str) {
+        audit(entry);
+    }
+}
+
+/// The session on the bar and, for where the bar cannot be seen, on the
+/// agent's indicator.
+struct Indicators {
+    ui: UiHub,
+    agents: AgentHub,
+}
+
+impl Presence for Indicators {
+    fn started(&self, session: &ActiveSession) -> Arc<Notify> {
+        let who = match &session.id {
+            Some(id) => format!("{} (ID {id})", session.name),
+            None => session.name.clone(),
+        };
+        // No interface (another copy of the app holds its place, say): the
+        // session still shows.
+        self.agents.set_indicator(Some(Indicator {
+            text: format!("{who} está acessando este computador"),
+            everywhere: !self.ui.connected(),
+        }));
+        self.ui.started(session)
+    }
+
+    fn ended(&self) {
+        self.agents.set_indicator(None);
+        self.ui.ended();
+    }
 }
 
 // ---------------------------------------------------------------- service
@@ -553,20 +689,24 @@ async fn serve() -> Result<()> {
     if let Err(e) = allow_secure_attention() {
         warn!("Ctrl+Alt+Del remoto: {e:#}");
     }
-    let hub = AgentHub::with_secure_attention(|| {
-        if sas_policy().is_some_and(|v| v & 1 != 0) {
-            unsafe { SendSAS(false.into()) };
-            info!("Ctrl+Alt+Del enviado");
-        } else {
-            warn!("Ctrl+Alt+Del recusado: a política SoftwareSASGeneration não permite");
-        }
-    });
+    let ui = UiHub::default();
+    let ending = ui.clone();
+    let hub = AgentHub::new(
+        || {
+            if sas_policy().is_some_and(|v| v & 1 != 0) {
+                unsafe { SendSAS(false.into()) };
+                info!("Ctrl+Alt+Del enviado");
+            } else {
+                warn!("Ctrl+Alt+Del recusado: a política SoftwareSASGeneration não permite");
+            }
+        },
+        move || ending.end_session(),
+    );
     let agents = hub.clone();
     tokio::spawn(supervise("agent", move |session| {
         let hub = agents.clone();
         async move { launch(session, &hub).await }
     }));
-    let ui = UiHub::default();
     let interfaces = ui.clone();
     tokio::spawn(supervise("interface", move |session| {
         let ui = interfaces.clone();
@@ -574,6 +714,7 @@ async fn serve() -> Result<()> {
     }));
     let encoder = EncoderSettings::default();
     let session_codes = SessionCodes::default();
+    let host_key = key.public_key();
     let config = Arc::new(HostConfig {
         peer: PeerInfo::local(APP_VERSION, name.clone()),
         // Only viewers the user accepted, with their one-time codes.
@@ -584,7 +725,15 @@ async fn serve() -> Result<()> {
             test_pattern: false,
             encoder,
         })),
-        presence: Some(Arc::new(ui.clone())),
+        presence: Some(Arc::new(Indicators {
+            ui: ui.clone(),
+            agents: hub.clone(),
+        })),
+        unattended: Some(UnattendedAccess {
+            key: host_key,
+            lockout: Lockout::default(),
+            password: Arc::new(MachinePassword),
+        }),
     });
     let slot = Arc::new(Semaphore::new(1));
     tokio::spawn(crate::signaling::host(
@@ -641,6 +790,19 @@ impl Ask for ConsoleAsk {
         write_id(id);
         self.0.set_id(id);
     }
+
+    fn unattended(&self) -> bool {
+        MachinePassword.verifier().is_some()
+    }
+
+    fn locked(&self) -> bool {
+        console_locked()
+    }
+}
+
+/// Whether the computer's screen is locked.
+pub(super) fn console_locked() -> bool {
+    is_locked(unsafe { WTSGetActiveConsoleSessionId() })
 }
 
 /// Whether `session` is locked: the user's windows are out of sight, behind
@@ -1013,6 +1175,13 @@ mod tests {
     use std::process::Stdio;
 
     use super::*;
+
+    #[test]
+    fn dates_in_the_audit_are_utc() {
+        assert_eq!(utc(0), "1970-01-01 00:00:00Z");
+        assert_eq!(utc(951_782_400), "2000-02-29 00:00:00Z");
+        assert_eq!(utc(1_793_794_661), "2026-11-04 12:17:41Z");
+    }
 
     #[test]
     fn an_update_gets_past_a_program_still_running() {

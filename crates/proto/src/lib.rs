@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod frame;
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 
 /// TLS ALPN identifier. It carries no version: versions are compared through
 /// the preamble, so mismatched peers still connect and can report why they fail.
@@ -167,6 +167,26 @@ pub enum Control {
     RequestKeyframe,
     /// Orderly end of session.
     Bye,
+    /// Host's answer to a [`Control::Hello`] that takes the unattended
+    /// password: the salt it was stretched with, and the host's message of
+    /// the password exchange.
+    PasswordChallenge {
+        salt: [u8; 16],
+        #[serde(with = "serde_bytes")]
+        message: Vec<u8>,
+    },
+    /// The client's message of the exchange, and its proof of the result.
+    PasswordProof {
+        #[serde(with = "serde_bytes")]
+        message: Vec<u8>,
+        #[serde(with = "serde_bytes")]
+        proof: Vec<u8>,
+    },
+    /// The password was right: the host's proof, before [`Control::HelloAck`].
+    PasswordOk {
+        #[serde(with = "serde_bytes")]
+        confirmation: Vec<u8>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +195,11 @@ pub enum RejectReason {
     WrongCode,
     Denied,
     Busy,
+    WrongPassword,
+    /// Too many wrong passwords: try again in this many seconds.
+    LockedOut {
+        seconds: u32,
+    },
 }
 
 /// Messages sent as unreliable QUIC datagrams.
@@ -317,7 +342,19 @@ mod tests {
                 },
             },
             Control::Reject(RejectReason::Busy),
+            Control::Reject(RejectReason::LockedOut { seconds: 300 }),
             Control::Bye,
+            Control::PasswordChallenge {
+                salt: [7; 16],
+                message: vec![1; 33],
+            },
+            Control::PasswordProof {
+                message: vec![2; 33],
+                proof: vec![3; 32],
+            },
+            Control::PasswordOk {
+                confirmation: vec![4; 32],
+            },
         ];
         for msg in msgs {
             let bytes = encode(&msg).unwrap();

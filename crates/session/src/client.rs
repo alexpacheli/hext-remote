@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use hext_codec::{DecoderPreference, YuvFrame};
 use hext_net::video::{Event, Reassembler};
-use hext_net::{Connection, ControlStream, FramedSend, NetError};
+use hext_net::{Connection, ControlStream, FramedSend, NetError, PasswordLogin};
 use hext_proto::{
     Control, Datagram, Hello, InputEvent, PeerInfo, Permissions, StreamKind, VideoFrame,
 };
@@ -77,10 +77,11 @@ impl ClientHandle {
 pub async fn start(
     conn: Connection,
     hello: Hello,
+    password: Option<PasswordLogin>,
     decoder: DecoderPreference,
     on_frame: impl FnMut(DecodedFrame) + Send + 'static,
 ) -> Result<ClientHandle> {
-    let (control, host, permissions) = hext_net::client_handshake(&conn, hello).await?;
+    let (control, host, permissions) = hext_net::client_handshake(&conn, hello, password).await?;
     let input_stream = hext_net::open_uni(&conn, StreamKind::Input).await?;
 
     let stats = Arc::new(Mutex::new(Stats::default()));

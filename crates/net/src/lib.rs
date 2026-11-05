@@ -16,8 +16,8 @@ pub use endpoint::{
     remote_key,
 };
 pub use session::{
-    ControlStream, FramedRecv, FramedSend, accept_uni, client_handshake, host_handshake, open_uni,
-    recv_datagram, send_datagram,
+    Admission, ControlStream, FramedRecv, FramedSend, PasswordLogin, accept_uni, client_handshake,
+    host_handshake, open_uni, recv_datagram, send_datagram,
 };
 
 pub use iroh::endpoint::{Connection, ConnectionError, Incoming, VarInt};
@@ -54,6 +54,10 @@ pub enum NetError {
     IncompatibleVersion { local: u16, remote: u16 },
     #[error("control stream closed by peer")]
     StreamClosed,
+    #[error("este computador pede a senha de acesso não assistido")]
+    PasswordNeeded,
+    #[error("o outro computador não confirmou a senha: pode ser outro se passando por ele")]
+    HostNotConfirmed,
     #[error("handshake timed out")]
     Timeout,
     #[error("unexpected message: {0}")]

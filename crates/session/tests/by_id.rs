@@ -43,6 +43,7 @@ async fn accepted_by_id_then_streams() {
             encoder: EncoderSettings::default(),
         }),
         presence: None,
+        unattended: None,
     });
     tokio::spawn(async move {
         while let Some(incoming) = endpoint.accept().await {
@@ -80,6 +81,7 @@ async fn accepted_by_id_then_streams() {
                         permissions: Permissions::CONTROL,
                         name: from_name,
                         id: "482 913 557".into(),
+                        needs_password: false,
                     },
                 ),
             })
@@ -94,7 +96,7 @@ async fn accepted_by_id_then_streams() {
         .await
         .unwrap();
     let access = viewer_signal
-        .request_access(host_id)
+        .request_access(host_id, false, || {})
         .await
         .unwrap()
         .unwrap();
@@ -117,6 +119,7 @@ async fn accepted_by_id_then_streams() {
     let session = client::start(
         conn,
         hello(&access.session_code),
+        None,
         DecoderPreference::Software,
         move |_| {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -138,6 +141,7 @@ async fn accepted_by_id_then_streams() {
     let again = client::start(
         conn,
         hello(&access.session_code),
+        None,
         DecoderPreference::Software,
         |_| {},
     )

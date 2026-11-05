@@ -24,6 +24,10 @@ use crate::signaling::{ANSWER_TIME, Ask};
 /// is connected.
 pub const VIEWER_CONNECTED: &str = "hext-ui: conectado";
 
+/// Printed by a viewer asking a computer whose screen is locked (the
+/// interface shows it, too).
+pub const HOST_LOCKED: &str = "O computador está bloqueado: peça para alguém acordar a tela.";
+
 /// Owner of the sessions → interface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToUi {
@@ -65,6 +69,7 @@ pub struct SessionView {
     pub name: String,
     pub id: Option<String>,
     pub permissions: Permissions,
+    pub unattended: bool,
 }
 
 /// The owner's end: the interface connected now (at most one), and what it
@@ -161,8 +166,14 @@ impl UiHub {
         }
     }
 
+    /// Ends the session going on, as if the user pressed Encerrar.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn end_session(&self) {
+        self.received(FromUi::EndSession);
+    }
+
     /// Whether an interface is connected.
-    #[cfg(test)]
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     pub fn connected(&self) -> bool {
         self.0.lock().expect("lock").ui.is_some()
     }
@@ -258,6 +269,7 @@ impl Presence for UiHub {
             name: session.name.clone(),
             id: session.id.clone(),
             permissions: session.permissions,
+            unattended: session.unattended,
         };
         let mut state = self.0.lock().expect("lock");
         state.session = Some((view.clone(), end.clone()));
@@ -334,6 +346,7 @@ mod tests {
             name: "Técnico".into(),
             id: Some("111 222 333".into()),
             permissions: Permissions::CONTROL,
+            unattended: false,
         }
     }
 

@@ -64,6 +64,9 @@ pub enum ServerMsg {
         #[serde(with = "hex_key")]
         from_key: PublicKey,
         from_name: String,
+        /// It comes with the unattended password: nobody is asked.
+        #[serde(default)]
+        unattended: bool,
     },
     /// (To a viewer) the host accepted: connect to it, and expect its key.
     Accepted {
@@ -78,6 +81,8 @@ pub enum ServerMsg {
     },
     /// (To a viewer) the request went nowhere.
     Rejected { request: u64, reason: Rejection },
+    /// (To a viewer) the computer is locked: someone must wake its screen.
+    Waiting { request: u64 },
     /// (To a host) a request it was asked about is over (the viewer left
     /// or it timed out): stop asking the user.
     Cancelled { request: u64 },
@@ -101,10 +106,19 @@ pub enum ClientMsg {
         /// A host, which takes requests (one login per device: a new one
         /// replaces the old). A viewer only makes them.
         accepts_requests: bool,
+        /// It understands [`ServerMsg::Waiting`] (older apps fail on it).
+        #[serde(default)]
+        notices: bool,
     },
     /// Ask to connect to device `to`. `request` is chosen by the viewer and
     /// comes back in the answer.
-    Connect { request: u64, to: DeviceId },
+    Connect {
+        request: u64,
+        to: DeviceId,
+        /// With the unattended password, instead of asking anyone.
+        #[serde(default)]
+        unattended: bool,
+    },
     /// (Host) accept a [`ServerMsg::Request`]: where to connect, and the
     /// one-time code the viewer will present.
     Accept {
@@ -114,6 +128,12 @@ pub enum ClientMsg {
     },
     /// (Host) refuse a [`ServerMsg::Request`].
     Reject { request: u64 },
+    /// (Host) a [`ServerMsg::Request`] came for unattended access, which is
+    /// off here.
+    NoUnattended { request: u64 },
+    /// (Host) the computer is locked: someone must wake the screen to see
+    /// the question.
+    Waiting { request: u64 },
 }
 
 /// Why a connection request failed.
@@ -134,6 +154,8 @@ pub enum Rejection {
     Busy,
     /// A device cannot connect to itself.
     SelfConnect,
+    /// The host does not have unattended access on.
+    UnattendedOff,
 }
 
 impl ServerMsg {
@@ -208,8 +230,15 @@ mod tests {
                 device_name: "PC".into(),
                 app_version: "0.1.0".into(),
                 accepts_requests: true,
+                notices: true,
             },
-            ClientMsg::Connect { request: 7, to: id },
+            ClientMsg::Connect {
+                request: 7,
+                to: id,
+                unattended: true,
+            },
+            ClientMsg::NoUnattended { request: 7 },
+            ClientMsg::Waiting { request: 7 },
             ClientMsg::Accept {
                 request: 9,
                 addrs: vec!["192.168.0.10:7420".into()],

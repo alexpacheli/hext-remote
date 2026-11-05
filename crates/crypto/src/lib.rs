@@ -7,6 +7,7 @@
 //! authenticate the device by a signed challenge, and with `iroh` the key is
 //! the node's ID. The private key never leaves the device.
 
+pub mod pake;
 mod protect;
 mod store;
 
@@ -47,6 +48,10 @@ pub enum CryptoError {
         path: std::path::PathBuf,
         source: std::io::Error,
     },
+    #[error("{0}: o arquivo da senha não abriu. Defina a senha de novo com `service password`")]
+    PasswordFile(std::path::PathBuf),
+    #[error("não deu para processar a senha")]
+    Derive,
     #[error("sem pasta para guardar a chave deste computador: defina {0}")]
     NoConfigDir(&'static str),
 }

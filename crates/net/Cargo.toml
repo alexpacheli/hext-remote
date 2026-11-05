@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 hext-crypto.workspace = true
 hext-proto.workspace = true
+zeroize.workspace = true
 iroh.workspace = true
 reed-solomon-erasure.workspace = true
 serde.workspace = true

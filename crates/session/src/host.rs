@@ -7,16 +7,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hext_codec::EncoderSettings;
+use hext_crypto::PublicKey;
+use hext_crypto::pake::Verifier;
 use hext_input::Area;
 use hext_net::video::VideoSender;
-use hext_net::{Connection, NetError};
+use hext_net::{Admission, Connection, NetError};
 use hext_proto::{
     Control, Hello, InputEvent, PeerInfo, Permissions, RejectReason, StreamKind, VideoFrame,
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::{Result, SessionError, codes_match};
+use crate::{Lockout, Result, SessionError, codes_match};
 
 /// How often a still screen repeats the number of its last frame.
 const IDLE_NOTICE: Duration = Duration::from_millis(250);
@@ -33,6 +35,26 @@ pub struct HostConfig {
     pub desktop: Arc<dyn Desktop>,
     /// Keeps the host's user aware of the session, with a way to end it.
     pub presence: Option<Arc<dyn Presence>>,
+    /// Sessions without anyone accepting, with the password; `None`: this
+    /// host has no such thing (it only exists installed).
+    pub unattended: Option<UnattendedAccess>,
+}
+
+/// What the unattended password takes on the host.
+pub struct UnattendedAccess {
+    /// This computer's key: the exchange is tied to it.
+    pub key: PublicKey,
+    pub lockout: Lockout,
+    pub password: Arc<dyn UnattendedPassword>,
+}
+
+/// Where the password is kept and what is said about its use.
+pub trait UnattendedPassword: Send + Sync {
+    /// What is kept of the password now; `None`: the access is off. Read on
+    /// each request, so a change needs no restart.
+    fn verifier(&self) -> Option<Verifier>;
+    /// Writes down something that happened, for the owner of the computer.
+    fn audit(&self, entry: &str);
 }
 
 /// The session going on, as the host's user is shown it.
@@ -42,6 +64,8 @@ pub struct ActiveSession {
     /// `None`: connected by IP, with the access code.
     pub id: Option<String>,
     pub permissions: Permissions,
+    /// Came in with the password; nobody accepted.
+    pub unattended: bool,
 }
 
 /// The host's indicator of a session (ARCHITECTURE 7.3).
@@ -249,6 +273,40 @@ struct Shared {
     area: Mutex<Area>,
 }
 
+/// How a session with the password is told apart in the audit.
+fn who(grant: &crate::Grant) -> String {
+    format!("\"{}\" (ID {})", grant.name, grant.id)
+}
+
+/// Writes down the end of a session with the password, when dropped.
+struct AuditEnd(Arc<dyn UnattendedPassword>, String);
+
+impl Drop for AuditEnd {
+    fn drop(&mut self) {
+        self.0.audit(&format!("sessão encerrada: \"{}\"", self.1));
+    }
+}
+
+/// Whether the password may be tried by `viewer` now, and against what.
+fn admit_with_password(
+    access: Option<&UnattendedAccess>,
+    viewer: &PublicKey,
+    grant: &crate::Grant,
+) -> std::result::Result<Admission, RejectReason> {
+    let access = access.ok_or(RejectReason::Denied)?;
+    if let Some(wait) = access.lockout.check(viewer) {
+        return Err(RejectReason::LockedOut {
+            seconds: wait.as_secs().max(1).try_into().unwrap_or(u32::MAX),
+        });
+    }
+    let verifier = access.password.verifier().ok_or(RejectReason::Denied)?;
+    Ok(Admission::Password {
+        permissions: grant.permissions,
+        verifier,
+        host: access.key,
+    })
+}
+
 /// Runs one session on an accepted connection until the client leaves.
 ///
 /// Returns the client's identity once the session ends normally.
@@ -256,33 +314,67 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // The viewer proved it holds this key; a session code is only good from
     // the viewer it was issued to.
     let viewer = hext_net::remote_key(&conn);
-    let mut grant = None;
-    let (mut control, hello) =
-        hext_net::host_handshake(&conn, config.peer.clone(), |hello: &Hello| {
-            let code = config.access_code.as_deref();
-            if code.is_some_and(|code| codes_match(code, &hello.access_code)) {
-                return Ok(Permissions::CONTROL);
+    let mut grant: Option<crate::Grant> = None;
+    let handshake = hext_net::host_handshake(&conn, config.peer.clone(), |hello: &Hello| {
+        let code = config.access_code.as_deref();
+        if code.is_some_and(|code| codes_match(code, &hello.access_code)) {
+            return Ok(Admission::Allow(Permissions::CONTROL));
+        }
+        grant = config.session_codes.redeem(&hello.access_code, &viewer);
+        let grant = grant.as_ref().ok_or(RejectReason::WrongCode)?;
+        if grant.needs_password {
+            admit_with_password(config.unattended.as_ref(), &viewer, grant)
+        } else {
+            Ok(Admission::Allow(grant.permissions))
+        }
+    })
+    .await;
+    // What counts as a guess is known only now.
+    let unattended = config
+        .unattended
+        .as_ref()
+        .filter(|_| grant.as_ref().is_some_and(|grant| grant.needs_password));
+    let (mut control, hello) = match (handshake, unattended) {
+        (Ok(done), Some(access)) => {
+            access.lockout.succeeded(&viewer);
+            done
+        }
+        (Err(e), Some(access)) => {
+            if matches!(e, NetError::Rejected(RejectReason::WrongPassword)) {
+                access.lockout.failed(&viewer);
             }
-            grant = config.session_codes.redeem(&hello.access_code, &viewer);
-            grant
-                .as_ref()
-                .map(|grant| grant.permissions)
-                .ok_or(RejectReason::WrongCode)
-        })
-        .await?;
+            if let (NetError::Rejected(reason), Some(grant)) = (&e, &grant) {
+                access
+                    .password
+                    .audit(&format!("recusado: {reason:?}, {}", who(grant)));
+            }
+            return Err(e.into());
+        }
+        (handshake, None) => handshake?,
+    };
     let client = hello.peer;
+    let audit = unattended.map(|access| access.password.clone());
     let session = match grant {
-        Some(grant) => ActiveSession {
-            name: grant.name,
-            id: Some(grant.id),
-            permissions: grant.permissions,
-        },
+        Some(grant) => {
+            if let Some(audit) = &audit {
+                audit.audit(&format!("sessão iniciada: {}", who(&grant)));
+            }
+            ActiveSession {
+                unattended: grant.needs_password,
+                name: grant.name,
+                id: Some(grant.id),
+                permissions: grant.permissions,
+            }
+        }
         None => ActiveSession {
             name: client.device_name.clone(),
             id: None,
             permissions: Permissions::CONTROL,
+            unattended: false,
         },
     };
+    // Written however the session ends.
+    let _audit_end = audit.map(|audit| AuditEnd(audit, session.name.clone()));
     // (Not the path: right after the handshake it is usually the relay,
     // and a direct one follows; the viewer's title shows it live.)
     info!(
