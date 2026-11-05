@@ -385,7 +385,7 @@ docs/
 | **F4 — Essenciais de suporte** ([plano](docs/F4.md)) | Serviço Windows (login/UAC/Ctrl+Alt+Del), inicialização automática nos 3 SOs, senha não assistida (PAKE), clipboard, arquivos, chat, multi-monitor completo, reiniciar e reconectar, tela de login no macOS | Um técnico consegue fazer um atendimento real de ponta a ponta |
 | **F5 — Contas** | Login, 2FA, catálogo de endereços, vínculo de dispositivos, compartilhamento, auditoria. **Acesso não assistido sempre com consentimento prévio, indicador visível de sessão ativa e log de auditoria** (ver [7.4](#74-consentimento-e-transparência-princípio-do-produto)); sem modo oculto. | Acessar as próprias máquinas sem aceite e gerenciar técnicos |
 | **F6 — Distribuição** | Instaladores, assinatura, notarização, auto-update, `.exe` portátil | Usuário final instala sem avisos de segurança |
-| **F7 — Extras** | Cliente e host Linux, áudio, privacidade (tela preta), gravação de sessão, HEVC/AV1, Wake-on-LAN, mobile e web | — |
+| **F7 — Extras** | Cliente e host Linux, vários técnicos no mesmo computador (se precisar), áudio, privacidade (tela preta), gravação de sessão, HEVC/AV1, Wake-on-LAN, mobile e web | — |
 
 ---
 
