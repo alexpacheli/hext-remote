@@ -23,6 +23,9 @@ struct Resume {
     token: Option<ResumeToken>,
     /// The host's answer to the last request to restart.
     restart: Option<bool>,
+    /// Why the connection ended, if it did before this side closed it:
+    /// closing replaces the reason it reports.
+    ended: Option<ConnectionError>,
 }
 
 /// A decoded picture ready to be shown.
@@ -102,7 +105,8 @@ impl ClientHandle {
     pub fn comes_back(&self) -> Option<(ResumeToken, Duration)> {
         let resume = self.resume.lock().expect("lock");
         let token = resume.token?;
-        let reason = self.conn.close_reason();
+        let reason = resume.ended.clone().or_else(|| self.conn.close_reason());
+        info!(?reason, "conexão terminou");
         if let Some(ConnectionError::ApplicationClosed(close)) = &reason
             && close.reason.as_ref() == ENDED_ON_HOST
         {
@@ -270,6 +274,7 @@ async fn run(
     if say_bye {
         let _ = control.bye(&conn).await;
     }
+    resume.lock().expect("lock").ended = conn.close_reason();
     conn.close(0u32.into(), b"fim");
     // Stopping the receiver drops the queue's sender, which ends the decoder.
     receiver.abort();

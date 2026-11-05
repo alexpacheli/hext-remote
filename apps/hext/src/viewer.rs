@@ -380,7 +380,10 @@ impl Viewer {
                     window.set_title("Hext Remote — O computador não reiniciou");
                     return;
                 }
-                None => {}
+                None => {
+                    window.set_title("Hext Remote — Pedindo para reiniciar…");
+                    return;
+                }
             }
         }
         let mut stats = session.stats.lock().expect("lock");

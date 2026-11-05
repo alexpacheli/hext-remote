@@ -447,3 +447,31 @@ async fn a_session_that_ended_properly_does_not_come_back() {
         Err(SessionError::Net(NetError::Rejected(RejectReason::Denied)))
     ));
 }
+
+#[test]
+fn a_viewer_cut_off_from_the_host_comes_back() {
+    let hosting = tokio::runtime::Runtime::new().unwrap();
+    let viewing = tokio::runtime::Runtime::new().unwrap();
+    let host = hosting.block_on(Host::start(None));
+    let viewer = DeviceKey::generate().unwrap();
+    viewing.block_on(async {
+        let session = host.attempt_accepted(&viewer).await.unwrap();
+        let token = token_of(&session).await;
+
+        // Gone without a word, as when the network drops.
+        hosting.shutdown_background();
+        tokio::time::timeout(Duration::from_secs(30), session.closed())
+            .await
+            .expect("the idle timeout ends the connection");
+        // The session winds down after the connection does.
+        for _ in 0..500 {
+            if session.is_finished() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let (back, _) = session.comes_back().expect("a lost connection comes back");
+        assert_eq!(back, token);
+    });
+}
