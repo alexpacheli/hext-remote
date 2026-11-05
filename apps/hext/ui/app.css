@@ -236,6 +236,20 @@ body[data-page="bar"] {
   opacity: 0.75;
 }
 
+.session .short,
+body.folded .session #who,
+body.folded .session .doing {
+  display: none;
+}
+
+body.folded .session .short {
+  display: block;
+}
+
+body[data-page="bar"].folded button {
+  padding: 1px 10px;
+}
+
 body[data-page="bar"] button {
   flex: none;
   padding: 4px 12px;

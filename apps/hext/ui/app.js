@@ -104,8 +104,28 @@ const pages = {
   },
 
   bar: {
+    timer: null,
+    seen: null,
     start() {
       $("end").addEventListener("click", () => invoke("end_session"));
+      document.body.addEventListener("mouseenter", () => this.unfold());
+      document.body.addEventListener("mouseleave", () => this.foldIn(1500));
+    },
+    unfold() {
+      clearTimeout(this.timer);
+      if (document.body.classList.contains("folded")) {
+        document.body.classList.remove("folded");
+        invoke("fold_bar", { folded: false });
+      }
+    },
+    foldIn(ms) {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => {
+        if (!document.body.matches(":hover")) {
+          document.body.classList.add("folded");
+          invoke("fold_bar", { folded: true });
+        }
+      }, ms);
     },
     show(view) {
       if (!view.session) {
@@ -123,6 +143,12 @@ const pages = {
       $("who").textContent = who;
       $("doing").textContent = doing;
       $("session").title = `${who}: ${doing}`;
+      // Who is there and what they can do are read first, in full.
+      if ($("session").title !== this.seen) {
+        this.seen = $("session").title;
+        this.unfold();
+        this.foldIn(6000);
+      }
     },
   },
 };

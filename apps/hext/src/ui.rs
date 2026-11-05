@@ -19,8 +19,8 @@ use hext_proto::Permissions;
 use hext_signal::DeviceId;
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, RunEvent, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, RunEvent, State, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -33,6 +33,9 @@ use crate::ui_link::{FromUi, HOST_LOCKED, SessionView, ToUi, UiHub, VIEWER_CONNE
 
 /// Tells the pages to read [`View`] again.
 const CHANGED: &str = "changed";
+/// The session bar: width and height, in logical pixels.
+const BAR_OPEN: (f64, f64) = (480.0, 56.0);
+const BAR_FOLDED: (f64, f64) = (210.0, 32.0);
 
 /// Who owns the sessions.
 pub enum Link {
@@ -204,13 +207,13 @@ fn open_ask(app: &AppHandle) {
 /// The bar: on top of everything for as long as the session lasts, at the
 /// top of the main screen. It takes no focus from what the user is doing.
 fn open_bar(app: &AppHandle) {
-    const WIDTH: f64 = 480.0;
+    const WIDTH: f64 = BAR_OPEN.0;
     let app = app.clone();
     std::thread::spawn(move || {
         let bar = window(&app, "bar", "bar.html", |builder| {
             builder
                 .title("Hext Remote: sessão ativa")
-                .inner_size(WIDTH, 56.0)
+                .inner_size(WIDTH, BAR_OPEN.1)
                 .decorations(false)
                 .resizable(false)
                 .maximizable(false)
@@ -432,6 +435,27 @@ fn refuse(app: &AppHandle) {
     }
 }
 
+/// The bar's size, open and folded: folded it still shows and ends the
+/// session. It stays centered where it is (it can be dragged).
+#[tauri::command]
+fn fold_bar(window: WebviewWindow, folded: bool) {
+    if window.label() != "bar" {
+        return;
+    }
+    let (width, height) = if folded { BAR_FOLDED } else { BAR_OPEN };
+    let (Ok(position), Ok(old), Ok(scale)) = (
+        window.outer_position(),
+        window.outer_size(),
+        window.scale_factor(),
+    ) else {
+        return;
+    };
+    let new = (width * scale) as i32;
+    let x = position.x + (old.width as i32 - new) / 2;
+    let _ = window.set_size(LogicalSize::new(width, height));
+    let _ = window.set_position(PhysicalPosition::new(x, position.y));
+}
+
 #[tauri::command]
 fn end_session(window: WebviewWindow, shared: State<'_, Shared>) {
     if window.label() == "bar" {
@@ -611,6 +635,7 @@ pub fn run(link: Link) -> Result<()> {
             view,
             answer,
             end_session,
+            fold_bar,
             connect,
             forget
         ])
