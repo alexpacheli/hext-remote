@@ -51,6 +51,12 @@ impl Db {
                  viewer_id INTEGER NOT NULL,
                  at INTEGER NOT NULL,
                  PRIMARY KEY (host_id, viewer_id)
+             ) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS entered (
+                 host_id INTEGER NOT NULL,
+                 viewer_id INTEGER NOT NULL,
+                 at INTEGER NOT NULL,
+                 PRIMARY KEY (host_id, viewer_id)
              ) WITHOUT ROWID;",
         )?;
         Ok(Self {
@@ -123,13 +129,7 @@ impl Db {
 
     /// Remembers that `host` accepted `viewer` (the latest time).
     pub fn remember_accepted(&self, host: DeviceId, viewer: DeviceId) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().expect("db lock");
-        conn.execute(
-            "INSERT INTO accepted (host_id, viewer_id, at) VALUES (?1, ?2, ?3)
-             ON CONFLICT (host_id, viewer_id) DO UPDATE SET at = excluded.at",
-            params![host.get(), viewer.get(), now()],
-        )?;
-        Ok(())
+        self.remember("accepted", host, viewer)
     }
 
     /// Whether `host` accepted `viewer` within the last `secs` seconds.
@@ -139,9 +139,61 @@ impl Db {
         viewer: DeviceId,
         secs: i64,
     ) -> rusqlite::Result<bool> {
+        self.seen_within("accepted", host, viewer, secs)
+    }
+
+    /// Remembers that `viewer` got into `host` with nobody accepting (the
+    /// latest time).
+    pub fn remember_entered(&self, host: DeviceId, viewer: DeviceId) -> rusqlite::Result<()> {
+        self.remember("entered", host, viewer)
+    }
+
+    /// Whether `viewer` got into `host` that way within the last `secs`
+    /// seconds.
+    pub fn entered_within(
+        &self,
+        host: DeviceId,
+        viewer: DeviceId,
+        secs: i64,
+    ) -> rusqlite::Result<bool> {
+        self.seen_within("entered", host, viewer, secs)
+    }
+
+    /// Forgets that; whether there was anything to forget.
+    pub fn forget_entered(&self, host: DeviceId, viewer: DeviceId) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().expect("db lock");
+        let removed = conn.execute(
+            "DELETE FROM entered WHERE host_id = ?1 AND viewer_id = ?2",
+            params![host.get(), viewer.get()],
+        )?;
+        Ok(removed > 0)
+    }
+
+    /// Notes (host, viewer) in `table`, one of the tables of such pairs.
+    fn remember(&self, table: &str, host: DeviceId, viewer: DeviceId) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db lock");
+        conn.execute(
+            &format!(
+                "INSERT INTO {table} (host_id, viewer_id, at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (host_id, viewer_id) DO UPDATE SET at = excluded.at"
+            ),
+            params![host.get(), viewer.get(), now()],
+        )?;
+        Ok(())
+    }
+
+    /// Whether (host, viewer) was noted in `table` within the last `secs`
+    /// seconds.
+    fn seen_within(
+        &self,
+        table: &str,
+        host: DeviceId,
+        viewer: DeviceId,
+        secs: i64,
+    ) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().expect("db lock");
         conn.query_row(
-            "SELECT 1 FROM accepted WHERE host_id = ?1 AND viewer_id = ?2 AND at >= ?3",
+            &format!("SELECT 1 FROM {table} WHERE host_id = ?1 AND viewer_id = ?2 AND at >= ?3"),
             params![host.get(), viewer.get(), now() - secs],
             |_| Ok(()),
         )

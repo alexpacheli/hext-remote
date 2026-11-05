@@ -373,11 +373,20 @@ async fn ask(viewer: &mut Client, host: &mut Client, request: u64, accept: bool)
 
 /// Sends a request that the server refuses at once; its reason.
 async fn refused(viewer: &mut Client, to: DeviceId, request: u64) -> Rejection {
+    refused_as(viewer, to, request, false).await
+}
+
+async fn refused_as(
+    viewer: &mut Client,
+    to: DeviceId,
+    request: u64,
+    unattended: bool,
+) -> Rejection {
     viewer
         .send(&ClientMsg::Connect {
             request,
             to,
-            unattended: false,
+            unattended,
         })
         .await
         .unwrap();
@@ -804,6 +813,243 @@ async fn unattended_requests_reach_the_host_marked_and_leave_no_trust() {
             reason: Rejection::TooManyRequests
         }
     );
+}
+
+/// Asks `host` from `viewer` with the password and has the host let it
+/// through, as it does with nobody to ask.
+async fn with_password(viewer: &mut Client, host: &mut Client, request: u64) {
+    send_with_password(viewer, host.id(), request).await;
+    let ServerMsg::Request { request: asked, .. } = recv(host).await else {
+        panic!("expected a request");
+    };
+    host.send(&ClientMsg::Accept {
+        request: asked,
+        addrs: Vec::new(),
+        session_code: "s3cr3t".into(),
+    })
+    .await
+    .unwrap();
+    assert!(matches!(recv(viewer).await, ServerMsg::Accepted { .. }));
+}
+
+async fn send_with_password(viewer: &mut Client, to: DeviceId, request: u64) {
+    viewer
+        .send(&ClientMsg::Connect {
+            request,
+            to,
+            unattended: true,
+        })
+        .await
+        .unwrap();
+}
+
+/// The same as [`refused`], with the password.
+async fn refused_with_password(viewer: &mut Client, to: DeviceId, request: u64) -> Rejection {
+    refused_as(viewer, to, request, true).await
+}
+
+/// The host says how `viewer`'s attempt went; back once the server took it
+/// in. The audit is written in the background, so its entries are counted
+/// by name.
+async fn report(host: &mut Client, viewer: DeviceId, entered: bool, state: &State) {
+    let to = host.id();
+    let event = if entered { "entered" } else { "wrong_password" };
+    let count = || {
+        let events = state.db.audit_of(to).unwrap();
+        events.iter().filter(|(_, e)| e == event).count()
+    };
+    let before = count();
+    host.send(&ClientMsg::Attempt { viewer, entered })
+        .await
+        .unwrap();
+    for _ in 0..200 {
+        if count() > before {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the server never took {event} in");
+}
+
+/// A host and a technician.
+async fn pair(url: &str) -> (Client, Client) {
+    let host = login(url, &DeviceKey::generate().unwrap(), "Host").await;
+    let viewer = login(url, &DeviceKey::generate().unwrap(), "Técnico").await;
+    (host, viewer)
+}
+
+#[tokio::test]
+async fn who_got_in_with_the_password_comes_back_as_often_as_it_takes() {
+    let (url, state) = server().await;
+    let (mut host, mut viewer) = pair(&url).await;
+    let id = viewer.id();
+
+    // Well past the 3 a stranger gets, each one as after a drop or a restart.
+    for request in 1..=8 {
+        with_password(&mut viewer, &mut host, request).await;
+        report(&mut host, id, true, &state).await;
+    }
+}
+
+#[tokio::test]
+async fn wrong_passwords_never_get_past_the_limit_of_strangers() {
+    let (url, state) = server().await;
+    let (mut host, mut viewer) = pair(&url).await;
+    let (id, to) = (viewer.id(), host.id());
+
+    for request in 1..=3 {
+        with_password(&mut viewer, &mut host, request).await;
+        report(&mut host, id, false, &state).await;
+    }
+    assert_eq!(
+        refused_with_password(&mut viewer, to, 4).await,
+        Rejection::TooManyRequests
+    );
+    assert!(!state.db.entered_within(to, id, 3600).unwrap());
+}
+
+#[tokio::test]
+async fn the_first_wrong_password_ends_the_trust() {
+    let (url, state) = server().await;
+    let (mut host, mut viewer) = pair(&url).await;
+    let (id, to) = (viewer.id(), host.id());
+
+    with_password(&mut viewer, &mut host, 1).await;
+    report(&mut host, id, true, &state).await;
+    // The password changed, or the key was stolen: from here on, a stranger.
+    with_password(&mut viewer, &mut host, 2).await;
+    report(&mut host, id, false, &state).await;
+    assert!(!state.db.entered_within(to, id, 3600).unwrap());
+    // (The first request is on the count already.)
+    with_password(&mut viewer, &mut host, 3).await;
+    with_password(&mut viewer, &mut host, 4).await;
+    assert_eq!(
+        refused_with_password(&mut viewer, to, 5).await,
+        Rejection::TooManyRequests
+    );
+    // The right password puts it back.
+    report(&mut host, id, true, &state).await;
+    with_password(&mut viewer, &mut host, 6).await;
+}
+
+#[tokio::test]
+async fn a_wrong_password_reported_late_still_ends_the_trust_on_the_record() {
+    let (url, state) = server().await;
+    let (mut host, mut viewer) = pair(&url).await;
+    let (id, to) = (viewer.id(), host.id());
+
+    with_password(&mut viewer, &mut host, 1).await;
+    report(&mut host, id, true, &state).await;
+    // No request of it open: the host was away from the server meanwhile.
+    report(&mut host, id, false, &state).await;
+    assert!(!state.db.entered_within(to, id, 3600).unwrap());
+}
+
+#[tokio::test]
+async fn a_viewer_cannot_vouch_for_itself() {
+    let (url, state) = server().await;
+    let (mut host, mut viewer) = pair(&url).await;
+    let mut friend = login(&url, &DeviceKey::generate().unwrap(), "Amigo").await;
+    let (id, to, friend_id) = (viewer.id(), host.id(), friend.id());
+
+    for request in 1..=3 {
+        with_password(&mut viewer, &mut host, request).await;
+        // In its own name, or in that of a device that never heard of it.
+        let entered = ClientMsg::Attempt {
+            viewer: id,
+            entered: true,
+        };
+        viewer.send(&entered).await.unwrap();
+        friend.send(&entered).await.unwrap();
+        // Back once the server read it.
+        assert_eq!(
+            refused(&mut friend, friend_id, request).await,
+            Rejection::SelfConnect
+        );
+    }
+    assert_eq!(
+        refused_with_password(&mut viewer, to, 4).await,
+        Rejection::TooManyRequests
+    );
+    // Not even the host's word counts without a request it let through.
+    let mut other = login(&url, &DeviceKey::generate().unwrap(), "Outro").await;
+    let other_id = other.id();
+    host.send(&ClientMsg::Attempt {
+        viewer: other_id,
+        entered: true,
+    })
+    .await
+    .unwrap();
+    with_password(&mut other, &mut host, 1).await;
+    assert!(!state.db.entered_within(to, other_id, 3600).unwrap());
+}
+
+#[tokio::test]
+async fn being_accepted_is_not_getting_in_with_the_password() {
+    let (url, state) = server().await;
+    let (mut host, mut viewer) = pair(&url).await;
+    let (id, to) = (viewer.id(), host.id());
+
+    // Answered by a person: there is no password to say anything about.
+    ask(&mut viewer, &mut host, 1, true).await;
+    host.send(&ClientMsg::Attempt {
+        viewer: id,
+        entered: true,
+    })
+    .await
+    .unwrap();
+    with_password(&mut viewer, &mut host, 2).await;
+    assert!(!state.db.entered_within(to, id, 3600).unwrap());
+}
+
+#[tokio::test]
+async fn getting_in_with_the_password_does_not_open_the_way_to_bother_people() {
+    let (url, state) = server().await;
+    let (mut host, mut viewer) = pair(&url).await;
+    let (id, to) = (viewer.id(), host.id());
+
+    with_password(&mut viewer, &mut host, 1).await;
+    report(&mut host, id, true, &state).await;
+    for request in 2..=3 {
+        ask(&mut viewer, &mut host, request, false).await;
+    }
+    assert_eq!(
+        refused(&mut viewer, to, 4).await,
+        Rejection::TooManyRequests
+    );
+    with_password(&mut viewer, &mut host, 5).await;
+}
+
+#[tokio::test]
+async fn a_flood_does_not_lock_out_who_got_in_with_the_password() {
+    let (url, state) = server().await;
+    let (mut host, mut viewer) = pair(&url).await;
+    let (id, to) = (viewer.id(), host.id());
+    with_password(&mut viewer, &mut host, 1).await;
+    report(&mut host, id, true, &state).await;
+
+    // 1 + 3 + 3 + 3 = 10 on the host's count; the next stranger closes it.
+    let mut strangers = Vec::new();
+    for name in ["A", "B", "C", "D"] {
+        strangers.push(login(&url, &DeviceKey::generate().unwrap(), name).await);
+    }
+    for stranger in &mut strangers[..3] {
+        for request in 0..3 {
+            ask(stranger, &mut host, request, false).await;
+        }
+    }
+    assert_eq!(
+        refused_with_password(&mut strangers[3], to, 0).await,
+        Rejection::TooManyRequests
+    );
+    with_password(&mut viewer, &mut host, 2).await;
+}
+
+#[tokio::test]
+async fn the_server_says_it_takes_attempts() {
+    let (url, _) = server().await;
+    let client = login(&url, &DeviceKey::generate().unwrap(), "PC").await;
+    assert!(client.takes_attempts());
 }
 
 #[tokio::test]

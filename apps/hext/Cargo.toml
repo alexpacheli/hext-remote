@@ -30,6 +30,9 @@ tracing-subscriber.workspace = true
 winit.workspace = true
 zeroize.workspace = true
 
+[dev-dependencies]
+hext-server = { path = "../hext-server" }
+
 [target.'cfg(windows)'.dependencies]
 windows-core.workspace = true
 windows = { workspace = true, features = [

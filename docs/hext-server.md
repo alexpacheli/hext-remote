@@ -14,13 +14,14 @@ App                                   Servidor
  │◄── challenge {protocol, nonce} ──────│   32 bytes aleatórios
  │─── hello {chave, assinatura, nome,   │   assinatura Ed25519 de "hext-signal-auth-v1\0" + nonce
  │           host ou técnico} ─────────►│
- │◄── welcome {id} ─────────────────────│   ID atribuído no primeiro login, o mesmo para sempre
+ │◄── welcome {id, aceita attempt} ─────│   ID atribuído no primeiro login, o mesmo para sempre
 
 Técnico                  Servidor                   Host
  │── connect {1, id} ──────►│                          │
  │                          │── request {r, de, chave, nome} ─►│  (o host pergunta ao usuário)
  │                          │◄── accept {r, endereços, código} ─│  ou reject {r}
  │◄─ accepted {1, chave do host, endereços, código} ─│         │  ou rejected {1, motivo}
+ │                          │◄── attempt {técnico, entrou} ────│  depois de um pedido com senha
 ```
 
 - **Login:** o app prova que tem a chave assinando o desafio. O servidor associa a chave pública a um ID
@@ -37,18 +38,23 @@ Técnico                  Servidor                   Host
     limite não zera ao reconectar;
   - um pedido esperando por técnico e host, e até 5 por host (`busy`);
   - bloqueio temporário do ID alvo: depois de 10 pedidos em 10 minutos para o mesmo host, vindos de
-    computadores que ele não aceitou nos últimos 90 dias (de quaisquer IPs), ele fica fechado para
+    computadores em que ele não confia (de quaisquer IPs), ele fica fechado para
     desconhecidos por 15 minutos (`too_many_requests`). Cada desconhecido conta no máximo 3 pedidos por
     host nessa janela (os seguintes são recusados só para ele), então um computador sozinho não fecha
     o host; repetir o pedido enquanto um espera (`busy`) não conta. Quem o host aceitou nos últimos 90
     dias continua passando, para que uma enxurrada de pedidos não tire o acesso do técnico de sempre. A
     tabela `accepted` guarda esses pares;
+  - quem entrou pela senha: o servidor não vê a senha, então o host conta como foi (`attempt`). O servidor
+    só aceita "entrou" de um host que deixou passar um pedido com senha desse técnico nos últimos 5 minutos.
+    Quem entrou também fica de fora desses limites, por 7 dias desde a última entrada e só em pedidos com
+    senha, e perde isso na primeira senha errada. A tabela `entered` guarda esses pares;
   - logins: até 30 por minuto por endereço IP; computadores novos (IDs entregues): até 10 por hora por IP;
   - ID inexistente responde igual a ID offline, para não dar para sondar quais IDs existem;
   - nomes sem caracteres de controle nem invisíveis (como os que invertem a direção do texto), com até
     64 caracteres, porque o nome do técnico aparece para quem está no host.
 - **Auditoria:** a tabela `audit` registra quem pediu, para qual ID, quando e o resultado (`requested`,
-  `accepted`, `declined`, `timeout`, `cancelled`, `offline`, `busy`, `rate_limited`, `host_locked`).
+  `accepted`, `accepted_unattended`, `unattended_off`, `entered`, `wrong_password`, `declined`, `timeout`,
+  `cancelled`, `offline`, `busy`, `rate_limited`, `host_locked`).
 - **Conexão viva:** o servidor manda ping a cada 20 s e desconecta quem fica 60 s em silêncio.
 
 ## Rodar

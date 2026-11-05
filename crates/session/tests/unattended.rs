@@ -11,7 +11,7 @@ use hext_crypto::DeviceKey;
 use hext_crypto::pake::Verifier;
 use hext_net::{Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::{Hello, PeerInfo, Permissions, RejectReason};
-use hext_session::host::{HostConfig, LocalDesktop, UnattendedAccess, UnattendedPassword};
+use hext_session::host::{Attempt, HostConfig, LocalDesktop, UnattendedAccess, UnattendedPassword};
 use hext_session::{
     Grant, KeptResume, Lockout, ResumeTokens, SessionCodes, SessionError, client, host,
 };
@@ -72,6 +72,8 @@ struct Host {
     codes: SessionCodes,
     lockout: Lockout,
     resumes: ResumeTokens,
+    /// What would go to the server.
+    outcomes: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Attempt>>,
     kept: Arc<Kept>,
     restarts: Arc<Restarts>,
     encerrar: Arc<Notify>,
@@ -96,6 +98,7 @@ impl Host {
             password,
             audit: Mutex::default(),
         });
+        let (attempts, outcomes) = tokio::sync::mpsc::unbounded_channel();
         let config = Arc::new(HostConfig {
             peer: PeerInfo::local("test", "host"),
             access_code: None,
@@ -110,6 +113,7 @@ impl Host {
                 key: key.public_key(),
                 lockout: lockout.clone(),
                 password: kept.clone(),
+                attempts,
             }),
             resumes: resumes.clone(),
             restart: Some(restarts.clone()),
@@ -130,6 +134,7 @@ impl Host {
             codes,
             lockout,
             resumes,
+            outcomes: tokio::sync::Mutex::new(outcomes),
             kept,
             restarts,
             encerrar,
@@ -233,6 +238,15 @@ impl Host {
         .await
     }
 
+    /// The next outcome reported for the server.
+    async fn outcome(&self) -> Attempt {
+        let mut outcomes = self.outcomes.lock().await;
+        tokio::time::timeout(Duration::from_secs(5), outcomes.recv())
+            .await
+            .expect("an outcome in time")
+            .expect("the host is on")
+    }
+
     /// The audit, once it has `lines` lines: the host finishes up after the
     /// viewer has gone.
     async fn audit(&self, lines: usize) -> Vec<String> {
@@ -292,6 +306,43 @@ async fn a_wrong_password_stays_out_and_counts() {
     // Another technician is not held up by it.
     let other = DeviceKey::generate().unwrap();
     host.attempt(&other, Some(PASSWORD)).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_hears_how_each_attempt_went() {
+    let host = Host::start(Some(PASSWORD)).await;
+    let viewer = DeviceKey::generate().unwrap();
+    let went = |entered| Attempt {
+        viewer: "482 913 557".into(),
+        entered,
+    };
+
+    assert_eq!(
+        rejected(host.attempt(&viewer, Some("cavalo errado")).await),
+        Some(RejectReason::WrongPassword)
+    );
+    assert_eq!(host.outcome().await, went(false));
+
+    let first = host.attempt(&viewer, Some(PASSWORD)).await.unwrap();
+    assert_eq!(host.outcome().await, went(true));
+
+    // Coming back with the token counts as much as the password.
+    let token = token_of(&first).await;
+    assert!(host.resumes.displace(&viewer.public_key()));
+    first.closed().await;
+    host.attempt_back(&viewer, token).await.unwrap();
+    assert_eq!(host.outcome().await, went(true));
+
+    // Held back or turned away, nothing was tried: nothing to report.
+    host.resumes.displace(&viewer.public_key());
+    for _ in 0..5 {
+        host.lockout.failed(&viewer.public_key());
+    }
+    assert!(matches!(
+        rejected(host.attempt(&viewer, Some(PASSWORD)).await),
+        Some(RejectReason::LockedOut { .. })
+    ));
+    assert!(host.outcomes.lock().await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -44,11 +44,12 @@ const LOGINS_PER_IP: usize = 30;
 const LOGIN_WINDOW: Duration = Duration::from_secs(60);
 const NEW_DEVICES_PER_IP: usize = 10;
 const NEW_DEVICE_WINDOW: Duration = Duration::from_secs(3600);
-/// Requests to one host from devices it has not accepted lately: past this
-/// many in the window (from any number of devices and addresses), the host
-/// is closed to them for [`HOST_LOCKOUT`]. Devices it accepted within
-/// [`TRUSTED_FOR`] still get through, so a flood cannot lock out its usual
-/// technician.
+/// Requests to one host from devices it does not trust: past this many in
+/// the window (from any number of devices and addresses), the host is closed
+/// to them for [`HOST_LOCKOUT`]. Devices it accepted within [`TRUSTED_FOR`]
+/// still get through, so a flood cannot lock out its usual technician, and so
+/// do requests with the password from devices that got in within
+/// [`ENTERED_FOR`].
 const HOST_REQUESTS: usize = 10;
 const HOST_WINDOW: Duration = Duration::from_secs(600);
 const HOST_LOCKOUT: Duration = Duration::from_secs(900);
@@ -56,6 +57,13 @@ const HOST_LOCKOUT: Duration = Duration::from_secs(900);
 /// the window: closing a host takes several devices, not one.
 const STRANGER_REQUESTS: usize = 3;
 const TRUSTED_FOR: Duration = Duration::from_secs(90 * 24 * 3600);
+/// A device that got in with the password stops counting for this long after
+/// the last time, for requests with the password only: nobody is bothered by
+/// them, and each new guess is reported. Its first wrong password ends it.
+const ENTERED_FOR: Duration = Duration::from_secs(7 * 24 * 3600);
+/// How long a host has to say how a request it let through went: longer
+/// than the viewer has to use its code (`SESSION_CODE_LIFETIME`, 2 minutes).
+const ATTEMPT_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 /// Who is online, which requests are waiting, and the rate limits.
 pub struct State {
@@ -75,8 +83,11 @@ pub struct State {
     requests_to_host: RateLimiter<DeviceId>,
     /// (host, viewer): a stranger's requests to one host.
     stranger_requests: RateLimiter<(DeviceId, DeviceId)>,
-    /// Hosts closed to devices they never accepted, until when.
+    /// Hosts closed to devices they do not trust, until when.
     locked_hosts: Mutex<HashMap<DeviceId, Instant>>,
+    /// (host, viewer): requests with the password the host let through, and
+    /// until when it may say the viewer got in.
+    open_attempts: Mutex<HashMap<(DeviceId, DeviceId), Instant>>,
 }
 
 /// A device logged in as a host (it takes requests).
@@ -131,6 +142,7 @@ impl State {
             requests_to_host: RateLimiter::new(HOST_REQUESTS, HOST_WINDOW),
             stranger_requests: RateLimiter::new(STRANGER_REQUESTS, HOST_WINDOW),
             locked_hosts: Mutex::default(),
+            open_attempts: Mutex::default(),
         }
     }
 
@@ -194,14 +206,28 @@ impl State {
             .lock()
             .expect("lock")
             .retain(|_, &mut until| until > now);
+        self.open_attempts
+            .lock()
+            .expect("lock")
+            .retain(|_, &mut until| until > now);
     }
 
     /// Whether host `to` takes a request from `viewer` now (see
-    /// [`HOST_REQUESTS`]).
-    async fn host_takes(&self, to: DeviceId, viewer: DeviceId, now: Instant) -> bool {
-        let since = TRUSTED_FOR.as_secs() as i64;
+    /// [`HOST_REQUESTS`]). `unattended`: with the password.
+    async fn host_takes(
+        &self,
+        to: DeviceId,
+        viewer: DeviceId,
+        unattended: bool,
+        now: Instant,
+    ) -> bool {
+        let accepted = TRUSTED_FOR.as_secs() as i64;
+        let entered = ENTERED_FOR.as_secs() as i64;
         match self
-            .db(move |db| db.accepted_within(to, viewer, since))
+            .db(move |db| {
+                Ok(db.accepted_within(to, viewer, accepted)?
+                    || (unattended && db.entered_within(to, viewer, entered)?))
+            })
             .await
         {
             Ok(true) => return true,
@@ -387,7 +413,11 @@ pub async fn handle(socket: WebSocket, state: &State, ip: IpAddr) {
         refused_by: None,
         notices,
     };
-    if send(&mut sink, &ServerMsg::Welcome { id }).await {
+    let welcome = ServerMsg::Welcome {
+        id,
+        takes_attempts: true,
+    };
+    if send(&mut sink, &welcome).await {
         let mut ping = tokio::time::interval(PING_INTERVAL);
         ping.tick().await;
         let mut heard = Instant::now();
@@ -489,8 +519,12 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
             let (host, viewer) = (p.host, p.viewer);
             if p.unattended {
                 // This says nothing of the password yet: it must not make the
-                // viewer trusted, or its guesses would go unlimited.
+                // viewer trusted, or its guesses would go unlimited. Only
+                // the host's word on the outcome does.
                 state.audit(viewer, host, "accepted_unattended");
+                let until = Instant::now() + ATTEMPT_WINDOW;
+                let mut open = state.open_attempts.lock().expect("lock");
+                open.insert((host, viewer), until);
             } else {
                 state.audit(viewer, host, "accepted");
                 if let Err(e) = state.db(move |db| db.remember_accepted(host, viewer)).await {
@@ -545,6 +579,42 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
             }
             None
         }
+        ClientMsg::Attempt { viewer, entered } => {
+            attempt(state, me.id, viewer, entered).await;
+            None
+        }
+    }
+}
+
+/// Host `host` says how a request with the password went. It speaks only for
+/// itself, so `viewer` cannot vouch for itself, and another device's word is
+/// about that device. Getting in takes a request the host let through; a
+/// wrong password ends the trust either way (a late word must not keep it).
+async fn attempt(state: &State, host: DeviceId, viewer: DeviceId, entered: bool) {
+    let open = state
+        .open_attempts
+        .lock()
+        .expect("lock")
+        .remove(&(host, viewer))
+        .is_some_and(|until| until > Instant::now());
+    if entered && !open {
+        debug!("{host} diz que {viewer} entrou, sem pedido aberto");
+        return;
+    }
+    let noted = state
+        .db(move |db| match entered {
+            true => db.remember_entered(host, viewer).map(|()| true),
+            false => db.forget_entered(host, viewer),
+        })
+        .await;
+    let changed = noted.unwrap_or_else(|e| {
+        warn!("banco de dados: {e}");
+        false
+    });
+    // (Not without either: a host cannot fill the audit with made-up names.)
+    if open || changed {
+        let event = if entered { "entered" } else { "wrong_password" };
+        state.audit(viewer, host, event);
     }
 }
 
@@ -585,7 +655,7 @@ async fn connect(
         state.audit(me.id, to, "busy");
         return Err(Rejection::Busy);
     }
-    if !state.host_takes(to, me.id, now).await {
+    if !state.host_takes(to, me.id, unattended, now).await {
         if me.refused_by != Some(to) {
             me.refused_by = Some(to);
             state.audit(me.id, to, "rate_limited");

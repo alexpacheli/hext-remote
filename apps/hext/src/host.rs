@@ -152,6 +152,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
             device_name(),
             (endpoint.clone(), has_relay),
             (session_codes, resumes),
+            crate::signaling::no_attempts(),
             slot.clone(),
             Box::new(crate::signaling::Terminal::new()),
         ));
@@ -226,6 +227,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
         name,
         (endpoint.clone(), has_relay),
         (session_codes, resumes),
+        crate::signaling::no_attempts(),
         slot.clone(),
         Box::new(UiAsk(hub)),
     ));
