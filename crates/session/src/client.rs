@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hext_codec::{DecoderPreference, YuvFrame};
-use hext_net::video::{Event, Reassembler};
+use hext_net::video::{Counters, Event, LOG_TARGET, Reassembler};
 use hext_net::{Connection, ConnectionError, ControlStream, FramedSend, NetError, PasswordLogin};
 use hext_proto::{
     Control, Datagram, ENDED_ON_HOST, Hello, InputEvent, PeerInfo, Permissions, StreamKind,
@@ -16,6 +16,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::{NETWORK_GRACE, RESTART_LIFETIME, Result, ResumeToken, SessionError, Stats};
+
+/// A frame taking longer than this to decode is worth a log line.
+const SLOW_DECODE: Duration = Duration::from_millis(33);
 
 /// What the host said about coming back and about restarting.
 #[derive(Debug, Default)]
@@ -318,17 +321,25 @@ async fn receive_video(
     stats: Arc<Mutex<Stats>>,
 ) -> hext_net::Result<()> {
     let mut reassembler = Reassembler::new();
+    let mut report = ArrivalReport::new(&conn);
     // Also notices a lost frame when nothing newer arrives (a still screen).
     let mut tick = tokio::time::interval(Duration::from_millis(10));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let events = tokio::select! {
             datagram = hext_net::recv_datagram(&conn) => match datagram {
-                Ok(Datagram::Video(packet)) => reassembler.push(packet, Instant::now()),
+                Ok(Datagram::Video(packet)) => {
+                    report.read += 1;
+                    reassembler.push(packet, Instant::now())
+                }
                 Ok(Datagram::VideoIdle { last_frame }) => {
+                    report.read += 1;
                     reassembler.idle(last_frame, Instant::now())
                 }
-                Ok(_) => continue,
+                Ok(_) => {
+                    report.read += 1;
+                    continue;
+                }
                 // One malformed datagram; the connection is fine.
                 Err(NetError::Codec(e)) => {
                     debug!("datagrama inválido: {e}");
@@ -338,6 +349,10 @@ async fn receive_video(
             },
             _ = tick.tick() => reassembler.tick(Instant::now()),
         };
+        for line in reassembler.take_reports() {
+            info!(target: LOG_TARGET, "{line}");
+        }
+        report.roll(&conn, &mut reassembler);
         if events.is_empty() {
             continue;
         }
@@ -349,7 +364,7 @@ async fn receive_video(
                 Event::Frame(frame) => match frames.try_send(frame) {
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(_)) => {
-                        debug!("decodificador atrasado; pulando até um keyframe");
+                        info!(target: LOG_TARGET, "fila do decodificador cheia; pulando até um keyframe");
                         reassembler.resync(Instant::now());
                         let _ = keyframe.send(());
                         break;
@@ -364,6 +379,62 @@ async fn receive_video(
             }
         }
         stats.lock().expect("lock").video = reassembler.counters;
+    }
+}
+
+/// Logs how video arrived, once a second: at `info` when frames were lost,
+/// otherwise at `debug`.
+struct ArrivalReport {
+    since: Instant,
+    /// Datagrams read since this began.
+    read: u64,
+    /// QUIC's count of those it received, and `read`, a second ago.
+    quic_before: u64,
+    read_before: u64,
+    counters_before: Counters,
+}
+
+impl ArrivalReport {
+    fn new(conn: &Connection) -> Self {
+        Self {
+            since: Instant::now(),
+            read: 0,
+            quic_before: conn.stats().frame_rx.datagram,
+            read_before: 0,
+            counters_before: Counters::default(),
+        }
+    }
+
+    fn roll(&mut self, conn: &Connection, reassembler: &mut Reassembler) {
+        if self.since.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        let quic = conn.stats().frame_rx.datagram;
+        let received = quic.saturating_sub(self.quic_before);
+        let read = self.read - self.read_before;
+        let arrival = reassembler.take_arrival();
+        let counters = reassembler.counters;
+        let lost = counters.lost - self.counters_before.lost;
+        let line = format!(
+            "chegada: {received} datagramas ({} não lidos), maior intervalo num quadro {} ms, \
+             maior transferência {} ms, até {} quadros passaram à frente | {lost} perdidos, \
+             {} recuperados, {} pacotes tardios",
+            received.saturating_sub(read),
+            arrival.max_gap.as_millis(),
+            arrival.max_transfer.as_millis(),
+            arrival.max_overtaken,
+            counters.recovered - self.counters_before.recovered,
+            counters.late_packets - self.counters_before.late_packets,
+        );
+        if lost > 0 {
+            info!(target: LOG_TARGET, "{line}");
+        } else {
+            debug!(target: LOG_TARGET, "{line}");
+        }
+        self.since = Instant::now();
+        self.quic_before = quic;
+        self.read_before = self.read;
+        self.counters_before = counters;
     }
 }
 
@@ -449,6 +520,16 @@ fn decode_loop(
                         started.elapsed(),
                         frame.hardware,
                         decoder.is_hardware(),
+                    );
+                }
+                if started.elapsed() > SLOW_DECODE {
+                    debug!(
+                        target: LOG_TARGET,
+                        "decode lento: quadro {} ({} kB, keyframe: {}) em {} ms",
+                        frame.seq,
+                        frame.data.len() / 1000,
+                        frame.keyframe,
+                        started.elapsed().as_millis()
                     );
                 }
                 on_frame(DecodedFrame {
