@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use hext_crypto::{DeviceKey, PublicKey};
 use hext_net::{Connection, Endpoint};
 use hext_proto::Permissions;
-use hext_session::host::BoxFuture;
+use hext_session::host::{Attempt, BoxFuture};
 use hext_session::{Grant, ResumeTokens, SessionCodes};
 use hext_signal::{Check, Client, ClientMsg, DeviceId, KnownHosts, Rejection, Role, ServerMsg};
 use tokio::sync::{Semaphore, mpsc};
@@ -112,6 +112,7 @@ pub async fn host(
     name: String,
     (endpoint, has_relay): (Endpoint, bool),
     (codes, resumes): (SessionCodes, ResumeTokens),
+    mut attempts: mpsc::UnboundedReceiver<Attempt>,
     slot: Arc<Semaphore>,
     mut ask: Box<dyn Ask>,
 ) {
@@ -132,6 +133,7 @@ pub async fn host(
                     ask.as_mut(),
                     (&endpoint, has_relay),
                     (&codes, &resumes),
+                    &mut attempts,
                     &slot,
                 )
                 .await
@@ -146,22 +148,53 @@ pub async fn host(
     }
 }
 
-/// Answers requests until the connection to the server ends.
+/// For a host without the password: no outcome ever comes.
+pub fn no_attempts() -> mpsc::UnboundedReceiver<Attempt> {
+    mpsc::unbounded_channel().1
+}
+
+/// What to tell the server about `attempt`.
+fn attempt_message(attempt: &Attempt) -> Option<ClientMsg> {
+    let viewer = attempt.viewer.parse().ok()?;
+    Some(ClientMsg::Attempt {
+        viewer,
+        entered: attempt.entered,
+    })
+}
+
+/// Answers requests, and reports `attempts`, until the connection to the
+/// server ends. Outcomes that find no connection wait for the next one; one
+/// caught by the connection dropping is lost, and the next one makes up for
+/// it.
 async fn serve(
     client: &mut Client,
     ask: &mut dyn Ask,
     (endpoint, has_relay): (&Endpoint, bool),
     (codes, resumes): (&SessionCodes, &ResumeTokens),
+    attempts: &mut mpsc::UnboundedReceiver<Attempt>,
     slot: &Semaphore,
 ) -> Result<(), hext_signal::ClientError> {
     loop {
+        let msg = tokio::select! {
+            // First: a wrong password counts before that viewer's next request.
+            biased;
+            Some(attempt) = attempts.recv() => {
+                if client.takes_attempts()
+                    && let Some(msg) = attempt_message(&attempt)
+                {
+                    client.send(&msg).await?;
+                }
+                continue;
+            }
+            msg = client.recv() => msg?,
+        };
         let ServerMsg::Request {
             request,
             from,
             from_key,
             from_name,
             unattended,
-        } = client.recv().await?
+        } = msg
         else {
             continue;
         };
@@ -380,5 +413,102 @@ mod tests {
         assert_eq!(shown_name("a\u{1b}[2Jb\nc"), "a[2Jbc");
         assert_eq!(shown_name("abc\u{202E}gnp.exe"), "abcgnp.exe");
         assert_eq!(shown_name(&"x".repeat(500)).chars().count(), MAX_NAME);
+    }
+
+    /// Nobody at this computer, with the password on.
+    struct Nobody;
+
+    impl Ask for Nobody {
+        fn ask<'a>(&'a mut self, _: &'a str, _: DeviceId) -> BoxFuture<'a, Option<Permissions>> {
+            Box::pin(async { None })
+        }
+
+        fn show_id(&mut self, _: DeviceId) {}
+
+        fn unattended(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn the_outcome_of_a_request_reaches_the_server() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let db = hext_server::Db::in_memory().unwrap();
+        let state = Arc::new(hext_server::State::new(db));
+        let config = hext_server::Config::default();
+        tokio::spawn(hext_server::serve(listener, state.clone(), config));
+
+        let host_key = DeviceKey::generate().unwrap();
+        let viewer_key = DeviceKey::generate().unwrap();
+        let mut host = Client::connect(&url, &host_key, "Host", "t", Role::Host)
+            .await
+            .unwrap();
+        let mut viewer = Client::connect(&url, &viewer_key, "Técnico", "t", Role::Viewer)
+            .await
+            .unwrap();
+        let (to, id) = (host.id(), viewer.id());
+        let endpoint = hext_net::bind(&host_key, &hext_net::EndpointConfig::default())
+            .await
+            .unwrap();
+        let (codes, resumes) = (SessionCodes::default(), ResumeTokens::default());
+        let slot = Semaphore::new(1);
+        let (attempts, mut outcomes) = mpsc::unbounded_channel();
+        let mut nobody = Nobody;
+
+        let technician = async {
+            let request = ClientMsg::Connect {
+                request: 1,
+                to,
+                unattended: true,
+            };
+            viewer.send(&request).await.unwrap();
+            let answer = viewer.recv().await.unwrap();
+            assert!(matches!(answer, ServerMsg::Accepted { .. }), "{answer:?}");
+            let attempt = Attempt {
+                viewer: id.to_string(),
+                entered: true,
+            };
+            attempts.send(attempt).unwrap();
+            for _ in 0..500 {
+                if state.db.entered_within(to, id, 3600).unwrap() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the server never heard");
+        };
+        tokio::select! {
+            () = technician => {}
+            end = serve(
+                &mut host,
+                &mut nobody,
+                (&endpoint, false),
+                (&codes, &resumes),
+                &mut outcomes,
+                &slot,
+            ) => panic!("the host left: {end:?}"),
+        }
+    }
+
+    #[test]
+    fn an_attempt_names_the_viewer_as_the_grant_did() {
+        let viewer: DeviceId = "482 913 557".parse().unwrap();
+        let attempt = Attempt {
+            viewer: viewer.to_string(),
+            entered: false,
+        };
+        assert_eq!(
+            attempt_message(&attempt),
+            Some(ClientMsg::Attempt {
+                viewer,
+                entered: false
+            })
+        );
+        let unknown = Attempt {
+            viewer: "?".into(),
+            entered: true,
+        };
+        assert_eq!(attempt_message(&unknown), None);
     }
 }

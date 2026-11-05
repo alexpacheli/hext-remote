@@ -64,6 +64,18 @@ pub struct UnattendedAccess {
     pub key: PublicKey,
     pub lockout: Lockout,
     pub password: Arc<dyn UnattendedPassword>,
+    /// Where the outcomes go, on their way to the server.
+    pub attempts: mpsc::UnboundedSender<Attempt>,
+}
+
+/// How a session with nobody accepting went. The server cannot see that, and
+/// limits requests by it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attempt {
+    /// The viewer's ID, as in [`crate::Grant`].
+    pub viewer: String,
+    /// With the password or a token; `false`: the password was wrong.
+    pub entered: bool,
 }
 
 /// Where the password is kept and what is said about its use.
@@ -305,6 +317,15 @@ impl Drop for AuditEnd {
     }
 }
 
+/// Tells the server how a session with nobody accepting went.
+fn report(access: &UnattendedAccess, grant: Option<&crate::Grant>, entered: bool) {
+    if let Some(grant) = grant {
+        let viewer = grant.id.clone();
+        // (Gone when the host is on its way out: nothing to tell anymore.)
+        let _ = access.attempts.send(Attempt { viewer, entered });
+    }
+}
+
 /// Whether the password may be tried by `viewer` now, and against what.
 fn admit_with_password(
     access: Option<&UnattendedAccess>,
@@ -371,11 +392,13 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     let (mut control, hello) = match (handshake, unattended) {
         (Ok(done), Some(access)) => {
             access.lockout.succeeded(&viewer);
+            report(access, grant.as_ref(), true);
             done
         }
         (Err(e), Some(access)) => {
             if matches!(e, NetError::Rejected(RejectReason::WrongPassword)) {
                 access.lockout.failed(&viewer);
+                report(access, grant.as_ref(), false);
             }
             if let (NetError::Rejected(reason), Some(grant)) = (&e, &grant) {
                 access

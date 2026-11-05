@@ -2455,6 +2455,7 @@ dependencies = [
  "hext-net",
  "hext-proto",
  "hext-render",
+ "hext-server",
  "hext-session",
  "hext-signal",
  "ring",

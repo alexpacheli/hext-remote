@@ -55,7 +55,13 @@ pub enum ServerMsg {
         nonce: [u8; NONCE_LEN],
     },
     /// Logged in.
-    Welcome { id: DeviceId },
+    Welcome {
+        id: DeviceId,
+        /// It takes [`ClientMsg::Attempt`] (older servers end the connection
+        /// on it).
+        #[serde(default)]
+        takes_attempts: bool,
+    },
     /// (To a host) a device wants to connect. Answer with
     /// [`ClientMsg::Accept`] or [`ClientMsg::Reject`] for `request`.
     Request {
@@ -134,6 +140,11 @@ pub enum ClientMsg {
     /// (Host) the computer is locked: someone must wake the screen to see
     /// the question.
     Waiting { request: u64 },
+    /// (Host) how a session asked for with the password went: `entered` if
+    /// `viewer` showed the password or a token, not if it got the password
+    /// wrong. Only the host knows, and it speaks only for itself: the server
+    /// limits `viewer`'s requests to this host by it.
+    Attempt { viewer: DeviceId, entered: bool },
 }
 
 /// Why a connection request failed.
@@ -148,7 +159,7 @@ pub enum Rejection {
     /// The host did not answer in time.
     Timeout,
     /// Too many requests lately: from this device or its address, or to
-    /// this host from devices it never accepted.
+    /// this host from devices it does not trust.
     TooManyRequests,
     /// The host has too many requests waiting.
     Busy,
@@ -219,6 +230,37 @@ mod tests {
     use hext_crypto::DeviceKey;
 
     #[test]
+    fn an_older_server_does_not_take_attempts() {
+        let id: DeviceId = "482 913 557".parse().unwrap();
+        let old = format!(r#"{{"type":"welcome","id":{}}}"#, id.get());
+        assert_eq!(
+            serde_json::from_str::<ServerMsg>(&old).unwrap(),
+            ServerMsg::Welcome {
+                id,
+                takes_attempts: false
+            }
+        );
+    }
+
+    #[test]
+    fn an_older_app_reads_the_welcome_of_a_newer_server() {
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Older {
+            Welcome { id: DeviceId },
+        }
+        let id: DeviceId = "482 913 557".parse().unwrap();
+        let welcome = ServerMsg::Welcome {
+            id,
+            takes_attempts: true,
+        };
+        assert_eq!(
+            serde_json::from_str::<Older>(&welcome.to_json()).unwrap(),
+            Older::Welcome { id }
+        );
+    }
+
+    #[test]
     fn messages_roundtrip_as_tagged_json() {
         let key = DeviceKey::generate().unwrap();
         let id: DeviceId = "482 913 557".parse().unwrap();
@@ -245,6 +287,10 @@ mod tests {
                 session_code: "123456789012".into(),
             },
             ClientMsg::Reject { request: 9 },
+            ClientMsg::Attempt {
+                viewer: id,
+                entered: true,
+            },
         ];
         for msg in msgs {
             let json = msg.to_json();

@@ -43,6 +43,7 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(90);
 pub struct Client {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     id: DeviceId,
+    takes_attempts: bool,
     next_request: u64,
 }
 
@@ -89,6 +90,7 @@ impl Client {
                 ws,
                 // Replaced once the server says.
                 id: DeviceId::new(DeviceId::MIN).expect("a valid ID"),
+                takes_attempts: false,
                 next_request: 1,
             };
             let nonce = match client.recv().await? {
@@ -113,7 +115,10 @@ impl Client {
                 })
                 .await?;
             match client.recv().await? {
-                ServerMsg::Welcome { id } => client.id = id,
+                ServerMsg::Welcome { id, takes_attempts } => {
+                    client.id = id;
+                    client.takes_attempts = takes_attempts;
+                }
                 other => return Err(unexpected(&other)),
             }
             Ok(client)
@@ -171,6 +176,11 @@ impl Client {
         tokio::time::timeout(ANSWER_TIMEOUT, answer)
             .await
             .map_err(|_| ClientError::Timeout)?
+    }
+
+    /// Whether the server takes [`ClientMsg::Attempt`].
+    pub fn takes_attempts(&self) -> bool {
+        self.takes_attempts
     }
 
     pub async fn send(&mut self, msg: &ClientMsg) -> Result<()> {
