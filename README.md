@@ -136,6 +136,8 @@ HextRemote.exe service password        # define a senha (ou troca)
 HextRemote.exe service password --off  # desliga
 ```
 
+Quem entra com a senha também pode copiar e colar texto, assim como quem foi aceito com **Área de transferência** marcada. Só passa o que for copiado durante a sessão, até 512 KB.
+
 No técnico, preencha a senha na tela inicial ou use `view <ID> --password-stdin`. A senha nunca trafega
 (SPAKE2) e, depois de 5 erros, o computador espera 1, 5 e 15 minutos. Durante a sessão, a barra mostra
 quem está conectado, também na tela de login e com o computador bloqueado, e cada acesso fica registrado

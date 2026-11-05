@@ -8,7 +8,7 @@ use std::time::Duration;
 use hext_codec::DecoderPreference;
 use hext_crypto::DeviceKey;
 use hext_net::EndpointConfig;
-use hext_proto::{Hello, InputEvent, PeerInfo, Permissions, VideoFrame};
+use hext_proto::{Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions, VideoFrame};
 use hext_session::host::{ActiveSession, BoxFuture, Desktop, HostConfig, Presence, Screen};
 use hext_session::{Grant, SessionCodes, client, host};
 use tokio::sync::{Notify, mpsc};
@@ -17,17 +17,23 @@ use tokio::sync::{Notify, mpsc};
 #[derive(Default)]
 struct Counting {
     injected: Arc<AtomicU32>,
+    /// Where to tell what is copied here, if the session may know.
+    copied: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    pasted: Arc<Mutex<Vec<String>>>,
 }
 
 impl Desktop for Counting {
     fn open(
         &self,
         frames: mpsc::Sender<VideoFrame>,
+        clipboard: Option<mpsc::Sender<String>>,
     ) -> BoxFuture<'_, hext_session::Result<Box<dyn Screen>>> {
         Box::pin(async move {
+            *self.copied.lock().unwrap() = clipboard;
             Ok(Box::new(CountingScreen {
                 _frames: frames,
                 injected: self.injected.clone(),
+                pasted: self.pasted.clone(),
             }) as Box<dyn Screen>)
         })
     }
@@ -41,6 +47,7 @@ struct CountingScreen {
     /// Open while the session runs: a closed one ends it.
     _frames: mpsc::Sender<VideoFrame>,
     injected: Arc<AtomicU32>,
+    pasted: Arc<Mutex<Vec<String>>>,
 }
 
 impl Screen for CountingScreen {
@@ -48,6 +55,10 @@ impl Screen for CountingScreen {
 
     fn inject(&mut self, _event: &InputEvent) {
         self.injected.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn set_clipboard(&mut self, text: String) {
+        self.pasted.lock().unwrap().push(text);
     }
 
     fn close(self: Box<Self>) -> BoxFuture<'static, ()> {
@@ -79,6 +90,8 @@ impl Presence for Indicator {
 struct Running {
     session: client::ClientHandle,
     injected: Arc<AtomicU32>,
+    copied: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    pasted: Arc<Mutex<Vec<String>>>,
     indicator: Arc<Indicator>,
     host: tokio::task::JoinHandle<hext_session::Result<PeerInfo>>,
     _endpoints: (hext_net::Endpoint, hext_net::Endpoint),
@@ -107,6 +120,8 @@ async fn session_with(permissions: Permissions) -> Running {
     );
     let desktop = Counting::default();
     let injected = desktop.injected.clone();
+    let copied = desktop.copied.clone();
+    let pasted = desktop.pasted.clone();
     let indicator = Arc::new(Indicator::default());
     let config = Arc::new(HostConfig {
         peer: PeerInfo::local("test", "host"),
@@ -143,6 +158,8 @@ async fn session_with(permissions: Permissions) -> Running {
     Running {
         session,
         injected,
+        copied,
+        pasted,
         indicator,
         host,
         _endpoints: (host_endpoint, viewer_endpoint),
@@ -164,6 +181,51 @@ async fn try_input(running: &Running) -> u32 {
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
     running.injected.load(Ordering::SeqCst)
+}
+
+const WITH_CLIPBOARD: Permissions = Permissions {
+    clipboard: true,
+    ..Permissions::CONTROL
+};
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_clipboard_goes_both_ways_with_the_permission() {
+    let mut running = session_with(WITH_CLIPBOARD).await;
+    let (outgoing, mut incoming) = running.session.clipboard().unwrap();
+
+    outgoing.send("do técnico".into()).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(*running.pasted.lock().unwrap(), ["do técnico"]);
+
+    let copied = running.copied.lock().unwrap().clone().unwrap();
+    copied.send("do host".into()).await.unwrap();
+    assert_eq!(incoming.recv().await.as_deref(), Some("do host"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_the_permission_the_clipboard_stays_put() {
+    let mut running = session_with(Permissions::CONTROL).await;
+    let (outgoing, _incoming) = running.session.clipboard().unwrap();
+
+    // What a modified viewer would try.
+    outgoing.send("do técnico".into()).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(running.pasted.lock().unwrap().is_empty());
+    assert!(
+        running.copied.lock().unwrap().is_none(),
+        "nothing is watched"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn too_long_a_text_stays_out_of_the_host() {
+    let mut running = session_with(WITH_CLIPBOARD).await;
+    let (outgoing, _incoming) = running.session.clipboard().unwrap();
+
+    outgoing.send("x".repeat(MAX_CLIPBOARD_TEXT + 1)).unwrap();
+    outgoing.send("curto".into()).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(*running.pasted.lock().unwrap(), ["curto"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

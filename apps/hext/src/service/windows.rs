@@ -813,6 +813,7 @@ async fn serve() -> Result<()> {
     let resumes = ResumeTokens::default();
     restore_resume(&resumes);
     let host_key = key.public_key();
+    let (attempts, attempts_out) = tokio::sync::mpsc::unbounded_channel();
     let config = Arc::new(HostConfig {
         peer: PeerInfo::local(APP_VERSION, name.clone()),
         // Only viewers the user accepted, with their one-time codes.
@@ -831,6 +832,7 @@ async fn serve() -> Result<()> {
             key: host_key,
             lockout: Lockout::default(),
             password: Arc::new(MachinePassword),
+            attempts,
         }),
         resumes: resumes.clone(),
         restart: Some(Arc::new(MachineRestart)),
@@ -842,6 +844,7 @@ async fn serve() -> Result<()> {
         name,
         (endpoint.clone(), true),
         (session_codes, resumes),
+        attempts_out,
         slot.clone(),
         Box::new(ConsoleAsk(ui)),
     ));

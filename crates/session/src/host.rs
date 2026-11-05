@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use hext_clipboard::Clipboard;
 use hext_codec::EncoderSettings;
 use hext_crypto::PublicKey;
 use hext_crypto::pake::Verifier;
@@ -13,8 +14,8 @@ use hext_input::Area;
 use hext_net::video::VideoSender;
 use hext_net::{Admission, Connection, ConnectionError, NetError};
 use hext_proto::{
-    Control, ENDED_ON_HOST, Hello, InputEvent, PeerInfo, Permissions, RejectReason, StreamKind,
-    VideoFrame,
+    Control, ENDED_ON_HOST, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions,
+    RejectReason, StreamKind, VideoFrame,
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -64,6 +65,18 @@ pub struct UnattendedAccess {
     pub key: PublicKey,
     pub lockout: Lockout,
     pub password: Arc<dyn UnattendedPassword>,
+    /// Where the outcomes go, on their way to the server.
+    pub attempts: mpsc::UnboundedSender<Attempt>,
+}
+
+/// How a session with nobody accepting went. The server cannot see that, and
+/// limits requests by it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attempt {
+    /// The viewer's ID, as in [`crate::Grant`].
+    pub viewer: String,
+    /// With the password or a token; `false`: the password was wrong.
+    pub entered: bool,
 }
 
 /// Where the password is kept and what is said about its use.
@@ -109,8 +122,13 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Where a session's screen comes from and its input goes: this process
 /// ([`LocalDesktop`]), or another one (the agent of a Windows service).
 pub trait Desktop: Send + Sync {
-    /// Starts streaming the screen, encoded, into `frames`.
-    fn open(&self, frames: mpsc::Sender<VideoFrame>) -> BoxFuture<'_, Result<Box<dyn Screen>>>;
+    /// Starts streaming the screen, encoded, into `frames`. With `clipboard`,
+    /// also tells it each new text copied on this computer.
+    fn open(
+        &self,
+        frames: mpsc::Sender<VideoFrame>,
+        clipboard: Option<mpsc::Sender<String>>,
+    ) -> BoxFuture<'_, Result<Box<dyn Screen>>>;
 
     /// The video's bit rate, for pacing it out.
     fn bitrate_bps(&self) -> u32;
@@ -122,6 +140,8 @@ pub trait Screen: Send {
     fn request_keyframe(&self);
     /// Replays the viewer's input.
     fn inject(&mut self, event: &InputEvent);
+    /// Puts text from the viewer on this computer's clipboard.
+    fn set_clipboard(&mut self, text: String);
     /// Stops streaming, releasing any key or button still held.
     fn close(self: Box<Self>) -> BoxFuture<'static, ()>;
 }
@@ -137,7 +157,11 @@ pub struct LocalDesktop {
 }
 
 impl Desktop for LocalDesktop {
-    fn open(&self, frames: mpsc::Sender<VideoFrame>) -> BoxFuture<'_, Result<Box<dyn Screen>>> {
+    fn open(
+        &self,
+        frames: mpsc::Sender<VideoFrame>,
+        clipboard: Option<mpsc::Sender<String>>,
+    ) -> BoxFuture<'_, Result<Box<dyn Screen>>> {
         let settings = CaptureSettings {
             display: self.display,
             test_pattern: self.test_pattern,
@@ -167,8 +191,17 @@ impl Desktop for LocalDesktop {
                 .map_err(|_| SessionError::Protocol("capture thread died".into()))?;
             started?;
             let (input, input_thread) = spawn_input(shared.clone())?;
+            // A session goes on without it.
+            let clipboard = clipboard.and_then(|changed| {
+                Clipboard::watch(move |text| {
+                    let _ = changed.try_send(text);
+                })
+                .inspect_err(|e| warn!("área de transferência: {e}"))
+                .ok()
+            });
             Ok(Box::new(LocalScreen {
                 shared,
+                clipboard,
                 thread: Some(thread),
                 input: Some(input),
                 input_thread: Some(input_thread),
@@ -191,6 +224,8 @@ struct CaptureSettings {
 
 struct LocalScreen {
     shared: Arc<Shared>,
+    /// Only with the permission.
+    clipboard: Option<Clipboard>,
     /// Taken by `close`, which waits for it.
     thread: Option<std::thread::JoinHandle<()>>,
     /// The input thread; it releases held keys when this closes.
@@ -262,6 +297,12 @@ impl Screen for LocalScreen {
         }
     }
 
+    fn set_clipboard(&mut self, text: String) {
+        if let Some(clipboard) = &self.clipboard {
+            clipboard.set(text);
+        }
+    }
+
     fn close(mut self: Box<Self>) -> BoxFuture<'static, ()> {
         // Releases the keys and stops the capture (`Drop`), then waits for
         // the capture to let go of the screen and the encoder.
@@ -302,6 +343,15 @@ struct AuditEnd(Arc<dyn UnattendedPassword>, String);
 impl Drop for AuditEnd {
     fn drop(&mut self) {
         self.0.audit(&format!("sessão encerrada: \"{}\"", self.1));
+    }
+}
+
+/// Tells the server how a session with nobody accepting went.
+fn report(access: &UnattendedAccess, grant: Option<&crate::Grant>, entered: bool) {
+    if let Some(grant) = grant {
+        let viewer = grant.id.clone();
+        // (Gone when the host is on its way out: nothing to tell anymore.)
+        let _ = access.attempts.send(Attempt { viewer, entered });
     }
 }
 
@@ -371,11 +421,13 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     let (mut control, hello) = match (handshake, unattended) {
         (Ok(done), Some(access)) => {
             access.lockout.succeeded(&viewer);
+            report(access, grant.as_ref(), true);
             done
         }
         (Err(e), Some(access)) => {
             if matches!(e, NetError::Rejected(RejectReason::WrongPassword)) {
                 access.lockout.failed(&viewer);
+                report(access, grant.as_ref(), false);
             }
             if let (NetError::Rejected(reason), Some(grant)) = (&e, &grant) {
                 access
@@ -436,7 +488,10 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
 
     // One slot: backpressure from the network back to the capture.
     let (frames_tx, mut frames_rx) = mpsc::channel::<VideoFrame>(1);
-    let screen = match config.desktop.open(frames_tx).await {
+    // A few slots: a burst of copies loses the middle ones, which is fine.
+    let (clipboard_tx, mut clipboard_rx) = mpsc::channel::<String>(4);
+    let clipboard = session.permissions.clipboard.then_some(clipboard_tx);
+    let screen = match config.desktop.open(frames_tx, clipboard).await {
         Ok(screen) => Arc::new(Mutex::new(Some(screen))),
         Err(e) => {
             conn.close(1u32.into(), b"capture unavailable");
@@ -498,11 +553,24 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                         break Err(e.into());
                     }
                 }
+                // Refused here: a modified viewer gets nowhere.
+                Ok(Control::Clipboard { text }) => {
+                    if session.permissions.clipboard && text.len() <= MAX_CLIPBOARD_TEXT
+                        && let Some(screen) = screen.lock().expect("lock").as_mut()
+                    {
+                        screen.set_clipboard(text);
+                    }
+                }
                 Ok(other) => debug!("mensagem inesperada: {other:?}"),
                 // A peer that left is a clean end; anything else is an error.
                 Err(e) if e.is_peer_closed() => break Ok(()),
                 Err(e) => break Err(e.into()),
             },
+            Some(text) = clipboard_rx.recv() => {
+                if let Err(e) = control.send(&Control::Clipboard { text }).await {
+                    break Err(e.into());
+                }
+            }
             _ = conn.closed() => break Ok(()),
             _ = displaced.notified() => {
                 info!("o técnico voltou por outra conexão");

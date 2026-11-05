@@ -9,6 +9,7 @@ rust-version = "1.97"
 publish = false
 
 [workspace.dependencies]
+hext-clipboard = { path = "crates/clipboard" }
 hext-crypto = { path = "crates/crypto" }
 hext-signal = { path = "crates/signal" }
 hext-server = { path = "apps/hext-server" }
@@ -22,6 +23,7 @@ hext-render = { path = "crates/render" }
 hext-session = { path = "crates/session" }
 
 anyhow = "1.0"
+arboard = { version = "3.7", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
 bytemuck = { version = "1.25", features = ["derive"] }
 clap = { version = "4.6", features = ["derive", "env"] }
@@ -76,6 +78,7 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
     "Win32_Media",
     "Win32_Media_MediaFoundation",
+    "Win32_System_DataExchange",
     "Win32_Security_Cryptography",
     "Win32_System_Com",
     "Win32_System_Ole",

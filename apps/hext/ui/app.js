@@ -65,6 +65,7 @@ const pages = {
       $("accept").addEventListener("click", () =>
         this.reply({
           control: $("control").checked,
+          clipboard: $("clipboard").checked,
           restart: $("restart").checked,
         }),
       );
@@ -82,6 +83,7 @@ const pages = {
       $("name").textContent = view.ask.name;
       $("id").textContent = view.ask.id;
       $("control").checked = true;
+      $("clipboard").checked = false;
       $("restart").checked = false;
       $("restart").disabled = !view.ask.can_restart;
       $("restart-label").classList.toggle("soon", !view.ask.can_restart);
@@ -102,8 +104,28 @@ const pages = {
   },
 
   bar: {
+    timer: null,
+    seen: null,
     start() {
       $("end").addEventListener("click", () => invoke("end_session"));
+      document.body.addEventListener("mouseenter", () => this.unfold());
+      document.body.addEventListener("mouseleave", () => this.foldIn(1500));
+    },
+    unfold() {
+      clearTimeout(this.timer);
+      if (document.body.classList.contains("folded")) {
+        document.body.classList.remove("folded");
+        invoke("fold_bar", { folded: false });
+      }
+    },
+    foldIn(ms) {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => {
+        if (!document.body.matches(":hover")) {
+          document.body.classList.add("folded");
+          invoke("fold_bar", { folded: true });
+        }
+      }, ms);
     },
     show(view) {
       if (!view.session) {
@@ -111,10 +133,22 @@ const pages = {
       }
       const { name, id, permissions, unattended } = view.session;
       const who = id ? `${name} (ID ${id})` : name;
-      const doing = permissions.control ? "vendo e controlando" : "vendo";
-      const how = unattended ? " (entrou com a senha)" : "";
-      $("session").textContent = `${who} está ${doing} este computador${how}`;
-      $("session").title = $("session").textContent;
+      const doing = [
+        permissions.control ? "Vendo e controlando" : "Vendo",
+        permissions.clipboard && "área de transferência",
+        unattended && "entrou com a senha",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      $("who").textContent = who;
+      $("doing").textContent = doing;
+      $("session").title = `${who}: ${doing}`;
+      // Who is there and what they can do are read first, in full.
+      if ($("session").title !== this.seen) {
+        this.seen = $("session").title;
+        this.unfold();
+        this.foldIn(6000);
+      }
     },
   },
 };

@@ -43,6 +43,9 @@ pub struct ClientHandle {
     conn: Connection,
     input: mpsc::UnboundedSender<InputEvent>,
     restart: mpsc::UnboundedSender<()>,
+    clipboard_out: mpsc::UnboundedSender<String>,
+    /// Taken by [`Self::clipboard`].
+    clipboard_in: Option<mpsc::Receiver<String>>,
     resume: Arc<Mutex<Resume>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<()>>,
@@ -69,6 +72,14 @@ impl ClientHandle {
     /// The path in use: direct (peer to peer) or through the relay.
     pub fn path(&self) -> Option<hext_net::PathInfo> {
         hext_net::path(&self.conn)
+    }
+
+    /// Where to send text copied here, and where the host's arrives; the
+    /// second ends with the session. Once. The host ignores the first and
+    /// sends nothing without [`Permissions::clipboard`].
+    pub fn clipboard(&mut self) -> Option<(mpsc::UnboundedSender<String>, mpsc::Receiver<String>)> {
+        let incoming = self.clipboard_in.take()?;
+        Some((self.clipboard_out.clone(), incoming))
     }
 
     /// Asks the host to restart the computer. It refuses without
@@ -153,6 +164,8 @@ pub async fn start(
     let stats = Arc::new(Mutex::new(Stats::default()));
     let (input_tx, input_rx) = mpsc::unbounded_channel();
     let (restart_tx, restart_rx) = mpsc::unbounded_channel();
+    let (clipboard_out, clipboard_out_rx) = mpsc::unbounded_channel();
+    let (clipboard_in_tx, clipboard_in) = mpsc::channel(4);
     let resume = Arc::new(Mutex::new(Resume::default()));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = oneshot::channel();
@@ -162,6 +175,8 @@ pub async fn start(
         input_stream,
         input_rx,
         restart_rx,
+        clipboard_out_rx,
+        clipboard_in_tx,
         resume.clone(),
         shutdown_rx,
         stats.clone(),
@@ -186,6 +201,8 @@ pub async fn start(
         conn,
         input: input_tx,
         restart: restart_tx,
+        clipboard_out,
+        clipboard_in: Some(clipboard_in),
         resume,
         shutdown: Some(shutdown_tx),
         task,
@@ -200,6 +217,8 @@ async fn run(
     mut input_stream: FramedSend,
     mut input_rx: mpsc::UnboundedReceiver<InputEvent>,
     mut restart_rx: mpsc::UnboundedReceiver<()>,
+    mut clipboard_out: mpsc::UnboundedReceiver<String>,
+    clipboard_in: mpsc::Sender<String>,
     resume: Arc<Mutex<Resume>>,
     mut shutdown: oneshot::Receiver<()>,
     stats: Arc<Mutex<Stats>>,
@@ -249,7 +268,15 @@ async fn run(
                     break peer_closed_is_ok(&conn, e);
                 }
             }
+            Some(text) = clipboard_out.recv() => {
+                if let Err(e) = control.send(&Control::Clipboard { text }).await {
+                    break peer_closed_is_ok(&conn, e);
+                }
+            }
             msg = control.recv() => match msg {
+                Ok(Control::Clipboard { text }) => {
+                    let _ = clipboard_in.try_send(text);
+                }
                 // The host ended it on purpose: nothing to come back to.
                 Ok(Control::Bye) => {
                     resume.lock().expect("lock").token = None;

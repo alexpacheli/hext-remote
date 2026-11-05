@@ -222,9 +222,32 @@ body[data-page="bar"] {
 .session {
   flex: 1;
   min-width: 0;
+}
+
+.session span {
+  display: block;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.session .doing {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.session .short,
+body.folded .session #who,
+body.folded .session .doing {
+  display: none;
+}
+
+body.folded .session .short {
+  display: block;
+}
+
+body[data-page="bar"].folded button {
+  padding: 1px 10px;
 }
 
 body[data-page="bar"] button {
