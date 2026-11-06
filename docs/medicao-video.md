@@ -129,3 +129,34 @@ Primeira com o build novo nos dois lados, em 57 s, com rede tão ruim quanto a d
   em Wi-Fi em `192.168.1.x` e o visualizador em cabo em `192.168.0.x`, sem rota entre as sub-redes.
 - **Falta separar as causas:** o RTT que oscila pode vir do Wi-Fi, do túnel ou da internet entre os dois. Só outra
   rodada, com o Tailscale desligado em um dos lados, mostra qual.
+
+## A quinta medição
+
+Quatro rodadas no mesmo dia, todas com `HEXT_VBV_MS=100`. A e B no LD-NB-01, que está na mesma rede do visualizador
+(`192.168.0.x`) e com Wi-Fi muito ruim. C e D no `DESKTOP-U6JQMAA`, pelo Tailscale. Nessa rede, o Parsec também ficou
+lento, segundo o usuário.
+
+| | A: LD-NB-01, Cubic | B: LD-NB-01, BBR | C: DESKTOP, Cubic | D: DESKTOP, BBR |
+| --- | --- | --- | --- | --- |
+| Duração no visualizador | 57 s | 44 s | 73 s | 50 s |
+| Quadros por segundo, média | 9 | 3 | 47 | 57 |
+| Segundos abaixo de 30 quadros | 51 | 44 | 14 | 0 |
+| Tempo parado até o keyframe | 5,88 s | 12,58 s | 1,20 s | 0 |
+| Quadros salvos (mediana) | 99 (155 ms) | 43 (151 ms) | 109 (444 ms) | 21 (22 ms) |
+| Perdidos por reenvio sem resposta | 4 | 1 | 0 | 0 |
+| Keyframes pedidos pela fila do decodificador | 0 | 0 | 3 | 0 |
+| Perda no QUIC | sem log | 1,82% | 3,32% | 0,43% |
+| RTT mediano e máximo | sem log | 95 e 418 ms | 24 e 420 ms | 14 e 22 ms |
+
+- **O BBR não está provado:** a rede de C melhorou a partir de `12:29:50`, ainda com Cubic: 58 quadros por segundo, RTT
+  de 12 a 16 ms e nada preso. D rodou logo depois, nessa fase boa, e não dá para separar os dois efeitos.
+- **O BBR pode travar:** em B, um keyframe de 239 kB levou 11,3 s, com a janela em 6 kB. O host mandou 349 pacotes em
+  12,6 s e perdeu só 6. A perda não explica essa taxa, mas a rodada não mostra se o Wi-Fi caiu junto.
+- **O buffer não limitou os quadros:** o driver aceitou 100 ms, ou 100 kB a 8 Mbps, e C teve 161 kB num segundo sem
+  keyframe. É a mesma faixa de antes (100 a 160 kB).
+- **Falso atraso do decodificador:** os 3 keyframes de C, de até 313 kB, vieram logo depois de rajadas de quadros
+  salvos. `Backlog` guardava como mínimo o começo da rajada, então uma fila ainda drenando contava como atrasada. A
+  correção veio desta rodada, mas o log não amostra a fila: ainda falta confirmar em campo.
+- **Menos quadros nem sempre é rede:** em B houve segundos com 5 a 8 imagens novas e 0 ms esperando a rede. Compare a
+  linha `captura:` antes de atribuir tudo ao Wi-Fi.
+- **Falta um log:** `host-a.log` não chegou, então A não mostra perda, RTT nem o buffer aceito.
