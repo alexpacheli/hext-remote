@@ -24,11 +24,11 @@ use windows::Win32::Foundation::VARIANT_TRUE;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Media::MediaFoundation::{
-    CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode,
-    CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
-    CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate,
-    IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown, IMFTransform,
-    METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
+    CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMeanBitRate,
+    CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
+    CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
+    ICodecAPI, IMFActivate, IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown,
+    IMFTransform, METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY,
     MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
     MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE,
@@ -363,6 +363,16 @@ impl MfEncoder {
                     &CODECAPI_AVEncCommonMeanBitRate,
                     u32_variant(self.settings.bitrate_bps),
                 );
+                // Temporary, to find a value in the field: a short buffer
+                // keeps a full screen change from becoming a huge frame, at
+                // the cost of a moment of lower quality.
+                let buffer_ms = std::env::var("HEXT_VBV_MS").ok();
+                if let Some(ms) = buffer_ms.and_then(|ms| ms.parse::<u64>().ok()) {
+                    let bits = u64::from(self.settings.bitrate_bps) * ms / 1000;
+                    let bits = u32::try_from(bits).unwrap_or(u32::MAX);
+                    let taken = set(codec, &CODECAPI_AVEncCommonBufferSize, u32_variant(bits));
+                    tracing::info!("buffer do codificador: {ms} ms, aceito: {taken}");
+                }
             }
             if tweaks.gop {
                 set(codec, &CODECAPI_AVEncMPVGOPSize, u32_variant(GOP_FRAMES));
