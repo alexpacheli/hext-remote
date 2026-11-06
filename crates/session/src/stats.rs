@@ -121,8 +121,8 @@ impl std::fmt::Display for Snapshot {
         if self.video != Counters::default() {
             write!(
                 f,
-                " | total: FEC {} blocos, {} quadros perdidos",
-                self.video.recovered, self.video.lost
+                " | total: FEC {} blocos, {} salvos por reenvio, {} quadros perdidos",
+                self.video.recovered, self.video.resent, self.video.lost
             )?;
         }
         Ok(())

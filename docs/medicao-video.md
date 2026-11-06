@@ -43,7 +43,7 @@ Sem `RUST_LOG`, só os segundos com problema vão para o log (no serviço, em `C
 | --- | --- | --- |
 | `quadro N salvo por reenvio em X ms` | visualizador | a perda custou X ms e nenhum keyframe |
 | `quadro N perdido por …` | visualizador | o reenvio falhou; `reenvio sem resposta` ou `MAX_WAITING` |
-| `quadro N perdido cedo demais` | visualizador | esperar mais teria salvo: rever `RESEND_AFTER` e `RESEND_TRIES` |
+| `quadro N perdido cedo demais` | visualizador | esperar mais teria salvo: rever `RESEND_TRIES` e a espera por resposta |
 | `imagem voltou após X ms` | visualizador | tempo parado até o keyframe, com tamanho e tempo de chegada dele |
 | `fila do decodificador cheia` | visualizador | o decodificador não acompanhou |
 | `chegada: …` | visualizador | por segundo: quadros, datagramas, maior intervalo e pacotes tardios |

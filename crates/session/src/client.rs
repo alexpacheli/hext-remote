@@ -313,7 +313,7 @@ async fn run(
     ready: oneshot::Sender<Result<()>>,
     on_frame: impl FnMut(DecodedFrame) + Send + 'static,
 ) -> Result<()> {
-    // Decoding is CPU-bound, so it gets its own thread, behind a short queue.
+    // Decoding is CPU-bound, so it gets its own thread, behind a queue.
     let (frames_tx, mut frames_rx) = mpsc::channel::<VideoFrame>(DECODE_QUEUE);
     let (keyframe_tx, mut keyframe_rx) = mpsc::unbounded_channel::<()>();
     let (loss_tx, video_conn, video_stats) = (keyframe_tx.clone(), conn.clone(), stats.clone());
@@ -434,19 +434,12 @@ async fn receive_video(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let events = tokio::select! {
-            datagram = hext_net::recv_datagram(&conn) => match datagram {
-                Ok(Datagram::Video(packet)) => {
-                    report.read += 1;
-                    reassembler.push(packet, Instant::now())
-                }
+            datagram = hext_net::recv_datagram(&conn) => match datagram.inspect(|_| report.read += 1) {
+                Ok(Datagram::Video(packet)) => reassembler.push(packet, Instant::now()),
                 Ok(Datagram::VideoIdle { last_frame }) => {
-                    report.read += 1;
                     reassembler.idle(last_frame, Instant::now())
                 }
-                Ok(_) => {
-                    report.read += 1;
-                    continue;
-                }
+                Ok(_) => continue,
                 // One malformed datagram; the connection is fine.
                 Err(NetError::Codec(e)) => {
                     debug!("datagrama inválido: {e}");

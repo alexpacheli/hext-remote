@@ -863,6 +863,7 @@ fn capture_loop(
                         let Some(frame) = capturer.frame() else {
                             continue;
                         };
+                        let waited = Instant::now();
                         let sent = send_frame(
                             frames,
                             &mut seq,
@@ -872,6 +873,7 @@ fn capture_loop(
                             started.elapsed(),
                             hardware,
                         );
+                        report.network += waited.elapsed();
                         if !sent {
                             break;
                         }

@@ -62,9 +62,10 @@ const PACING_CATCH_UP: Duration = Duration::from_millis(16);
 const SEND_STALL: Duration = Duration::from_millis(1);
 
 /// How long the frame due next may go without a packet before its missing
-/// packets are asked for. Packets of a frame seldom arrive further apart
-/// (34 ms at most in the field), and asking in vain costs little.
-pub const RESEND_AFTER: Duration = Duration::from_millis(20);
+/// packets are asked for. Above the longest gap seen in the field (34 ms,
+/// with congestion holding a keyframe back): asking too soon would send
+/// again what is still on its way, onto a path already short of room.
+pub const RESEND_AFTER: Duration = Duration::from_millis(40);
 
 /// How many times the missing packets are asked for.
 pub const RESEND_TRIES: u32 = 2;
@@ -508,7 +509,11 @@ impl VideoSender {
         });
         for packet in packets {
             while let Ok(request) = resends.try_recv() {
-                self.resend(conn, &request).await?;
+                // This frame's packets are still leaving: nothing is known
+                // to be lost yet.
+                if request.frame != frame.seq {
+                    self.resend(conn, &request).await?;
+                }
             }
             // The path MTU shrank mid-frame: this frame is lost (the viewer
             // asks for a keyframe), the next one uses the new size.
@@ -854,8 +859,11 @@ impl Reassembler {
         }
         let frame = packet.frame;
         if let Some(partial) = self.partial.get(&frame) {
-            let gap = now.duration_since(partial.last_packet);
-            self.arrival.max_gap = self.arrival.max_gap.max(gap);
+            // (The wait for packets asked for says nothing about the network.)
+            if !self.asked.as_ref().is_some_and(|a| a.frame == frame) {
+                let gap = now.duration_since(partial.last_packet);
+                self.arrival.max_gap = self.arrival.max_gap.max(gap);
+            }
             let overtaken = self.complete.range(frame..).count();
             self.arrival.max_overtaken = self.arrival.max_overtaken.max(overtaken);
         }
@@ -1048,6 +1056,11 @@ impl Reassembler {
                 self.next = Some(next + 1);
                 self.blocked_since = None;
                 self.saved(next, now);
+                continue;
+            }
+            // A keyframe in hand needs nothing before it.
+            if self.complete.values().any(|frame| frame.keyframe) {
+                self.awaiting_keyframe = true;
                 continue;
             }
             match self.missing(next, now) {
@@ -1643,6 +1656,19 @@ mod tests {
     }
 
     #[test]
+    fn a_keyframe_in_hand_needs_nothing_before_it() {
+        let t0 = Instant::now();
+        let (mut r, _) = frame_one_cut_short(t0);
+        let out: Vec<Event> = packets(&frame(3, true, 2_000))
+            .into_iter()
+            .flat_map(|p| r.push(p, t0))
+            .collect();
+        assert_eq!(frames(&out), vec![3]);
+        assert!(!out.contains(&Event::Lost), "no keyframe to ask for");
+        assert_eq!(r.counters.lost, 0);
+    }
+
+    #[test]
     fn frames_behind_wait_for_the_resent_packets() {
         let t0 = Instant::now();
         let (mut r, rest) = frame_one_cut_short(t0);
@@ -1672,8 +1698,8 @@ mod tests {
         assert_eq!(requests.len(), RESEND_TRIES as usize);
         // The first request after RESEND_AFTER, then an answer's wait each.
         let waited = lost_at.duration_since(t0);
-        assert!(waited >= Duration::from_millis(240), "{waited:?}");
-        assert!(waited <= Duration::from_millis(260), "{waited:?}");
+        assert!(waited >= Duration::from_millis(280), "{waited:?}");
+        assert!(waited <= Duration::from_millis(310), "{waited:?}");
     }
 
     #[test]
@@ -1682,7 +1708,7 @@ mod tests {
         r.set_rtt(Duration::from_millis(1));
         assert_eq!(r.resend_wait, RESEND_WAIT_MIN);
         r.set_rtt(Duration::from_millis(50));
-        assert_eq!(r.resend_wait, Duration::from_millis(120));
+        assert_eq!(r.resend_wait, Duration::from_millis(140));
         r.set_rtt(Duration::from_secs(1));
         assert_eq!(r.resend_wait, RESEND_WAIT_MAX);
     }
