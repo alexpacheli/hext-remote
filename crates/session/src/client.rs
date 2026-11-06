@@ -9,10 +9,10 @@ use hext_codec::{DecoderPreference, YuvFrame};
 use hext_net::video::{Counters, Event, LOG_TARGET, MAX_WAITING, Reassembler, ResendRequest};
 use hext_net::{Connection, ConnectionError, ControlStream, FramedSend, NetError, PasswordLogin};
 use hext_proto::{
-    Control, Datagram, ENDED_ON_HOST, FileOutcome, Hello, InputEvent, PeerInfo, Permissions,
-    StreamKind, VideoFrame,
+    Control, Datagram, Displays, ENDED_ON_HOST, FileOutcome, Hello, InputEvent, PeerInfo,
+    Permissions, StreamKind, VideoFrame,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -88,6 +88,8 @@ struct FileLink {
 /// A decoded picture ready to be shown.
 pub struct DecodedFrame {
     pub seq: u64,
+    /// The display of the host it shows.
+    pub display: u8,
     pub yuv: YuvFrame,
 }
 
@@ -106,6 +108,8 @@ pub struct ClientHandle {
     send_file: mpsc::UnboundedSender<PathBuf>,
     /// Taken by [`Self::files`].
     file_link: Option<FileLink>,
+    displays: watch::Receiver<Displays>,
+    select_display: mpsc::UnboundedSender<u8>,
     resume: Arc<Mutex<Resume>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<()>>,
@@ -173,6 +177,22 @@ impl ClientHandle {
                 files::run(end).await;
             }
         }
+    }
+
+    /// The host's displays, as it told last (none, until it does).
+    pub fn displays(&self) -> Displays {
+        *self.displays.borrow()
+    }
+
+    /// Completes at each news of [`Self::displays`], until the session ends.
+    pub fn displays_changed(&self) -> watch::Receiver<Displays> {
+        self.displays.clone()
+    }
+
+    /// Asks the host to show display `index`; [`DecodedFrame::display`] says
+    /// when the picture got there.
+    pub fn select_display(&self, index: u8) {
+        let _ = self.select_display.send(index);
     }
 
     /// Asks the host to restart the computer. It refuses without
@@ -262,6 +282,8 @@ pub async fn start(
     let (send_file, paths) = mpsc::unbounded_channel();
     let (answers_tx, answers) = mpsc::unbounded_channel();
     let (outcomes, outcomes_rx) = mpsc::unbounded_channel();
+    let (displays_tx, displays) = watch::channel(Displays::default());
+    let (select_display, select_rx) = mpsc::unbounded_channel();
     let resume = Arc::new(Mutex::new(Resume::default()));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = oneshot::channel();
@@ -275,6 +297,8 @@ pub async fn start(
         clipboard_in_tx,
         answers_tx,
         outcomes_rx,
+        displays_tx,
+        select_rx,
         resume.clone(),
         shutdown_rx,
         stats.clone(),
@@ -307,6 +331,8 @@ pub async fn start(
             answers,
             outcomes,
         }),
+        displays,
+        select_display,
         resume,
         shutdown: Some(shutdown_tx),
         task,
@@ -325,6 +351,8 @@ async fn run(
     clipboard_in: mpsc::Sender<String>,
     file_answers: mpsc::UnboundedSender<(u64, FileOutcome)>,
     mut file_outcomes: mpsc::UnboundedReceiver<(u64, FileOutcome)>,
+    displays: watch::Sender<Displays>,
+    mut select_display: mpsc::UnboundedReceiver<u8>,
     resume: Arc<Mutex<Resume>>,
     mut shutdown: oneshot::Receiver<()>,
     stats: Arc<Mutex<Stats>>,
@@ -396,12 +424,21 @@ async fn run(
                     break peer_closed_is_ok(&conn, e);
                 }
             }
+            Some(index) = select_display.recv() => {
+                if let Err(e) = control.send(&Control::SelectDisplay { index }).await {
+                    break peer_closed_is_ok(&conn, e);
+                }
+            }
             msg = control.recv() => match msg {
                 Ok(Control::Clipboard { text }) => {
                     let _ = clipboard_in.try_send(text);
                 }
                 Ok(Control::FileAnswer { id, outcome }) => {
                     let _ = file_answers.send((id, outcome));
+                }
+                // (The numbers are the host's word: nothing past the list.)
+                Ok(Control::Displays(shown)) if shown.current < shown.count => {
+                    displays.send_replace(shown);
                 }
                 // The host ended it on purpose: nothing to come back to.
                 Ok(Control::Bye) => {
@@ -674,6 +711,7 @@ fn decode_loop(
                 }
                 on_frame(DecodedFrame {
                     seq: frame.seq,
+                    display: frame.display,
                     yuv,
                 });
             }

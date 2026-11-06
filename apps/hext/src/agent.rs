@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hext_codec::EncoderSettings;
-use hext_proto::{InputEvent, VideoFrame};
+use hext_proto::{Displays, InputEvent, VideoFrame};
 use hext_session::SessionError;
-use hext_session::host::{BoxFuture, Desktop, LocalDesktop, Screen};
+use hext_session::host::{BoxFuture, Desktop, LocalDesktop, Screen, next_displays};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{info, warn};
 
 /// More than any message (a keyframe of a 4K screen is a few MB).
@@ -38,6 +38,8 @@ pub enum ToAgent {
     Input(InputEvent),
     /// Text from the viewer, for this session's clipboard.
     Clipboard(String),
+    /// Stream this display from now on.
+    SelectDisplay(usize),
     /// Stop streaming (the session ended).
     Stop,
     /// The indicator for where the interface cannot be seen (the sign-in
@@ -63,6 +65,8 @@ pub enum FromAgent {
     Frame { id: u64, frame: VideoFrame },
     /// Text copied during stream `id`.
     Clipboard { id: u64, text: String },
+    /// The displays there are and the one stream `id` shows.
+    Displays { id: u64, displays: Displays },
     /// Someone pressed Encerrar on the indicator.
     EndSession,
 }
@@ -160,6 +164,7 @@ struct Session {
     stream: Stream,
     frames: mpsc::Sender<VideoFrame>,
     clipboard: Option<mpsc::Sender<String>>,
+    displays: watch::Sender<Displays>,
     /// Told when the first agent answers `Start`.
     started: Option<oneshot::Sender<Result<(), String>>>,
     /// Frame numbers as the viewer sees them: a new agent starts over at 0.
@@ -172,9 +177,9 @@ impl AgentHub {
     pub async fn attach<P: AsyncRead + AsyncWrite + Send + 'static>(&self, pipe: P) {
         let (mut reader, mut writer) = tokio::io::split(pipe);
         let (tx, mut rx) = mpsc::unbounded_channel::<ToAgent>();
-        let id = {
+        let agent = {
             let mut state = self.state.lock().expect("lock");
-            let id = state.next_agent;
+            let agent = state.next_agent;
             state.next_agent += 1;
             // A session in progress continues on the new agent.
             if let Some(session) = &state.session {
@@ -187,13 +192,13 @@ impl AgentHub {
             if state.indicator.is_some() {
                 let _ = tx.send(ToAgent::Indicator(state.indicator.clone()));
             }
-            state.agent = Some((id, tx));
-            id
+            state.agent = Some((agent, tx));
+            agent
         };
         // Forgets this agent however this ends (also when cancelled).
         let _attached = Attached {
             hub: self.clone(),
-            id,
+            id: agent,
         };
         let _writing = Task(tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
@@ -233,6 +238,19 @@ impl AgentHub {
                     let session = state.session.as_ref().filter(|s| s.id == id);
                     if let Some(clipboard) = session.and_then(|s| s.clipboard.as_ref()) {
                         let _ = clipboard.try_send(text);
+                    }
+                }
+                Ok(Some(FromAgent::Displays { id, displays })) => {
+                    let mut state = self.state.lock().expect("lock");
+                    // (The news of an agent on its way out is about a capture
+                    // that is over.)
+                    let replaced = state.agent.as_ref().is_none_or(|(a, _)| *a != agent);
+                    if let Some(session) =
+                        state.session.as_mut().filter(|s| s.id == id && !replaced)
+                    {
+                        // The next agent picks up on the same display.
+                        session.stream.display = displays.current.into();
+                        session.displays.send_replace(displays);
                     }
                 }
                 Ok(Some(FromAgent::EndSession)) => {
@@ -319,6 +337,7 @@ impl Desktop for AgentDesktop {
         Box::pin(async move {
             let (started_tx, started_rx) = oneshot::channel();
             let share = clipboard.is_some();
+            let (displays_tx, displays) = watch::channel(Displays::default());
             {
                 let mut state = self.hub.state.lock().expect("lock");
                 let id = state.next_stream;
@@ -328,6 +347,7 @@ impl Desktop for AgentDesktop {
                     stream: self.stream,
                     frames,
                     clipboard,
+                    displays: displays_tx,
                     started: Some(started_tx),
                     seq: 0,
                 });
@@ -342,6 +362,7 @@ impl Desktop for AgentDesktop {
             }
             let screen = AgentScreen {
                 hub: self.hub.clone(),
+                displays,
             };
             let failed = |message: String| {
                 screen.end();
@@ -363,6 +384,7 @@ impl Desktop for AgentDesktop {
 
 struct AgentScreen {
     hub: AgentHub,
+    displays: watch::Receiver<Displays>,
 }
 
 impl AgentScreen {
@@ -388,6 +410,19 @@ impl Screen for AgentScreen {
 
     fn set_clipboard(&mut self, text: String) {
         self.hub.send(ToAgent::Clipboard(text));
+    }
+
+    fn select_display(&self, index: usize) {
+        // Kept for an agent that is yet to come; the one there corrects it
+        // if the display does not open.
+        if let Some(session) = &mut self.hub.state.lock().expect("lock").session {
+            session.stream.display = index;
+        }
+        self.hub.send(ToAgent::SelectDisplay(index));
+    }
+
+    fn displays(&self) -> Option<watch::Receiver<Displays>> {
+        Some(self.displays.clone())
     }
 
     fn close(self: Box<Self>) -> BoxFuture<'static, ()> {
@@ -433,9 +468,17 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
                     Ok(opened) => {
                         info!("transmitindo a tela");
                         let out = out_tx.clone();
+                        let mut displays = opened.displays();
+                        // What there is now is news for the service, too.
+                        if let Some(displays) = &mut displays {
+                            displays.mark_changed();
+                        }
                         let forward = Task(tokio::spawn(async move {
                             loop {
                                 let msg = tokio::select! {
+                                    shown = next_displays(&mut displays) => {
+                                        FromAgent::Displays { id, displays: shown }
+                                    }
                                     frame = frames_rx.recv() => match frame {
                                         Some(frame) => FromAgent::Frame { id, frame },
                                         None => break,
@@ -478,6 +521,11 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
             ToAgent::Clipboard(text) => {
                 if let Some((screen, _)) = &mut screen {
                     screen.set_clipboard(text);
+                }
+            }
+            ToAgent::SelectDisplay(index) => {
+                if let Some((screen, _)) = &screen {
+                    screen.select_display(index);
                 }
             }
             ToAgent::Stop => stop(&mut screen).await,
@@ -644,6 +692,7 @@ mod tests {
         };
         let frame = |data: u8| VideoFrame {
             seq: 41,
+            display: 0,
             width: 2,
             height: 2,
             keyframe: true,
@@ -711,6 +760,99 @@ mod tests {
             read_msg::<_, ToAgent>(&mut reader).await.unwrap(),
             Some(ToAgent::Clipboard(text)) if text == "colado"
         ));
+    }
+
+    /// The next frame `width` wide.
+    async fn until_width(frames: &mut mpsc::Receiver<VideoFrame>, width: u32) -> VideoFrame {
+        loop {
+            let frame = next(frames).await;
+            if frame.width == width {
+                return frame;
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_display_chosen_goes_through_the_agent_and_stays_with_the_next() {
+        let hub = AgentHub::default();
+        let first = agent(&hub);
+        let (tx, mut frames) = mpsc::channel(1);
+        let screen = hub.desktop(test_stream()).open(tx, None).await.unwrap();
+        let mut displays = screen.displays().expect("told through the service");
+        assert_eq!(until_width(&mut frames, 1280).await.width, 1280);
+
+        screen.select_display(1);
+        assert!(until_width(&mut frames, 640).await.keyframe);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while displays.borrow_and_update().current != 1 {
+                displays.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the service hears of it");
+        let shown = *displays.borrow();
+        assert_eq!((shown.count, shown.current), (2, 1));
+
+        // The user logs off: the new agent shows the same display.
+        first.abort();
+        let _second = agent(&hub);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for _ in 0..5 {
+            assert_eq!(next(&mut frames).await.width, 640);
+        }
+        screen.close().await;
+    }
+
+    #[tokio::test]
+    async fn an_agent_replaced_has_no_say_in_the_displays() {
+        let hub = AgentHub::default();
+        let (service_end, first) = tokio::io::duplex(1 << 20);
+        let attached = hub.clone();
+        tokio::spawn(async move { attached.attach(service_end).await });
+        let desktop = hub.desktop(test_stream());
+        let (tx, mut frames) = mpsc::channel(4);
+        let opening = tokio::spawn(async move { desktop.open(tx, None).await });
+        let (mut reader, mut writer) = tokio::io::split(first);
+        let Some(ToAgent::Start { id, .. }) = read_msg(&mut reader).await.unwrap() else {
+            panic!("expected Start");
+        };
+        let started = FromAgent::Started { id, result: Ok(()) };
+        write_msg(&mut writer, &started).await.unwrap();
+        let screen = opening.await.unwrap().unwrap();
+        let displays = screen.displays().expect("told through the service");
+
+        let (service_end, second) = tokio::io::duplex(1 << 20);
+        let attached = hub.clone();
+        tokio::spawn(async move { attached.attach(service_end).await });
+        let (mut second, _writer) = tokio::io::split(second);
+        let Some(ToAgent::Start { .. }) = read_msg(&mut second).await.unwrap() else {
+            panic!("the session goes on on the new agent");
+        };
+
+        let displays_news = FromAgent::Displays {
+            id,
+            displays: Displays {
+                count: 2,
+                current: 1,
+            },
+        };
+        write_msg(&mut writer, &displays_news).await.unwrap();
+        // Read in order: once this frame is out, the news was heard.
+        let frame = VideoFrame {
+            seq: 0,
+            display: 0,
+            width: 2,
+            height: 2,
+            keyframe: true,
+            capture_micros: 0,
+            encode_micros: 0,
+            hardware: false,
+            data: vec![1],
+        };
+        let frame = FromAgent::Frame { id, frame };
+        write_msg(&mut writer, &frame).await.unwrap();
+        next(&mut frames).await;
+        assert!(!displays.has_changed().unwrap(), "the capture is over");
     }
 
     #[tokio::test(flavor = "multi_thread")]

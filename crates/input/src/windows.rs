@@ -117,14 +117,18 @@ fn move_to((px, py): (i32, i32)) {
             GetSystemMetrics(SM_CYVIRTUALSCREEN).max(2),
         )
     };
-    let nx = ((px - vx) as i64 * 65535 / (vw - 1) as i64) as i32;
-    let ny = ((py - vy) as i64 * 65535 / (vh - 1) as i64) as i32;
     send_mouse(
         MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-        nx,
-        ny,
+        on_desktop(px, vx, vw),
+        on_desktop(py, vy, vh),
         0,
     );
+}
+
+/// A pixel coordinate as `0..=65535` over a virtual desktop starting at
+/// `origin` (negative with a monitor to the left of or above the main one).
+fn on_desktop(pixel: i32, origin: i32, size: i32) -> i32 {
+    ((pixel - origin) as i64 * 65535 / (size - 1) as i64) as i32
 }
 
 fn send_button(button: ButtonId, pressed: bool) {
@@ -185,5 +189,21 @@ fn send(input: INPUT) {
     let sent = unsafe { SendInput(&[input], size_of::<INPUT>() as i32) };
     if sent != 1 {
         tracing::debug!("SendInput blocked (UIPI/secure desktop?)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::on_desktop;
+
+    #[test]
+    fn a_monitor_left_of_the_main_one_stays_on_the_desktop() {
+        // 1280 pixels to the left of a 1920 main monitor.
+        let (origin, size) = (-1280, 3200);
+        assert_eq!(on_desktop(-1280, origin, size), 0);
+        assert_eq!(on_desktop(1919, origin, size), 65535);
+        // The main monitor's first pixel, 40% of the way across.
+        let main = on_desktop(0, origin, size);
+        assert!((26_200..26_230).contains(&main), "{main}");
     }
 }

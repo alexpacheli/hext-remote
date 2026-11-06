@@ -16,6 +16,10 @@ const BUTTON_SHADER: &str = include_str!("button.wgsl");
 const BUTTON_WIDTH: f64 = 56.0;
 const BUTTON_HEIGHT: f64 = 28.0;
 const BUTTON_TOP: f64 = 6.0;
+/// Each numbered button of the display bar, and the gap to the full screen
+/// button, in logical pixels.
+const BAR_CELL: f64 = 32.0;
+const BAR_GAP: f64 = 8.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -72,6 +76,38 @@ pub fn button_rect(window: (u32, u32), scale: f64) -> VideoRect {
 pub enum ButtonAction {
     Enter,
     Leave,
+}
+
+/// The numbered buttons of the host's displays.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplayBar {
+    pub rect: VideoRect,
+    pub count: u32,
+    /// The one shown, from 0.
+    pub current: u32,
+}
+
+impl DisplayBar {
+    /// The bar for `count` displays, left of the full screen `button`;
+    /// `None` when the window has no room for it.
+    pub fn new(button: VideoRect, count: u32, current: u32, scale: f64) -> Option<Self> {
+        let width = (BAR_CELL * scale) as f32 * count as f32;
+        let x = button.x - (BAR_GAP * scale) as f32 - width;
+        (x >= 0.0).then_some(Self {
+            rect: VideoRect { x, width, ..button },
+            count,
+            current,
+        })
+    }
+
+    /// The display whose button is at this window position.
+    pub fn display_at(&self, px: f64, py: f64) -> Option<u32> {
+        if !self.rect.contains(px, py, 0.0) {
+            return None;
+        }
+        let across = (px as f32 - self.rect.x) / self.rect.width * self.count as f32;
+        Some((across as u32).min(self.count - 1))
+    }
 }
 
 /// Fits a `video` sized picture into a `window`, preserving aspect ratio.
@@ -160,6 +196,12 @@ pub struct Renderer {
     button_leave: wgpu::RenderPipeline,
     /// The button on screen, if any.
     button: Option<(ButtonAction, VideoRect)>,
+    bar_pipeline: wgpu::RenderPipeline,
+    /// What the bar's shader reads: how many displays, and the one shown.
+    bar_displays: wgpu::Buffer,
+    bar_bind_group: wgpu::BindGroup,
+    /// The display bar on screen, if any.
+    bar: Option<DisplayBar>,
 }
 
 impl Renderer {
@@ -282,6 +324,21 @@ impl Renderer {
         };
         let button_enter = button_pipeline("fs_enter");
         let button_leave = button_pipeline("fs_leave");
+        let bar_pipeline = button_pipeline("fs_bar");
+        let bar_displays = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("display bar"),
+            size: 8,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bar_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("display bar"),
+            layout: &bar_pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: bar_displays.as_entire_binding(),
+            }],
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("yuv"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -302,6 +359,10 @@ impl Renderer {
             button_enter,
             button_leave,
             button: None,
+            bar_pipeline,
+            bar_displays,
+            bar_bind_group,
+            bar: None,
         })
     }
 
@@ -317,6 +378,17 @@ impl Renderer {
     /// Shows the full screen button, or hides it, from the next render.
     pub fn set_button(&mut self, button: Option<(ButtonAction, VideoRect)>) {
         self.button = button;
+    }
+
+    /// Shows the display bar, or hides it, from the next render.
+    pub fn set_display_bar(&mut self, bar: Option<DisplayBar>) {
+        self.bar = bar;
+        if let Some(bar) = bar {
+            let mut bytes = [0; 8];
+            bytes[..4].copy_from_slice(&bar.count.to_le_bytes());
+            bytes[4..].copy_from_slice(&bar.current.to_le_bytes());
+            self.queue.write_buffer(&self.bar_displays, 0, &bytes);
+        }
     }
 
     /// Where the current video sits in the window, once a frame was uploaded.
@@ -399,6 +471,16 @@ impl Renderer {
                     ButtonAction::Enter => &self.button_enter,
                     ButtonAction::Leave => &self.button_leave,
                 });
+                pass.draw(0..3, 0..1);
+            }
+            if let Some(DisplayBar { rect, .. }) = self.bar
+                && rect.x >= 0.0
+                && rect.x + rect.width <= width
+                && rect.y + rect.height <= height
+            {
+                pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
+                pass.set_pipeline(&self.bar_pipeline);
+                pass.set_bind_group(0, &self.bar_bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
         }
@@ -495,6 +577,46 @@ mod tests {
         assert!(r.contains(500.0, 40.0, 0.0));
         assert!(!r.contains(500.0, 80.0, 0.0));
         assert!(r.contains(500.0, 80.0, 56.0));
+    }
+
+    #[test]
+    fn the_shaders_are_valid() {
+        use naga::valid::{Capabilities, ValidationFlags, Validator};
+        for source in [SHADER, BUTTON_SHADER] {
+            let module = naga::front::wgsl::parse_str(source).unwrap();
+            Validator::new(ValidationFlags::all(), Capabilities::default())
+                .validate(&module)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn the_display_bar_sits_left_of_the_button() {
+        let button = button_rect((1000, 800), 2.0);
+        let bar = DisplayBar::new(button, 3, 1, 2.0).unwrap();
+        assert_eq!((bar.rect.y, bar.rect.height), (button.y, button.height));
+        assert_eq!(bar.rect.x + bar.rect.width + 16.0, button.x);
+        assert_eq!(bar.rect.width, 192.0);
+    }
+
+    #[test]
+    fn each_part_of_the_display_bar_is_a_display() {
+        let button = button_rect((1000, 800), 1.0);
+        let bar = DisplayBar::new(button, 3, 0, 1.0).unwrap();
+        let y = f64::from(bar.rect.y) + 2.0;
+        let x = f64::from(bar.rect.x);
+        assert_eq!(bar.display_at(x + 1.0, y), Some(0));
+        assert_eq!(bar.display_at(x + 40.0, y), Some(1));
+        assert_eq!(bar.display_at(x + 95.0, y), Some(2));
+        assert_eq!(bar.display_at(x + 96.0, y), Some(2), "the last pixel");
+        assert_eq!(bar.display_at(x - 1.0, y), None);
+        assert_eq!(bar.display_at(x + 1.0, 500.0), None);
+    }
+
+    #[test]
+    fn a_window_too_small_goes_without_the_display_bar() {
+        let button = button_rect((200, 100), 1.0);
+        assert!(DisplayBar::new(button, 9, 0, 1.0).is_none());
     }
 
     #[test]

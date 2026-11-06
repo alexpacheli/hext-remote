@@ -1,7 +1,7 @@
 //! Host (test pattern) → QUIC → client decode, over loopback.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hext_codec::{DecoderPreference, EncoderSettings};
@@ -104,6 +104,55 @@ async fn streams_and_decodes_video() {
     session.close().await.unwrap();
     let client = server.await.unwrap().unwrap();
     assert_eq!(client.device_name, "client");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_display_comes_through_at_its_own_size() {
+    let (addr, server) = start_host().await;
+    let endpoint = viewer_endpoint().await;
+    let conn = hext_net::connect(&endpoint, addr).await.unwrap();
+    let widths = Arc::new(Mutex::new(Vec::new()));
+    let seen = widths.clone();
+    let session = client::start(
+        conn,
+        Hello {
+            peer: PeerInfo::local("test", "client"),
+            access_code: "111 222 333".into(),
+            resume: None,
+        },
+        None,
+        DecoderPreference::Auto,
+        move |frame| seen.lock().unwrap().push(frame.yuv.width),
+    )
+    .await
+    .unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while session.displays().count == 0 {
+        assert!(tokio::time::Instant::now() < deadline, "the host told");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(session.displays().count, 2);
+    while widths.lock().unwrap().is_empty() {
+        assert!(tokio::time::Instant::now() < deadline, "no first frame");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    session.select_display(1);
+    while widths.lock().unwrap().last() != Some(&640) {
+        assert!(tokio::time::Instant::now() < deadline, "still the first");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(session.displays().current, 1);
+
+    session.select_display(0);
+    while widths.lock().unwrap().last() != Some(&1280) {
+        assert!(tokio::time::Instant::now() < deadline, "no way back");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    session.close().await.unwrap();
+    server.await.unwrap().unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

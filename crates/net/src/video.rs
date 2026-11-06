@@ -1330,6 +1330,7 @@ mod tests {
     fn frame(seq: u64, keyframe: bool, size: usize) -> VideoFrame {
         VideoFrame {
             seq,
+            display: 0,
             width: 1920,
             height: 1080,
             keyframe,

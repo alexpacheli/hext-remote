@@ -15,5 +15,9 @@ tracing.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 
+[dev-dependencies]
+# The version wgpu uses: shaders are checked without a GPU.
+naga = { version = "30", features = ["wgsl-in"] }
+
 [lints]
 workspace = true

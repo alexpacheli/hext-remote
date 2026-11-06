@@ -23,7 +23,7 @@ use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
 use objc2_core_foundation::CFArray;
 use objc2_core_graphics::{
-    CGMainDisplayID, CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess,
+    CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess,
     kCGDisplayStreamYCbCrMatrix_ITU_R_601_4,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime};
@@ -35,11 +35,11 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSString};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCFrameStatus, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCContentFilter, SCDisplay, SCFrameStatus, SCShareableContent, SCStream, SCStreamConfiguration,
     SCStreamFrameInfoStatus, SCStreamOutput, SCStreamOutputType,
 };
 
-use crate::{CaptureError, Capturer, Frame, PixelFormat, Rect, even};
+use crate::{CaptureError, Capturer, Display, Frame, PixelFormat, Rect, even};
 
 /// How long to wait for ScreenCaptureKit to answer a request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -236,31 +236,14 @@ pub fn preflight() -> Result<(), CaptureError> {
 }
 
 impl ScreenCaptureKitCapturer {
-    pub fn new(index: usize, max_fps: u32) -> Result<Self, CaptureError> {
-        if !CGPreflightScreenCaptureAccess() {
-            return Err(permission_error());
-        }
+    /// Opens display `id` ([`Display::id`]).
+    pub fn new(id: &str, max_fps: u32) -> Result<Self, CaptureError> {
+        let display = screens()?
+            .into_iter()
+            .find(|display| display_id(display) == id)
+            .ok_or_else(|| CaptureError::DisplayGone(id.into()))?;
 
-        let content = shareable_content()?;
-        let displays = unsafe { content.displays() };
-        // The list order is not documented: put the main display first so
-        // index 0 means "main", as on the other platforms.
-        let main = CGMainDisplayID();
-        let mut ordered: Vec<_> = (0..displays.count())
-            .map(|i| displays.objectAtIndex(i))
-            .collect();
-        ordered.sort_by_key(|d| unsafe { d.displayID() } != main);
-        let Some(display) = ordered.into_iter().nth(index) else {
-            return Err(CaptureError::NoSuchDisplay(index));
-        };
-
-        let bounds = unsafe { display.frame() };
-        let rect = Rect {
-            x: bounds.origin.x.round() as i32,
-            y: bounds.origin.y.round() as i32,
-            width: bounds.size.width.round() as u32,
-            height: bounds.size.height.round() as u32,
-        };
+        let rect = rect_of(&display);
         // Size in points, scaled down further if very wide.
         let (mut width, mut height) =
             (
@@ -311,7 +294,7 @@ impl ScreenCaptureKitCapturer {
             return Err(e);
         }
         tracing::info!(
-            "capturando o monitor {index}: {}x{} pontos, imagem {width}x{height}",
+            "capturando o monitor {id}: {}x{} pontos, imagem {width}x{height}",
             rect.width,
             rect.height
         );
@@ -326,6 +309,43 @@ impl ScreenCaptureKitCapturer {
             seen: 0,
         })
     }
+}
+
+/// The displays ScreenCaptureKit can capture, if this process may.
+fn screens() -> Result<Vec<Retained<SCDisplay>>, CaptureError> {
+    if !CGPreflightScreenCaptureAccess() {
+        return Err(permission_error());
+    }
+    let content = shareable_content()?;
+    let displays = unsafe { content.displays() };
+    Ok((0..displays.count())
+        .map(|i| displays.objectAtIndex(i))
+        .collect())
+}
+
+fn display_id(display: &SCDisplay) -> String {
+    unsafe { display.displayID() }.to_string()
+}
+
+/// Where a display sits on the virtual desktop, in points, as input takes it.
+fn rect_of(display: &SCDisplay) -> Rect {
+    let bounds = unsafe { display.frame() };
+    Rect {
+        x: bounds.origin.x.round() as i32,
+        y: bounds.origin.y.round() as i32,
+        width: bounds.size.width.round() as u32,
+        height: bounds.size.height.round() as u32,
+    }
+}
+
+pub fn displays() -> Result<Vec<Display>, CaptureError> {
+    Ok(screens()?
+        .iter()
+        .map(|display| Display {
+            id: display_id(display),
+            rect: rect_of(display),
+        })
+        .collect())
 }
 
 impl Capturer for ScreenCaptureKitCapturer {

@@ -1,8 +1,8 @@
 //! Screen capture.
 //!
-//! [`open`] returns a [`Capturer`] for one display: DXGI Desktop Duplication
-//! on Windows, ScreenCaptureKit on macOS, or a synthetic [`TestPattern`] (any
-//! OS) for development and tests.
+//! [`displays`] lists the displays and [`open`] returns a [`Capturer`] for
+//! one: DXGI Desktop Duplication on Windows, ScreenCaptureKit on macOS, or a
+//! synthetic [`TestPattern`] (any OS) for development and tests.
 
 use std::time::Duration;
 
@@ -55,10 +55,21 @@ pub struct Rect {
     pub height: u32,
 }
 
+/// A display of this computer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Display {
+    /// Tells it from the others for as long as it stays connected, wherever
+    /// the list puts it.
+    pub id: String,
+    pub rect: Rect,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureError {
     #[error("display {0} not found")]
     NoSuchDisplay(usize),
+    #[error("display {0} is gone")]
+    DisplayGone(String),
     #[error("screen capture is not available on this OS yet; use the test pattern")]
     Unsupported,
     #[error("sem permissão para capturar a tela: {0}")]
@@ -124,29 +135,70 @@ pub fn preflight() -> Result<(), CaptureError> {
     }
 }
 
-/// Opens display `index` (0 = primary), or the test pattern, delivering at
-/// most `max_fps` frames per second where the platform can throttle.
+/// The displays of this computer, in the order sessions number them: the
+/// main one first (the one at the origin, on every OS), then from left to
+/// right.
+pub fn displays(test_pattern: bool) -> Result<Vec<Display>, CaptureError> {
+    if test_pattern {
+        return Ok(numbered(test_pattern::displays()));
+    }
+    #[cfg(windows)]
+    {
+        windows::displays().map(numbered)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::displays().map(numbered)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Err(CaptureError::Unsupported)
+    }
+}
+
+fn numbered(mut displays: Vec<Display>) -> Vec<Display> {
+    displays.sort_by_key(|d| ((d.rect.x, d.rect.y) != (0, 0), d.rect.x, d.rect.y));
+    displays
+}
+
+/// Opens display `index` of [`displays`] (0 = main), or the test pattern,
+/// delivering at most `max_fps` frames per second where the platform can
+/// throttle.
 pub fn open(
     index: usize,
     test_pattern: bool,
     max_fps: u32,
 ) -> Result<Box<dyn Capturer>, CaptureError> {
+    let displays = displays(test_pattern)?;
+    let display = displays
+        .get(index)
+        .ok_or(CaptureError::NoSuchDisplay(index))?;
+    open_display(display, test_pattern, max_fps)
+}
+
+/// Opens one of the [`displays`], as [`open`] does.
+pub fn open_display(
+    display: &Display,
+    test_pattern: bool,
+    max_fps: u32,
+) -> Result<Box<dyn Capturer>, CaptureError> {
     if test_pattern {
-        return Ok(Box::new(TestPattern::new(1280, 720, max_fps)));
+        return Ok(Box::new(TestPattern::on(display.rect, max_fps)));
     }
     #[cfg(windows)]
     {
-        Ok(Box::new(windows::DxgiCapturer::new(index)?))
+        Ok(Box::new(windows::DxgiCapturer::new(&display.id)?))
     }
     #[cfg(target_os = "macos")]
     {
         Ok(Box::new(macos::ScreenCaptureKitCapturer::new(
-            index, max_fps,
+            &display.id,
+            max_fps,
         )?))
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let _ = (index, max_fps);
+        let _ = max_fps;
         Err(CaptureError::Unsupported)
     }
 }
@@ -154,4 +206,42 @@ pub fn open(
 /// Rounds a dimension down to an even number.
 fn even(v: u32) -> u32 {
     v & !1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(x: i32, y: i32) -> Display {
+        Display {
+            id: format!("{x},{y}"),
+            rect: Rect {
+                x,
+                y,
+                width: 1920,
+                height: 1080,
+            },
+        }
+    }
+
+    #[test]
+    fn the_main_display_comes_first_then_left_to_right() {
+        let list = numbered(vec![at(1920, 0), at(-1920, 200), at(0, 0), at(0, -1080)]);
+        let order: Vec<_> = list.iter().map(|d| (d.rect.x, d.rect.y)).collect();
+        assert_eq!(order, [(0, 0), (-1920, 200), (0, -1080), (1920, 0)]);
+    }
+
+    #[test]
+    fn the_test_pattern_opens_each_display_where_it_is() {
+        let list = displays(true).unwrap();
+        assert!(list.len() > 1);
+        for (index, display) in list.iter().enumerate() {
+            let capturer = open(index, true, 30).unwrap();
+            assert_eq!(capturer.rect(), display.rect);
+        }
+        assert!(matches!(
+            open(list.len(), true, 30).err(),
+            Some(CaptureError::NoSuchDisplay(_))
+        ));
+    }
 }

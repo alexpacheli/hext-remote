@@ -1,6 +1,25 @@
 use std::time::{Duration, Instant};
 
-use crate::{CaptureError, Capturer, Frame, PixelFormat, Rect, even};
+use crate::{CaptureError, Capturer, Display, Frame, PixelFormat, Rect, even};
+
+/// The displays of a computer showing the test pattern: of different sizes,
+/// the second to the left of the main one (negative coordinates), to go
+/// through what a real pair of monitors takes.
+pub(crate) fn displays() -> Vec<Display> {
+    let display = |id: &str, x, width, height| Display {
+        id: id.into(),
+        rect: Rect {
+            x,
+            y: 0,
+            width,
+            height,
+        },
+    };
+    vec![
+        display("teste 1", 0, 1280, 720),
+        display("teste 2", -640, 640, 360),
+    ]
+}
 
 /// Synthetic animated screen: a gradient background with a moving square.
 ///
@@ -8,6 +27,8 @@ use crate::{CaptureError, Capturer, Frame, PixelFormat, Rect, even};
 /// without a supported capture backend (CI, Linux, macOS before F2).
 pub struct TestPattern {
     frame: Frame,
+    /// Where the display sits on the virtual desktop.
+    origin: (i32, i32),
     interval: Duration,
     next_at: Instant,
     tick: u32,
@@ -16,7 +37,20 @@ pub struct TestPattern {
 
 impl TestPattern {
     pub fn new(width: u32, height: u32, fps: u32) -> Self {
-        let (width, height) = (even(width), even(height));
+        Self::on(
+            Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+            fps,
+        )
+    }
+
+    /// The pattern on the display at `rect`.
+    pub fn on(rect: Rect, fps: u32) -> Self {
+        let (width, height) = (even(rect.width), even(rect.height));
         Self {
             frame: Frame {
                 width,
@@ -26,6 +60,7 @@ impl TestPattern {
                 #[cfg(windows)]
                 texture: None,
             },
+            origin: (rect.x, rect.y),
             interval: Duration::from_secs(1) / fps.max(1),
             next_at: Instant::now(),
             tick: 0,
@@ -84,8 +119,8 @@ impl Capturer for TestPattern {
 
     fn rect(&self) -> Rect {
         Rect {
-            x: 0,
-            y: 0,
+            x: self.origin.0,
+            y: self.origin.1,
             width: self.frame.width,
             height: self.frame.height,
         }
