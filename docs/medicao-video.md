@@ -91,13 +91,13 @@ pacotes perdidos e 39 reenviados.
   as esperas somarem, `MAX_WAITING` em 16 desistia de quadros ainda não pedidos, e duas tentativas desistiram
   cedo de 5 quadros cujos pacotes chegaram até 175 ms depois.
 - **Houve segundos parados sem perda:** 873 ms presos a 1,7 Mbps com janela de 199 kB, o que daria um RTT perto de
-  1 s, impossível numa LAN limpa. Essa rodada não registrava o caminho, então a causa ficou em aberto.
+  1 s. Essa rodada não registrava o caminho, então a causa ficou em aberto.
 
 Daí vieram os pedidos de todos os quadros parados de uma vez, `MAX_WAITING` em 48 com histórico de 64 quadros no
 host, 3 tentativas, a fila de datagramas de 64 kB e o registro de caminho e RTT.
 
-**Para a próxima rodada, olhe primeiro `caminho:` e `RTT`:** relay ou endereço `100.x` (Tailscale) em computadores
-na mesma rede mudam a conclusão. Compare também o total de pacotes perdidos com os `no caminho em uso`: a diferença
+**Para a próxima rodada, olhe primeiro `caminho:` e `RTT`:** relay ou endereço `100.x` (Tailscale) mudam a
+conclusão. Compare também o total de pacotes perdidos com os `no caminho em uso`: a diferença
 é de caminhos testados e abandonados, não do vídeo.
 
 ## A terceira medição
@@ -106,7 +106,26 @@ Em 51 s de rede limpa: 17 de 36.181 pacotes perdidos (0,05%), nenhum quadro perd
 nada preso no controle de congestionamento e 9,95 Mbps de pico. A imagem ficou bem melhor para quem usou.
 
 Ela **não valida o reenvio**: nada foi reenviado, e o host rodou o build anterior, sem `caminho:` nem `RTT`. Mostra
-que, sem perda, o vídeo aguenta o estresse, e que a piora da segunda rodada veio da rede, ainda sem causa conhecida.
+que, sem perda, o vídeo aguenta o estresse.
 
 Ficou uma queda sem relação com a rede: por cerca de 10 s (`:42` a `:51`) a `captura` teve só 7 a 11 imagens novas
 por segundo, com quadros de 70 a 90 kB e 0 ms de espera pela rede.
+
+## A quarta medição
+
+Primeira com o build novo nos dois lados, em 57 s, com rede tão ruim quanto a da segunda rodada:
+
+| | Rodada 2 | Rodada 4 |
+| --- | --- | --- |
+| Pacotes perdidos no QUIC | 5,21% | 4,33% |
+| Quadros salvos por reenvio | 14 | 47 |
+| Quadros perdidos | 11 | 2 |
+| Tempo parado até o keyframe | 4,06 s | 1,19 s |
+
+- **O reenvio aguenta perda real:** rajadas de 320 e 417 pacotes perdidos por segundo não viraram keyframe em cascata.
+- **Os 2 quadros perdidos foram cedo demais:** os pacotes vieram 184 e 173 ms depois, de 530 a 560 ms após o último.
+  Daí veio o piso de 600 ms sem pacote antes de desistir.
+- **O caminho é o Tailscale:** `Ip(100.107.63.111)` do início ao fim, com RTT de 18 a 472 ms (mediana 76). O host está
+  em Wi-Fi em `192.168.1.x` e o visualizador em cabo em `192.168.0.x`, sem rota entre as sub-redes.
+- **Falta separar as causas:** o RTT que oscila pode vir do Wi-Fi, do túnel ou da internet entre os dois. Só outra
+  rodada, com o Tailscale desligado em um dos lados, mostra qual.

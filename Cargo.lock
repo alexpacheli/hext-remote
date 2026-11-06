@@ -1776,6 +1776,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
+name = "fastbloom"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef975e30683b2d965054bb0a836f8973857c4ebf6acf274fe46617cd285060d8"
+dependencies = [
+ "foldhash",
+ "libm",
+ "portable-atomic",
+ "siphasher",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2589,6 +2601,7 @@ dependencies = [
  "hext-crypto",
  "hext-proto",
  "iroh",
+ "noq-proto",
  "reed-solomon-erasure",
  "serde",
  "thiserror 2.0.21",
@@ -4104,6 +4117,7 @@ dependencies = [
  "bytes",
  "derive_more",
  "enum-assoc",
+ "fastbloom",
  "getrandom 0.4.3",
  "identity-hash",
  "lru-slab",

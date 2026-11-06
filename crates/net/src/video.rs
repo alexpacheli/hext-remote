@@ -71,6 +71,12 @@ pub const RESEND_AFTER: Duration = Duration::from_millis(40);
 /// held up by congestion came up to 175 ms after a second try's wait.
 pub const RESEND_TRIES: u32 = 3;
 
+/// How long a frame asked for must go without a packet to count as lost.
+/// The round trip is read once a second and jumps within one (from 30 to 470
+/// ms in the field): answers came 530 to 560 ms after the last packet, and
+/// the keyframe that replaced them stopped the image for as long.
+const GIVE_UP_AFTER: Duration = Duration::from_millis(600);
+
 /// How long an answer may take, at the least and at the most; in between,
 /// two round trips and a margin. Without a round trip known yet, the most
 /// likely one.
@@ -1208,7 +1214,7 @@ impl Reassembler {
         match self.asked.get(&next) {
             Some(asked)
                 if asked.tries >= RESEND_TRIES
-                    && quiet > RESEND_AFTER
+                    && quiet > GIVE_UP_AFTER
                     && now.duration_since(asked.last) > self.resend_wait =>
             {
                 Missing::GiveUp(LossTrigger::Quiet)
@@ -1812,8 +1818,11 @@ mod tests {
         assert_eq!(requests.len(), RESEND_TRIES as usize);
         // The first request after RESEND_AFTER, then an answer's wait each.
         let waited = lost_at.duration_since(t0);
-        assert!(waited >= Duration::from_millis(400), "{waited:?}");
-        assert!(waited <= Duration::from_millis(440), "{waited:?}");
+        assert!(waited > GIVE_UP_AFTER, "{waited:?}");
+        assert!(
+            waited <= GIVE_UP_AFTER + Duration::from_millis(40),
+            "{waited:?}"
+        );
     }
 
     #[test]

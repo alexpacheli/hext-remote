@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use hext_crypto::{DeviceKey, PublicKey};
@@ -36,13 +37,19 @@ pub struct EndpointConfig {
 /// An endpoint whose identity is this device's key: peers authenticate it
 /// by that key (its ID in `iroh`), and it authenticates them by theirs.
 pub async fn bind(key: &DeviceKey, config: &EndpointConfig) -> Result<Endpoint> {
-    let transport = QuicTransportConfig::builder()
+    let mut transport = QuicTransportConfig::builder()
         .max_idle_timeout(Some(
             IdleTimeout::try_from(IDLE_TIMEOUT).expect("10 s fits a VarInt"),
         ))
         .datagram_receive_buffer_size(Some(DATAGRAM_RECEIVE_BUFFER))
-        .datagram_send_buffer_size(DATAGRAM_SEND_BUFFER)
-        .build();
+        .datagram_send_buffer_size(DATAGRAM_SEND_BUFFER);
+    // Temporary, to compare with Cubic in the field.
+    if std::env::var_os("HEXT_BBR").is_some() {
+        tracing::info!(target: crate::video::LOG_TARGET, "controle de congestionamento: BBR");
+        transport = transport
+            .congestion_controller_factory(Arc::new(noq_proto::congestion::Bbr3Config::default()));
+    }
+    let transport = transport.build();
     // Minimal: no address lookup through third parties; peers learn each
     // other's addresses from our own signaling.
     let mut builder = Endpoint::builder(presets::Minimal)

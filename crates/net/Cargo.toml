@@ -16,6 +16,7 @@ serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 bytes.workspace = true
+noq-proto = "1.4.0" # temporary: BBR is not re-exported by iroh
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
