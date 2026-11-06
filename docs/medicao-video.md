@@ -141,6 +141,27 @@ continua igual, no mesmo protocolo. Para comparar com a taxa fixa, rode o host c
 - `não aceitou mudar a taxa`: o driver recusou. Confira também se `Mbps` em `envio:` acompanha a taxa pedida, porque um
   driver pode aceitar e ignorar.
 
+## A oitava medição
+
+Duas rodadas no `DESKTOP-U6JQMAA`, pelo mesmo caminho, depois do ajuste abaixo. A rede estava ruim nas duas, e H começou
+com uma trava de quase 4 s por segundo de relatório (RTT de até 3690 ms), sem imagem nos primeiros 9 s.
+
+| | H: adaptativa | H desde 15:19:30 | I: fixa |
+| --- | --- | --- | --- |
+| Quadros por segundo, média | 42 | 56 | 52 |
+| Segundos abaixo de 30 quadros | 24 de 80 | 3 de 51 | 8 de 65 |
+| Tempo parado até o keyframe | 1,77 s | 0 | 0 |
+| Vídeo enviado, média | 2,9 Mbps | 3,3 Mbps | 7,0 Mbps |
+| Preso no controle de congestionamento | 21,4 s | 1,2 s | 9,5 s |
+| Segundos com RTT de 200 ms ou mais | | 10 | 18 |
+
+- **Na parte comparável, a adaptativa foi mais fluida e a fixa teve imagem melhor:** H ficou com menos da metade da taxa
+  e menos da metade do tempo preso. Faltam rodadas pareadas para separar o efeito da rede.
+- **O começo de H não diz nada sobre a taxa:** quase nada saía, com a taxa alta ou baixa. A causa dessa trava não foi
+  encontrada.
+- **Ainda são muitas reaberturas:** 10 em 62 s, de 114 a 258 ms cada, uma a cada cerca de 5 s depois de :30. A subida de
+  50% por segundo voltou a bater no problema e cortou de novo.
+
 ## Ajuste depois da sétima medição
 
 `hext encoder-rates` também testou subir a qualidade mínima (`CODECAPI_AVEncVideoMinQP`) ao vivo. O Intel aceitou 30, 36 e
