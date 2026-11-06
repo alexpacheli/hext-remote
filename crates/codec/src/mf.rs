@@ -111,8 +111,12 @@ pub struct MfEncoder {
     only: Option<String>,
     /// Memory images go with this device attached (probing).
     memory_device: Option<ID3D11Device>,
+    /// The rate asked for now; sessions open at `settings.bitrate_bps`.
+    target_bps: u32,
     /// Whether the encoder follows a new rate, seen from what comes out.
     rate_watch: RateWatch,
+    /// Seen ignoring new rates: it stays at its full rate.
+    fixed_rate: bool,
 }
 
 /// The optional encoder settings, each of which a driver may refuse.
@@ -227,7 +231,9 @@ impl MfEncoder {
             tweaks: Tweaks::ALL,
             only: None,
             memory_device: None,
-            rate_watch: RateWatch::new(settings.bitrate_bps, Instant::now()),
+            target_bps: settings.bitrate_bps,
+            rate_watch: RateWatch::new(Instant::now()),
+            fixed_rate: false,
         })
     }
 
@@ -263,8 +269,10 @@ impl MfEncoder {
         let session = self.open_session(width, height, device)?;
         self.session = Some(session);
         self.frame_index = 0;
-        self.rate_watch
-            .opened(self.settings.bitrate_bps, Instant::now());
+        self.rate_watch = RateWatch::new(Instant::now());
+        if self.target_bps != self.settings.bitrate_bps {
+            self.apply_target();
+        }
         Ok(())
     }
 
@@ -519,23 +527,9 @@ impl VideoEncoder for MfEncoder {
     }
 
     fn set_bitrate(&mut self, bitrate_bps: u32) {
-        self.settings.bitrate_bps = bitrate_bps;
-        let codec = self.session.as_ref().and_then(|s| s.codec.as_ref());
-        if let Some(codec) = codec.filter(|_| self.tweaks.rate_control) {
-            let taken = set(
-                codec,
-                &CODECAPI_AVEncCommonMeanBitRate,
-                u32_variant(bitrate_bps),
-            );
-            // AMD accepts the mean alone and keeps going at the old rate.
-            set(
-                codec,
-                &CODECAPI_AVEncCommonMaxBitRate,
-                u32_variant(bitrate_bps),
-            );
-            if !taken {
-                tracing::warn!("{} não aceitou mudar a taxa", self.name);
-            }
+        if !self.fixed_rate {
+            self.target_bps = bitrate_bps;
+            self.apply_target();
         }
     }
 
@@ -549,13 +543,40 @@ impl VideoEncoder for MfEncoder {
 }
 
 impl MfEncoder {
+    /// Tells the running session the target rate.
+    fn apply_target(&self) {
+        let codec = self.session.as_ref().and_then(|s| s.codec.as_ref());
+        if let Some(codec) = codec.filter(|_| self.tweaks.rate_control) {
+            let target = u32_variant(self.target_bps);
+            let taken = set(codec, &CODECAPI_AVEncCommonMeanBitRate, target.clone());
+            // AMD accepts the mean alone and keeps going at the old rate.
+            set(codec, &CODECAPI_AVEncCommonMaxBitRate, target);
+            if !taken {
+                tracing::warn!("{} não aceitou mudar a taxa", self.name);
+            }
+        }
+    }
+
     fn watch_output(&mut self, encoded: Option<&Encoded>) {
-        if let Some(encoded) = encoded {
-            self.rate_watch.output(
-                encoded.data.len(),
-                self.settings.bitrate_bps,
-                Instant::now(),
+        let Some(encoded) = encoded else { return };
+        // Probing changes rates on purpose, faster than real time.
+        if self.fixed_rate || self.only.is_some() {
+            return;
+        }
+        let target = self.target_bps;
+        if target < self.settings.bitrate_bps
+            && self
+                .rate_watch
+                .output(encoded.data.len(), target, Instant::now())
+        {
+            tracing::info!(
+                "{} ignorou a nova taxa: fica em {:.1} Mbps",
+                self.name,
+                f64::from(self.settings.bitrate_bps) / 1e6,
             );
+            self.fixed_rate = true;
+            self.target_bps = self.settings.bitrate_bps;
+            self.apply_target();
         }
     }
 
@@ -574,17 +595,6 @@ impl MfEncoder {
     ) -> Result<Option<Encoded>, CodecError> {
         let (width, height) = (image.width, image.height);
         let device = device.cloned();
-        // Probing measures each way of changing the rate by itself.
-        let target = self.settings.bitrate_bps;
-        if self.only.is_none() && self.rate_watch.reopen_due(target, Instant::now()) {
-            tracing::info!(
-                "{} ignorou a nova taxa: reabrindo, de {:.1} para {:.1} Mbps",
-                self.name,
-                f64::from(self.rate_watch.session_bps()) / 1e6,
-                f64::from(target) / 1e6,
-            );
-            self.session = None;
-        }
         // A new size, the first texture (or a new capture device), or memory
         // images after textures: the encoder must be opened for it.
         let reopen = match &self.session {
@@ -1545,7 +1555,10 @@ fn probe_rate(
             }
         }
         Retarget::Keyframe => encoder.force_keyframe(),
-        Retarget::Reopen => encoder.session = None,
+        Retarget::Reopen => {
+            encoder.settings.bitrate_bps = TARGET;
+            encoder.session = None;
+        }
         Retarget::MinQp(qp) => {
             if !encoder.set_min_qp(qp) {
                 return Err("o driver recusou".into());
