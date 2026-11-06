@@ -9,13 +9,14 @@ use hext_codec::{DecoderPreference, YuvFrame};
 use hext_net::video::{Counters, Event, LOG_TARGET, MAX_WAITING, Reassembler, ResendRequest};
 use hext_net::{Connection, ConnectionError, ControlStream, FramedSend, NetError, PasswordLogin};
 use hext_proto::{
-    Control, Datagram, Displays, ENDED_ON_HOST, FileOutcome, Hello, InputEvent, PeerInfo,
+    ChatText, Control, Datagram, Displays, ENDED_ON_HOST, FileOutcome, Hello, InputEvent, PeerInfo,
     Permissions, StreamKind, VideoFrame,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+use crate::chat_pace::ChatPace;
 use crate::files::{self, Confirm, FileAccess, FileEnd, Tell};
 use crate::{NETWORK_GRACE, RESTART_LIFETIME, Result, ResumeToken, SessionError, Stats};
 
@@ -85,6 +86,14 @@ struct FileLink {
     outcomes: mpsc::UnboundedSender<(u64, FileOutcome)>,
 }
 
+/// What the chat brings from the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatNews {
+    Text(ChatText),
+    /// Nobody there can read what was sent.
+    NoOne,
+}
+
 /// A decoded picture ready to be shown.
 pub struct DecodedFrame {
     pub seq: u64,
@@ -110,6 +119,9 @@ pub struct ClientHandle {
     file_link: Option<FileLink>,
     displays: watch::Receiver<Displays>,
     select_display: mpsc::UnboundedSender<u8>,
+    chat_out: mpsc::UnboundedSender<ChatText>,
+    /// Taken by [`Self::chat`].
+    chat_in: Option<mpsc::Receiver<ChatNews>>,
     resume: Arc<Mutex<Resume>>,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<()>>,
@@ -177,6 +189,16 @@ impl ClientHandle {
                 files::run(end).await;
             }
         }
+    }
+
+    /// Sends a message to the host's user.
+    pub fn send_chat(&self, text: ChatText) {
+        let _ = self.chat_out.send(text);
+    }
+
+    /// What the chat brings. Once; afterwards, `None`.
+    pub fn chat(&mut self) -> Option<mpsc::Receiver<ChatNews>> {
+        self.chat_in.take()
     }
 
     /// The host's displays, as it told last (none, until it does).
@@ -284,6 +306,9 @@ pub async fn start(
     let (outcomes, outcomes_rx) = mpsc::unbounded_channel();
     let (displays_tx, displays) = watch::channel(Displays::default());
     let (select_display, select_rx) = mpsc::unbounded_channel();
+    let (chat_out, chat_out_rx) = mpsc::unbounded_channel();
+    // A few slots: a burst nobody is taking loses its last messages.
+    let (chat_in_tx, chat_in) = mpsc::channel(32);
     let resume = Arc::new(Mutex::new(Resume::default()));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = oneshot::channel();
@@ -299,6 +324,8 @@ pub async fn start(
         outcomes_rx,
         displays_tx,
         select_rx,
+        chat_out_rx,
+        chat_in_tx,
         resume.clone(),
         shutdown_rx,
         stats.clone(),
@@ -333,6 +360,8 @@ pub async fn start(
         }),
         displays,
         select_display,
+        chat_out,
+        chat_in: Some(chat_in),
         resume,
         shutdown: Some(shutdown_tx),
         task,
@@ -353,6 +382,8 @@ async fn run(
     mut file_outcomes: mpsc::UnboundedReceiver<(u64, FileOutcome)>,
     displays: watch::Sender<Displays>,
     mut select_display: mpsc::UnboundedReceiver<u8>,
+    mut chat_out: mpsc::UnboundedReceiver<ChatText>,
+    chat_in: mpsc::Sender<ChatNews>,
     resume: Arc<Mutex<Resume>>,
     mut shutdown: oneshot::Receiver<()>,
     stats: Arc<Mutex<Stats>>,
@@ -387,6 +418,7 @@ async fn run(
     ));
 
     let mut say_bye = false;
+    let mut chat_pace = ChatPace::new();
     let result = loop {
         tokio::select! {
             done = &mut receiver => break match done {
@@ -429,9 +461,24 @@ async fn run(
                     break peer_closed_is_ok(&conn, e);
                 }
             }
+            Some(text) = chat_out.recv() => {
+                if let Err(e) = control.send(&Control::Chat { text }).await {
+                    break peer_closed_is_ok(&conn, e);
+                }
+            }
             msg = control.recv() => match msg {
                 Ok(Control::Clipboard { text }) => {
                     let _ = clipboard_in.try_send(text);
+                }
+                Ok(Control::Chat { text }) => {
+                    if !text.is_empty() && chat_pace.allows(Instant::now()) {
+                        let _ = chat_in.try_send(ChatNews::Text(text));
+                    }
+                }
+                Ok(Control::ChatNoOne) => {
+                    if chat_pace.allows(Instant::now()) {
+                        let _ = chat_in.try_send(ChatNews::NoOne);
+                    }
                 }
                 Ok(Control::FileAnswer { id, outcome }) => {
                     let _ = file_answers.send((id, outcome));

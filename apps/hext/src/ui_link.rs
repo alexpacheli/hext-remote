@@ -10,7 +10,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use hext_proto::Permissions;
+use hext_proto::{ChatText, Permissions};
 use hext_session::files::{Stage, Transfer};
 use hext_session::host::{ActiveSession, BoxFuture, Presence};
 use hext_signal::DeviceId;
@@ -29,6 +29,35 @@ pub const VIEWER_CONNECTED: &str = "hext-ui: conectado";
 /// Printed by a viewer asking a computer whose screen is locked (the
 /// interface shows it, too).
 pub const HOST_LOCKED: &str = "O computador está bloqueado: peça para alguém acordar a tela.";
+
+/// Printed by a viewer opened by the interface: its person wants the chat.
+pub const VIEWER_CHAT_OPEN: &str = "hext-ui: abrir chat";
+/// Printed by a viewer: nobody on the other side read what was sent.
+pub const VIEWER_CHAT_NO_ONE: &str = "hext-ui: ninguém no chat";
+/// Before each message from the host a viewer prints.
+const VIEWER_CHAT: &str = "hext-ui: chat ";
+
+/// A message as one line, for a viewer and its interface to trade.
+pub fn chat_json(text: &ChatText) -> String {
+    serde_json::to_string(text).expect("a string")
+}
+
+/// The message in a line of [`chat_json`].
+pub fn chat_of_json(line: &str) -> Option<ChatText> {
+    serde_json::from_str::<ChatText>(line)
+        .ok()
+        .filter(|text| !text.is_empty())
+}
+
+/// The line a viewer prints for a message from the host.
+pub fn viewer_chat_line(text: &ChatText) -> String {
+    format!("{VIEWER_CHAT}{}", chat_json(text))
+}
+
+/// The message in a line of [`viewer_chat_line`].
+pub fn chat_of_viewer_line(line: &str) -> Option<ChatText> {
+    chat_of_json(line.strip_prefix(VIEWER_CHAT)?)
+}
 
 /// Owner of the sessions → interface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +87,8 @@ pub enum ToUi {
         news: bool,
         finished: bool,
     },
+    /// The viewer wrote.
+    Chat(ChatText),
 }
 
 /// Interface → owner of the sessions.
@@ -73,6 +104,8 @@ pub enum FromUi {
     /// The user chose a file to send to the viewer. It is opened with this
     /// user's rights, not with its owner's.
     SendFile(PathBuf),
+    /// The user wrote to the viewer.
+    Chat(ChatText),
 }
 
 /// The session going on, as shown on the indicator.
@@ -101,6 +134,10 @@ struct State {
     outgoing: Option<mpsc::UnboundedSender<PathBuf>>,
     /// The other end of `outgoing`, until the session takes it.
     to_session: Option<mpsc::UnboundedReceiver<PathBuf>>,
+    /// Where what the user writes goes, during a session.
+    chat_out: Option<mpsc::UnboundedSender<ChatText>>,
+    /// The other end of `chat_out`, until the session takes it.
+    chat_to_session: Option<mpsc::UnboundedReceiver<ChatText>>,
     /// The request on screen, waiting for its answer.
     asking: Option<(u64, oneshot::Sender<Option<Permissions>>)>,
     next_ask: u64,
@@ -182,6 +219,11 @@ impl UiHub {
             FromUi::SendFile(path) => {
                 if let Some(outgoing) = &state.outgoing {
                     let _ = outgoing.send(path);
+                }
+            }
+            FromUi::Chat(text) => {
+                if let Some(chat_out) = &state.chat_out {
+                    let _ = chat_out.send(text);
                 }
             }
         }
@@ -293,10 +335,13 @@ impl Presence for UiHub {
             unattended: session.unattended,
         };
         let (outgoing, to_session) = mpsc::unbounded_channel();
+        let (chat_out, chat_to_session) = mpsc::unbounded_channel();
         let mut state = self.0.lock().expect("lock");
         state.session = Some((view.clone(), end.clone()));
         state.outgoing = Some(outgoing);
         state.to_session = Some(to_session);
+        state.chat_out = Some(chat_out);
+        state.chat_to_session = Some(chat_to_session);
         state.send(ToUi::SessionStarted(view));
         end
     }
@@ -306,6 +351,8 @@ impl Presence for UiHub {
         state.session = None;
         state.outgoing = None;
         state.to_session = None;
+        state.chat_out = None;
+        state.chat_to_session = None;
         state.send(ToUi::SessionEnded);
     }
 
@@ -319,6 +366,19 @@ impl Presence for UiHub {
             news: transfer.is_news(),
             finished: !matches!(transfer.stage, Stage::Going { .. }),
         });
+    }
+
+    fn chat(&self, text: ChatText) -> bool {
+        let state = self.0.lock().expect("lock");
+        let heard = state.ui.is_some() && state.session.is_some();
+        if heard {
+            state.send(ToUi::Chat(text));
+        }
+        heard
+    }
+
+    fn chat_out(&self) -> Option<mpsc::UnboundedReceiver<ChatText>> {
+        self.0.lock().expect("lock").chat_to_session.take()
     }
 }
 
@@ -518,6 +578,47 @@ mod tests {
         assert_eq!(files.recv().await, Some("durante.txt".into()));
         hub.ended();
         assert_eq!(files.recv().await, None, "over with the session");
+    }
+
+    #[tokio::test]
+    async fn the_chat_goes_to_the_session_on_now_and_comes_from_it() {
+        let hub = UiHub::default();
+        let (mut ui, service_end) = tokio::io::duplex(1 << 16);
+        let attached = hub.clone();
+        tokio::spawn(async move { attached.attach(service_end).await });
+        settled(&hub).await;
+        let text = ChatText::new("Oi").unwrap();
+        assert!(!hub.chat(text.clone()), "no session, nobody to read it");
+
+        let _end = hub.started(&session());
+        assert!(matches!(next(&mut ui).await, ToUi::SessionStarted(_)));
+        assert!(hub.chat(text.clone()));
+        assert_eq!(next(&mut ui).await, ToUi::Chat(text.clone()));
+
+        let mut out = hub.chat_out().expect("once for each session");
+        assert!(hub.chat_out().is_none());
+        hub.received(FromUi::Chat(text.clone()));
+        assert_eq!(out.recv().await, Some(text.clone()));
+
+        hub.ended();
+        assert_eq!(out.recv().await, None, "nothing goes to the next one");
+    }
+
+    #[test]
+    fn with_no_interface_nobody_reads_the_chat() {
+        let hub = UiHub::default();
+        let _end = hub.started(&session());
+        assert!(!hub.chat(ChatText::new("Oi").unwrap()));
+    }
+
+    #[test]
+    fn a_message_fits_a_line_whatever_it_says() {
+        let text = ChatText::new("duas\nlinhas \"e\" aspas").unwrap();
+        let line = viewer_chat_line(&text);
+        assert!(!line.contains('\n'));
+        assert_eq!(chat_of_viewer_line(&line), Some(text));
+        assert_eq!(chat_of_viewer_line("hext-ui: conectado"), None);
+        assert_eq!(chat_of_json("\"\u{202e}\""), None, "nothing left of it");
     }
 
     #[tokio::test]

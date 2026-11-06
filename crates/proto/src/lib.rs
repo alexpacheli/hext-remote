@@ -18,10 +18,13 @@ use serde::{Deserialize, Serialize};
 pub mod frame;
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u16 = 12;
+pub const PROTOCOL_VERSION: u16 = 13;
 
 /// The longest text the clipboard shares, in bytes: it fits a control frame.
 pub const MAX_CLIPBOARD_TEXT: usize = 512 * 1024;
+
+/// The longest message of the chat, in bytes.
+pub const MAX_CHAT_TEXT: usize = 8 * 1024;
 
 /// The most of a file carried by one [`FileMessage::Chunk`].
 pub const MAX_FILE_CHUNK: usize = 64 * 1024;
@@ -225,6 +228,66 @@ pub enum Control {
     /// Client → host: show this display. Seeing the screen takes no
     /// permission of its own, and that covers every display.
     SelectDisplay { index: u8 },
+    /// A message of the chat, either way.
+    Chat { text: ChatText },
+    /// Host → client: nobody at that computer can read the chat.
+    ChatNoOne,
+}
+
+/// A message of the chat. It comes from the other computer, so what cannot be
+/// shown as plain text (control characters, marks that reverse how the text
+/// reads) goes as it arrives, and it cannot reach a log through `Debug`.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(from = "String", into = "String")]
+pub struct ChatText(String);
+
+impl ChatText {
+    /// `None`: nothing to send.
+    pub fn new(text: &str) -> Option<Self> {
+        Some(Self::from(text.to_owned())).filter(|text| !text.is_empty())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl From<String> for ChatText {
+    fn from(text: String) -> Self {
+        let clean = |c: &char| {
+            let reordering = matches!(
+                c,
+                '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            );
+            let breaking = matches!(c, '\u{2028}' | '\u{2029}');
+            *c == '\n' || !(c.is_control() || reordering || breaking)
+        };
+        let mut clean: String = text.chars().filter(clean).collect();
+        if clean.len() > MAX_CHAT_TEXT {
+            let end = (0..=MAX_CHAT_TEXT)
+                .rev()
+                .find(|end| clean.is_char_boundary(*end))
+                .unwrap_or(0);
+            clean.truncate(end);
+        }
+        Self(clean.trim().to_owned())
+    }
+}
+
+impl From<ChatText> for String {
+    fn from(text: ChatText) -> Self {
+        text.0
+    }
+}
+
+impl std::fmt::Debug for ChatText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ChatText({} bytes)", self.0.len())
+    }
 }
 
 /// The displays a host has, numbered from 0, and the one being shown.
@@ -422,6 +485,10 @@ mod tests {
                 current: 1,
             }),
             Control::SelectDisplay { index: 2 },
+            Control::Chat {
+                text: ChatText::new("Pode reiniciar?").unwrap(),
+            },
+            Control::ChatNoOne,
             Control::HelloAck {
                 peer: PeerInfo::local("0.1.0", "laptop"),
                 permissions: Permissions {
@@ -491,6 +558,34 @@ mod tests {
         // The header stays small next to the shard.
         assert!(bytes.len() <= 1100 + 32, "{} bytes", bytes.len());
         assert_eq!(decode::<Datagram>(&bytes).unwrap(), packet);
+    }
+
+    #[test]
+    fn a_chat_message_is_plain_text() {
+        let text = ChatText::new("  oi\r\n\u{1b}[31m\u{202e}tudo bem?\u{7}  ").unwrap();
+        assert_eq!(text.as_str(), "oi\n[31mtudo bem?");
+        assert!(ChatText::new(" \n\u{202e}\t ").is_none());
+    }
+
+    #[test]
+    fn a_chat_message_too_long_is_cut_between_characters() {
+        let text = ChatText::new(&"é".repeat(MAX_CHAT_TEXT)).unwrap();
+        assert_eq!(text.as_str().len(), MAX_CHAT_TEXT);
+    }
+
+    #[test]
+    fn what_comes_through_the_network_is_cleaned_too() {
+        let bytes = postcard::to_stdvec(&"\u{202e}oi\u{1b}".to_owned()).unwrap();
+        let text: ChatText = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(text.as_str(), "oi");
+    }
+
+    #[test]
+    fn a_chat_message_stays_out_of_the_logs() {
+        let msg = Control::Chat {
+            text: ChatText::new("a senha é 1234").unwrap(),
+        };
+        assert!(!format!("{msg:?}").contains("1234"));
     }
 
     #[test]

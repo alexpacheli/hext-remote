@@ -71,6 +71,13 @@ pub fn button_rect(window: (u32, u32), scale: f64) -> VideoRect {
     }
 }
 
+/// Where the chat button goes, left of what starts at `left` on the row of
+/// the full screen `button`; `None` when the window has no room for it.
+pub fn chat_button_rect(left: f32, button: VideoRect, scale: f64) -> Option<VideoRect> {
+    let x = left - (BAR_GAP * scale) as f32 - button.width;
+    (x >= 0.0).then_some(VideoRect { x, ..button })
+}
+
 /// What pressing the full screen button does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonAction {
@@ -202,6 +209,9 @@ pub struct Renderer {
     bar_bind_group: wgpu::BindGroup,
     /// The display bar on screen, if any.
     bar: Option<DisplayBar>,
+    chat_pipeline: wgpu::RenderPipeline,
+    /// The chat button on screen, if any.
+    chat_button: Option<VideoRect>,
 }
 
 impl Renderer {
@@ -325,6 +335,7 @@ impl Renderer {
         let button_enter = button_pipeline("fs_enter");
         let button_leave = button_pipeline("fs_leave");
         let bar_pipeline = button_pipeline("fs_bar");
+        let chat_pipeline = button_pipeline("fs_chat");
         let bar_displays = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("display bar"),
             size: 8,
@@ -363,6 +374,8 @@ impl Renderer {
             bar_displays,
             bar_bind_group,
             bar: None,
+            chat_pipeline,
+            chat_button: None,
         })
     }
 
@@ -389,6 +402,11 @@ impl Renderer {
             bytes[4..].copy_from_slice(&bar.current.to_le_bytes());
             self.queue.write_buffer(&self.bar_displays, 0, &bytes);
         }
+    }
+
+    /// Shows the chat button, or hides it, from the next render.
+    pub fn set_chat_button(&mut self, rect: Option<VideoRect>) {
+        self.chat_button = rect;
     }
 
     /// Where the current video sits in the window, once a frame was uploaded.
@@ -481,6 +499,15 @@ impl Renderer {
                 pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
                 pass.set_pipeline(&self.bar_pipeline);
                 pass.set_bind_group(0, &self.bar_bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            if let Some(rect) = self.chat_button
+                && rect.x >= 0.0
+                && rect.x + rect.width <= width
+                && rect.y + rect.height <= height
+            {
+                pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
+                pass.set_pipeline(&self.chat_pipeline);
                 pass.draw(0..3, 0..1);
             }
         }
@@ -611,6 +638,15 @@ mod tests {
         assert_eq!(bar.display_at(x + 96.0, y), Some(2), "the last pixel");
         assert_eq!(bar.display_at(x - 1.0, y), None);
         assert_eq!(bar.display_at(x + 1.0, 500.0), None);
+    }
+
+    #[test]
+    fn the_chat_button_sits_left_of_what_is_there() {
+        let button = button_rect((1000, 800), 1.0);
+        let chat = chat_button_rect(button.x, button, 1.0).unwrap();
+        assert_eq!(chat.x + chat.width + 8.0, button.x);
+        assert_eq!((chat.y, chat.height), (button.y, button.height));
+        assert!(chat_button_rect(10.0, button, 1.0).is_none());
     }
 
     #[test]

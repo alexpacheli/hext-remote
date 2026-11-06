@@ -9,6 +9,8 @@
 #[cfg_attr(not(windows), allow(dead_code))] // the service is Windows-only for now
 mod agent;
 mod bench;
+#[cfg(any(windows, target_os = "macos"))]
+mod chat;
 mod host;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
 mod recent;

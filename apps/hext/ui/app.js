@@ -1,4 +1,4 @@
-// The app's pages. What comes from the other computer (names) only ever
+// The app's pages. What comes from the other computer (names, chat) only ever
 // goes in through textContent: it is text, never markup.
 "use strict";
 
@@ -111,6 +111,7 @@ const pages = {
     start() {
       $("end").addEventListener("click", () => invoke("end_session"));
       $("send").addEventListener("click", () => invoke("send_files"));
+      $("chat").addEventListener("click", () => invoke("open_host_chat"));
       document.body.addEventListener("mouseenter", () => this.unfold());
       document.body.addEventListener("mouseleave", () => this.foldIn(1500));
     },
@@ -157,6 +158,49 @@ const pages = {
       }
     },
   },
+
+  chat: {
+    source: "chat_view",
+    start() {
+      const send = () => {
+        const text = $("text").value;
+        if (text.trim()) {
+          $("text").value = "";
+          invoke("chat_send", { text });
+        }
+      };
+      $("write").addEventListener("submit", (event) => {
+        event.preventDefault();
+        send();
+      });
+      $("text").addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          send();
+        }
+      });
+    },
+    show(chat) {
+      const list = $("lines");
+      const atEnd = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+      $("peer").textContent = chat?.peer ?? "";
+      list.replaceChildren(
+        ...(chat?.lines ?? []).map(({ author, text }) => {
+          const line = document.createElement("li");
+          line.className = author;
+          line.textContent = text;
+          return line;
+        }),
+      );
+      if (atEnd) {
+        list.scrollTop = list.scrollHeight;
+      }
+      const live = chat?.live ?? false;
+      $("over").hidden = live;
+      $("text").disabled = !live;
+      $("write").querySelector("button").disabled = !live;
+    },
+  },
 };
 
 /** The computers accessed; a click fills in the ID. */
@@ -195,7 +239,7 @@ function showStatus(text, error = false) {
 async function main() {
   const page = pages[document.body.dataset.page];
   page.start();
-  const refresh = async () => page.show(await invoke("view"));
+  const refresh = async () => page.show(await invoke(page.source ?? "view"));
   await listen("changed", refresh);
   await refresh();
 }

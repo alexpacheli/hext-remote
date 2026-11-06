@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hext Remote: chat</title>
+    <link rel="stylesheet" href="app.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body data-page="chat">
+    <header id="peer"></header>
+    <p class="caution">Nunca passe senhas por aqui.</p>
+    <ol id="lines" aria-live="polite"></ol>
+    <p id="over" class="caution" hidden>A sessão terminou.</p>
+    <form id="write">
+      <textarea id="text" rows="2" maxlength="2000" aria-label="Mensagem" autofocus></textarea>
+      <button type="submit" class="primary">Enviar</button>
+    </form>
+  </body>
+</html>

@@ -246,7 +246,8 @@ body.folded .session .short {
   display: block;
 }
 
-body[data-page="bar"].folded #send {
+body[data-page="bar"].folded #send,
+body[data-page="bar"].folded #chat {
   display: none;
 }
 
@@ -257,6 +258,89 @@ body[data-page="bar"].folded button {
 body[data-page="bar"] button {
   flex: none;
   padding: 4px 12px;
+}
+
+/* The chat */
+
+body[data-page="chat"] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--bg);
+}
+
+body[data-page="chat"] header {
+  flex: none;
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.caution {
+  flex: none;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#lines {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#lines li {
+  max-width: 85%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+#lines .me {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+#lines .them {
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+#lines .app {
+  align-self: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#write {
+  flex: none;
+  flex-wrap: nowrap;
+  display: flex;
+  gap: 6px;
+}
+
+#text {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  resize: none;
+  background: var(--surface);
+  color: inherit;
 }
 
 /* The computers accessed */

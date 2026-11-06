@@ -21,6 +21,7 @@ use hext_codec::EncoderSettings;
 use hext_crypto::pake::Verifier;
 use hext_crypto::{FileKeyStore, load_or_create, machine_dir};
 use hext_net::EndpointConfig;
+use hext_proto::ChatText;
 use hext_proto::{PeerInfo, Permissions};
 use hext_session::files::{FileAccess, Transfer};
 use hext_session::host::{
@@ -665,6 +666,14 @@ impl Presence for Indicators {
 
     fn transfer(&self, transfer: &Transfer) {
         self.ui.transfer(transfer);
+    }
+
+    fn chat(&self, text: ChatText) -> bool {
+        self.ui.chat(text)
+    }
+
+    fn chat_out(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<ChatText>> {
+        self.ui.chat_out()
     }
 }
 
