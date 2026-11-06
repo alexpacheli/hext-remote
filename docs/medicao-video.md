@@ -141,6 +141,37 @@ continua igual, no mesmo protocolo. Para comparar com a taxa fixa, rode o host c
 - `não aceitou mudar a taxa`: o driver recusou. Confira também se `Mbps` em `envio:` acompanha a taxa pedida, porque um
   driver pode aceitar e ignorar.
 
+## A sétima medição
+
+Três rodadas seguidas no `DESKTOP-U6JQMAA`, pelo mesmo caminho, com o host reabrindo o Intel quando ele ignora a taxa.
+
+| | 14:23 adaptativa | 14:24 fixa | 14:25 adaptativa |
+| --- | --- | --- | --- |
+| Quadros por segundo, média | 53 | 58 | 58 |
+| Segundos abaixo de 30 quadros | 4 de 49 | 0 de 37 | 0 de 44 |
+| Tempo parado até o keyframe | 0,50 s | 0 | 0 |
+| Quadros perdidos | 1 | 0 | 0 |
+| Reaberturas do codificador | 7 | 0 | 2 |
+| Vídeo enviado, média | 2,7 Mbps | 7,7 Mbps | 7,3 Mbps |
+| Preso no controle de congestionamento | 3,3 s | 0,6 s | 0,1 s |
+| Perda no QUIC | 1,28% | 0,87% | 0,12% |
+| RTT mediano e máximo | 27 e 1018 ms | 17 e 71 ms | 19 e 256 ms |
+
+- **A taxa agora baixa de verdade:** com alvo de 1 Mbps saíram cerca de 2 Mbps, e o keyframe da sessão nova ficou entre
+  24 e 56 kB nas taxas baixas.
+- **Reabrir custa mais do que o diagnóstico mostrou:** na sessão real, com zero-copy, o quadro mais lento levou de 116 a
+  318 ms. Em `hext encoder-rates`, pela memória, foram 107 ms. Cada reabertura tira de 15 a 19 quadros daquele segundo.
+- **A reação chegou tarde na rede ruim:** às 14:23 o alvo começou a cair às :27 e o Intel só reabriu às :32, depois de
+  passar o pior (o RTT chegou a 1018 ms). Até o fim da sessão, 40 s depois, a taxa não tinha voltado a 8 Mbps.
+- **Uma medida isolada de RTT custou duas reaberturas:** às 14:25, um RTT de 256 ms em um segundo cortou a taxa e abriu
+  uma sessão para descer e outra para subir, sem necessidade.
+- **A taxa fixa aguentou rajadas:** às 14:24, com perdas de 72 e 137 pacotes em um segundo e janela de 21 kB, não perdeu
+  quadro. O RTT baixo manteve o envio.
+- **A parada de 0,5 s às 14:23** veio de um pacote que chegou 59 ms depois da desistência de 600 ms, perto de uma
+  reabertura. Os logs não bastam para dizer que ela foi a causa.
+
+A amostra é pequena e as redes não foram iguais, mas nesta rodada reabrir não trouxe ganho medido.
+
 ## A sexta medição
 
 Três rodadas seguidas no `DESKTOP-U6JQMAA`, com a mesma ação. E e G com taxa adaptativa, F com taxa fixa.
