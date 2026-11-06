@@ -27,9 +27,9 @@ use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMaxBitRate,
     CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode,
     CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
-    CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate,
-    IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown, IMFTransform,
-    METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
+    CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVEncVideoMinQP, CODECAPI_AVLowLatencyMode,
+    ICodecAPI, IMFActivate, IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown,
+    IMFTransform, METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY,
     MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
     MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE,
@@ -557,6 +557,12 @@ impl MfEncoder {
                 Instant::now(),
             );
         }
+    }
+
+    /// Whether the driver took `qp` as the new quality floor.
+    fn set_min_qp(&self, qp: u32) -> bool {
+        let codec = self.session.as_ref().and_then(|s| s.codec.as_ref());
+        codec.is_some_and(|codec| set(codec, &CODECAPI_AVEncVideoMinQP, u32_variant(qp)))
     }
 
     /// One try at encoding `image` with the current way (opening it if
@@ -1436,6 +1442,8 @@ enum Retarget {
     Keyframe,
     /// Closing the encoder and opening it at the new rate.
     Reopen,
+    /// No new rate: a worse quality floor, which costs no keyframe.
+    MinQp(u32),
 }
 
 /// Whether each hardware H.264 encoder follows a new rate while encoding: a
@@ -1457,6 +1465,9 @@ pub fn probe_rates(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecErr
             ("e também o buffer", Retarget::Buffer),
             ("e também um keyframe", Retarget::Keyframe),
             ("reabrindo o encoder", Retarget::Reopen),
+            ("qualidade mínima 30", Retarget::MinQp(30)),
+            ("qualidade mínima 36", Retarget::MinQp(36)),
+            ("qualidade mínima 42", Retarget::MinQp(42)),
         ] {
             results.push(ProbeResult {
                 encoder: name.clone(),
@@ -1522,7 +1533,9 @@ fn probe_rate(
     };
     encode(&mut encoder, SETTLE)?;
     let (before, _) = encode(&mut encoder, MEASURE)?;
-    encoder.set_bitrate(TARGET);
+    if !matches!(how, Retarget::MinQp(_)) {
+        encoder.set_bitrate(TARGET);
+    }
     match how {
         Retarget::Live => {}
         Retarget::Buffer => {
@@ -1533,19 +1546,32 @@ fn probe_rate(
         }
         Retarget::Keyframe => encoder.force_keyframe(),
         Retarget::Reopen => encoder.session = None,
+        Retarget::MinQp(qp) => {
+            if !encoder.set_min_qp(qp) {
+                return Err("o driver recusou".into());
+            }
+        }
     }
     let started = Instant::now();
     let (_, first) = encode(&mut encoder, 1)?;
     let took = started.elapsed();
     let (_, rest) = encode(&mut encoder, SETTLE)?;
     let (after, _) = encode(&mut encoder, MEASURE)?;
-    Ok(format!(
-        "{:.1} para {:.1} Mbps (alvo 1.0), 1º quadro em {} ms, maior {} kB",
+    let change = format!(
+        "{:.1} para {:.1} Mbps, 1º quadro em {} ms, maior {} kB",
         mbps(before),
         mbps(after),
         took.as_millis(),
         first.max(rest) / 1000
-    ))
+    );
+    if !matches!(how, Retarget::MinQp(_)) {
+        return Ok(format!("{change} (alvo 1.0)"));
+    }
+    // A floor that cannot be lifted again would be no use.
+    encoder.set_min_qp(0);
+    encode(&mut encoder, SETTLE)?;
+    let (back, _) = encode(&mut encoder, MEASURE)?;
+    Ok(format!("{change}, volta a {:.1} Mbps", mbps(back)))
 }
 
 /// Every hardware adapter, with a device on it (video support).
