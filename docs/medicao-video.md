@@ -99,3 +99,14 @@ host, 3 tentativas, a fila de datagramas de 64 kB e o registro de caminho e RTT.
 **Para a próxima rodada, olhe primeiro `caminho:` e `RTT`:** relay ou endereço `100.x` (Tailscale) em computadores
 na mesma rede mudam a conclusão. Compare também o total de pacotes perdidos com os `no caminho em uso`: a diferença
 é de caminhos testados e abandonados, não do vídeo.
+
+## A terceira medição
+
+Em 51 s de rede limpa: 17 de 36.181 pacotes perdidos (0,05%), nenhum quadro perdido, um único keyframe (o inicial),
+nada preso no controle de congestionamento e 9,95 Mbps de pico. A imagem ficou bem melhor para quem usou.
+
+Ela **não valida o reenvio**: nada foi reenviado, e o host rodou o build anterior, sem `caminho:` nem `RTT`. Mostra
+que, sem perda, o vídeo aguenta o estresse, e que a piora da segunda rodada veio da rede, ainda sem causa conhecida.
+
+Ficou uma queda sem relação com a rede: por cerca de 10 s (`:42` a `:51`) a `captura` teve só 7 a 11 imagens novas
+por segundo, com quadros de 70 a 90 kB e 0 ms de espera pela rede.
