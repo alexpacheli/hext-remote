@@ -181,7 +181,8 @@ NVIDIA não entrou: nesse notebook ela falha ao abrir (`Falha catastrófica`) e 
 
 Por isso o host passou a observar a saída: dois segundos seguidos 50% acima do alvo marcam o codificador como um que
 ignora a taxa. A partir daí, cada mudança de 25% ou mais abre uma sessão nova, com 5 s de intervalo. Cada sessão nova
-custa um keyframe e o tempo de abrir: no AMD, 410 ms e 16 kB a 1 Mbps. O número do Intel ainda falta medir.
+custa um keyframe e o tempo de abrir: a 1 Mbps, 107 ms e 13 kB no Intel, 410 ms e 16 kB no AMD. Um keyframe forçado sem
+reabrir, com o Intel ainda em 8 Mbps, tem 54 kB nesse mesmo teste.
 
 ## A quinta medição
 
