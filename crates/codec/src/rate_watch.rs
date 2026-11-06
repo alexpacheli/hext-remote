@@ -10,10 +10,15 @@ const WINDOW: Duration = Duration::from_secs(1);
 /// Windows over the target in a row: what an encoder sent before it obeyed
 /// fills one by itself.
 const OVER_WINDOWS: u32 = 2;
-/// Each new session sends a keyframe, the thing that stalls a bad network.
+/// How far over the target counts: a step down from 8 to 5.6 Mbps, with the
+/// encoder still at 8, must show.
+const OVER: f64 = 1.25;
+/// Each new session sends a keyframe and stops the capture for 100 to 300 ms.
 const REOPEN_GAP: Duration = Duration::from_secs(5);
 
 pub(crate) struct RateWatch {
+    /// The rate of the first session, which is as high as it goes.
+    max_bps: u32,
     /// The rate the session was opened with.
     session_bps: u32,
     /// Seen ignoring a new rate: from here on, only new sessions change it.
@@ -27,6 +32,7 @@ pub(crate) struct RateWatch {
 impl RateWatch {
     pub fn new(bitrate_bps: u32, now: Instant) -> Self {
         Self {
+            max_bps: bitrate_bps,
             session_bps: bitrate_bps,
             ignores: false,
             over: 0,
@@ -39,6 +45,7 @@ impl RateWatch {
     /// A session was opened at `bitrate_bps`, for whatever reason.
     pub fn opened(&mut self, bitrate_bps: u32, now: Instant) {
         *self = Self {
+            max_bps: self.max_bps,
             ignores: self.ignores,
             ..Self::new(bitrate_bps, now)
         };
@@ -52,7 +59,7 @@ impl RateWatch {
             return;
         }
         let bps = self.bytes as f64 * 8.0 / elapsed.as_secs_f64();
-        self.over = if bps > f64::from(target_bps) * 1.5 {
+        self.over = if bps > f64::from(target_bps) * OVER {
             self.over + 1
         } else {
             0
@@ -69,9 +76,10 @@ impl RateWatch {
     /// Whether a new session is worth its keyframe now.
     pub fn reopen_due(&self, target_bps: u32, now: Instant) -> bool {
         let (target, session) = (u64::from(target_bps), u64::from(self.session_bps));
-        self.ignores
-            && now.duration_since(self.opened) >= REOPEN_GAP
-            && (target * 4 < session * 3 || target * 4 > session * 5)
+        let down = target * 4 < session * 3;
+        // On the way up the pause comes on a good network, so big steps only.
+        let up = target >= session * 2 || (target_bps == self.max_bps && target * 4 > session * 5);
+        self.ignores && now.duration_since(self.opened) >= REOPEN_GAP && (down || up)
     }
 
     pub fn session_bps(&self) -> u32 {
@@ -158,7 +166,19 @@ mod tests {
         let now = run(&mut watch, 8, 1_000_000, 5, start);
         watch.opened(1_000_000, now);
         let later = now + SECOND * 5;
-        assert!(!watch.reopen_due(1_200_000, later));
-        assert!(watch.reopen_due(1_300_000, later));
+        assert!(!watch.reopen_due(1_900_000, later));
+        assert!(watch.reopen_due(2_000_000, later));
+    }
+
+    #[test]
+    fn the_full_rate_is_worth_a_smaller_step() {
+        let start = Instant::now();
+        let mut watch = RateWatch::new(8_000_000, start);
+        let now = run(&mut watch, 8, 5_600_000, 5, start);
+        assert!(watch.reopen_due(5_600_000, now));
+        watch.opened(5_600_000, now);
+        let later = now + SECOND * 5;
+        assert!(!watch.reopen_due(7_500_000, later));
+        assert!(watch.reopen_due(8_000_000, later));
     }
 }

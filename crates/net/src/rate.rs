@@ -23,10 +23,14 @@ const RTT_RISE: Duration = Duration::from_millis(100);
 /// much counts on its own.
 const LOSS_PERCENT: u64 = 10;
 
+/// Bad seconds in a row before going down: Wi-Fi has single bad seconds that
+/// do no harm, and on an encoder that must reopen each change has a price.
+const BAD_SECONDS: u32 = 2;
 /// What a bad second takes off, as a fraction.
 const DOWN: (u32, u32) = (7, 10);
-/// What a good second adds back, as a fraction.
-const UP: (u32, u32) = (11, 10);
+/// What a good second adds back, as a fraction. Once the network is good
+/// again, a blurred image is the only thing left to fix.
+const UP: (u32, u32) = (3, 2);
 /// Good seconds in a row before going up: going down again is what hurts.
 const QUIET: u32 = 5;
 
@@ -59,6 +63,8 @@ pub(crate) struct RateControl {
     min: u32,
     bitrate_bps: u32,
     warmup: u32,
+    /// Bad seconds in a row.
+    bad: u32,
     /// Good seconds in a row.
     quiet: u32,
     /// The best round trip on this path.
@@ -72,6 +78,7 @@ impl RateControl {
             min: MIN_BITRATE.min(max),
             bitrate_bps: max,
             warmup: WARMUP,
+            bad: 0,
             quiet: 0,
             base_rtt: None,
         }
@@ -94,12 +101,17 @@ impl RateControl {
         match trouble(second, base) {
             Some(why) => {
                 self.quiet = 0;
+                self.bad += 1;
+                if self.bad < BAD_SECONDS {
+                    return None;
+                }
                 // Held back, what went out is what the path carried.
                 let carried = (second.held >= HELD).then_some(second.bitrate_bps);
                 let target = scaled(self.bitrate_bps, DOWN).min(carried.unwrap_or(u32::MAX));
                 self.go_to(target, why)
             }
             None => {
+                self.bad = 0;
                 self.quiet += 1;
                 // A still screen proves nothing about a higher rate.
                 let using = second.bitrate_bps >= self.bitrate_bps / 2;
@@ -175,6 +187,12 @@ mod tests {
         }
     }
 
+    /// `second` twice: the first bad second changes nothing.
+    fn twice(rate: &mut RateControl, second: &Second) -> Option<Change> {
+        assert_eq!(rate.second(second), None);
+        rate.second(second)
+    }
+
     /// Past the warmup, with the best round trip known.
     fn warm() -> RateControl {
         let mut rate = RateControl::new(MAX);
@@ -196,14 +214,14 @@ mod tests {
     #[test]
     fn held_back_goes_down_to_what_the_path_carried() {
         let mut rate = warm();
-        let change = rate.second(&held(2_000_000)).unwrap();
+        let change = twice(&mut rate, &held(2_000_000)).unwrap();
         assert_eq!(change.bitrate_bps, 2_000_000);
     }
 
     #[test]
     fn a_keyframe_held_back_at_a_full_rate_still_takes_a_step_down() {
         let mut rate = warm();
-        let change = rate.second(&held(MAX * 2)).unwrap();
+        let change = twice(&mut rate, &held(MAX * 2)).unwrap();
         assert_eq!(change.bitrate_bps, 5_600_000);
     }
 
@@ -214,7 +232,21 @@ mod tests {
             rtt: Duration::from_millis(270),
             ..good()
         };
-        assert_eq!(rate.second(&second).unwrap().bitrate_bps, 5_600_000);
+        assert_eq!(twice(&mut rate, &second).unwrap().bitrate_bps, 5_600_000);
+    }
+
+    #[test]
+    fn a_single_bad_second_changes_nothing() {
+        let mut rate = warm();
+        let second = Second {
+            rtt: Duration::from_millis(256),
+            ..good()
+        };
+        for _ in 0..3 {
+            assert_eq!(rate.second(&second), None);
+            assert_eq!(rate.second(&good()), None);
+        }
+        assert_eq!(rate.bitrate_bps(), MAX);
     }
 
     #[test]
@@ -236,14 +268,14 @@ mod tests {
             sent: 1083,
             ..good()
         };
-        assert_eq!(rate.second(&second).unwrap().bitrate_bps, 5_600_000);
+        assert_eq!(twice(&mut rate, &second).unwrap().bitrate_bps, 5_600_000);
     }
 
     #[test]
     fn the_rate_stops_at_the_floor() {
         let mut rate = warm();
         assert_eq!(
-            rate.second(&held(170_000)).unwrap().bitrate_bps,
+            twice(&mut rate, &held(170_000)).unwrap().bitrate_bps,
             MIN_BITRATE
         );
         assert_eq!(rate.second(&held(170_000)), None);
@@ -252,11 +284,11 @@ mod tests {
     #[test]
     fn it_comes_back_after_quiet_seconds_and_stops_at_the_top() {
         let mut rate = warm();
-        rate.second(&held(MAX / 2));
+        twice(&mut rate, &held(MAX / 2));
         for _ in 1..QUIET {
             assert_eq!(rate.second(&good()), None);
         }
-        assert_eq!(rate.second(&good()).unwrap().bitrate_bps, 4_400_000);
+        assert_eq!(rate.second(&good()).unwrap().bitrate_bps, 6_000_000);
         while rate.bitrate_bps() < MAX {
             rate.second(&good()).unwrap();
         }
@@ -266,7 +298,7 @@ mod tests {
     #[test]
     fn a_still_screen_proves_nothing() {
         let mut rate = warm();
-        rate.second(&held(2_000_000));
+        twice(&mut rate, &held(2_000_000));
         let still = Second {
             bitrate_bps: 100_000,
             ..good()

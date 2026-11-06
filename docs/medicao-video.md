@@ -141,6 +141,17 @@ continua igual, no mesmo protocolo. Para comparar com a taxa fixa, rode o host c
 - `não aceitou mudar a taxa`: o driver recusou. Confira também se `Mbps` em `envio:` acompanha a taxa pedida, porque um
   driver pode aceitar e ignorar.
 
+## Ajuste depois da sétima medição
+
+`hext encoder-rates` também testou subir a qualidade mínima (`CODECAPI_AVEncVideoMinQP`) ao vivo. O Intel aceitou 30, 36 e
+42 e continuou em 8,1 Mbps. Sem jeito de mudar a taxa ao vivo, a reabertura ficou mais rara:
+
+- A taxa só cai depois de dois segundos ruins seguidos. O RTT isolado das 14:25 e as rajadas isoladas da taxa fixa não
+  cortariam nada; o problema das 14:23 cortaria um segundo depois do primeiro aviso.
+- Na volta, a taxa sobe 50% por segundo, não 10%.
+- Subindo, o Intel só reabre ao dobrar a taxa ou ao chegar à taxa cheia. Descendo, continua a 25%.
+- A saída 25% acima do alvo já marca o codificador, para o corte de 8 para 5,6 Mbps aparecer.
+
 ## A sétima medição
 
 Três rodadas seguidas no `DESKTOP-U6JQMAA`, pelo mesmo caminho, com o host reabrindo o Intel quando ele ignora a taxa.
