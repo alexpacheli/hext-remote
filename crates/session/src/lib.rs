@@ -4,6 +4,7 @@
 //! - [`client::start`]: video stream → decode → caller's callback, and the
 //!   caller's input events → input stream.
 
+mod chat_pace;
 pub mod client;
 pub mod files;
 pub mod host;

@@ -60,6 +60,18 @@ fn fs_leave(in: VsOut) -> @location(0) vec4<f32> {
     return paint(in.p, bracket(in.p, vec2<f32>(0.45, 0.25), 0.3));
 }
 
+// A speech bubble: the other person is a message away.
+@fragment
+fn fs_chat(in: VsOut) -> @location(0) vec4<f32> {
+    let p = in.p;
+    let bubble = abs(rounded(p + vec2<f32>(0.0, 0.1), vec2<f32>(0.75, 0.45)));
+    let tail = min(
+        segment(p, vec2<f32>(-0.3, 0.35), vec2<f32>(-0.45, 0.7)),
+        segment(p, vec2<f32>(-0.45, 0.7), vec2<f32>(0.05, 0.35)),
+    );
+    return paint(p, min(bubble, tail));
+}
+
 // How many displays there are, and the one shown (from 0).
 @group(0) @binding(0) var<uniform> displays: vec2<u32>;
 

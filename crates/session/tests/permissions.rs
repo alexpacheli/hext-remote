@@ -1,7 +1,7 @@
 //! What the host's user decides holds on the host: the permissions granted
 //! and the button that ends a session.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use hext_codec::DecoderPreference;
 use hext_crypto::DeviceKey;
 use hext_net::EndpointConfig;
 use hext_proto::{
-    Displays, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions, VideoFrame,
+    ChatText, Displays, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions, VideoFrame,
 };
 use hext_session::host::{ActiveSession, BoxFuture, Desktop, HostConfig, Presence, Screen};
 use hext_session::{Grant, SessionCodes, client, host};
@@ -98,14 +98,49 @@ impl Screen for CountingScreen {
 }
 
 /// An indicator keeping what it was told.
-#[derive(Default)]
 struct Indicator {
+    /// What the user read of the chat.
+    read: Mutex<Vec<ChatText>>,
+    chat_in: Notify,
+    /// Nobody at this computer.
+    nobody: AtomicBool,
+    chat_tx: mpsc::UnboundedSender<ChatText>,
+    chat_rx: Mutex<Option<mpsc::UnboundedReceiver<ChatText>>>,
     shown: Mutex<Option<ActiveSession>>,
     end: Mutex<Option<Arc<Notify>>>,
     ended: AtomicU32,
 }
 
+impl Default for Indicator {
+    fn default() -> Self {
+        let (chat_tx, chat_rx) = mpsc::unbounded_channel();
+        Self {
+            read: Mutex::default(),
+            chat_in: Notify::new(),
+            nobody: AtomicBool::new(false),
+            chat_tx,
+            chat_rx: Mutex::new(Some(chat_rx)),
+            shown: Mutex::default(),
+            end: Mutex::default(),
+            ended: AtomicU32::default(),
+        }
+    }
+}
+
 impl Presence for Indicator {
+    fn chat(&self, text: ChatText) -> bool {
+        if self.nobody.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.read.lock().unwrap().push(text);
+        self.chat_in.notify_one();
+        true
+    }
+
+    fn chat_out(&self) -> Option<mpsc::UnboundedReceiver<ChatText>> {
+        self.chat_rx.lock().unwrap().take()
+    }
+
     fn started(&self, session: &ActiveSession) -> Arc<Notify> {
         *self.shown.lock().unwrap() = Some(session.clone());
         let end = Arc::new(Notify::new());
@@ -287,6 +322,45 @@ async fn control_needs_the_permission() {
     let refused = session_with(Permissions::VIEW_ONLY).await;
     assert_eq!(try_input(&refused).await, 0);
     assert!(!refused.session.is_finished(), "the session goes on");
+}
+
+/// The next thing the chat brings.
+async fn chat_news(chat: &mut mpsc::Receiver<client::ChatNews>) -> client::ChatNews {
+    tokio::time::timeout(Duration::from_secs(5), chat.recv())
+        .await
+        .expect("the chat answers")
+        .expect("the session is on")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_chat_goes_both_ways_even_if_only_seeing() {
+    let mut running = session_with(Permissions::VIEW_ONLY).await;
+    let mut chat = running.session.chat().unwrap();
+    assert!(running.session.chat().is_none(), "once");
+
+    let text = ChatText::new("Pode abrir o programa?").unwrap();
+    running.session.send_chat(text.clone());
+    let told = tokio::time::timeout(Duration::from_secs(5), running.indicator.chat_in.notified());
+    told.await.expect("the user reads it");
+    assert_eq!(running.indicator.read.lock().unwrap().clone(), [text]);
+
+    let answer = ChatText::new("Já abri").unwrap();
+    let out = running.indicator.chat_tx.clone();
+    out.send(answer.clone()).unwrap();
+    assert_eq!(chat_news(&mut chat).await, client::ChatNews::Text(answer));
+    assert_eq!(try_input(&running).await, 0, "and the mouse stays out");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_with_no_one_there_is_answered_so() {
+    let mut running = session_with(Permissions::CONTROL).await;
+    let mut chat = running.session.chat().unwrap();
+    running.indicator.nobody.store(true, Ordering::SeqCst);
+    running
+        .session
+        .send_chat(ChatText::new("Tem alguém aí?").unwrap());
+    assert_eq!(chat_news(&mut chat).await, client::ChatNews::NoOne);
+    assert!(!running.session.is_finished(), "the session goes on");
 }
 
 /// Waits for the host to tell `displays`.

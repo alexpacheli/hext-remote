@@ -4,7 +4,7 @@
 //! tokio runtime and decoding on its own thread. Each decoded frame is
 //! handed over through `latest` and the event loop is woken to draw it.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,8 +16,8 @@ use hext_codec::{DecoderPreference, YuvFrame};
 use hext_input::keymap::{self, CommandKey};
 use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::Os;
-use hext_proto::{Displays, Hello, InputEvent, MouseButton, PeerInfo, RejectReason};
-use hext_render::{ButtonAction, DisplayBar, Renderer, VideoRect, button_rect};
+use hext_proto::{ChatText, Displays, Hello, InputEvent, MouseButton, PeerInfo, RejectReason};
+use hext_render::{ButtonAction, DisplayBar, Renderer, VideoRect, button_rect, chat_button_rect};
 use hext_session::client::{self, ClientHandle};
 use hext_session::files::{Confirm, OwnFiles, Stage, Transfer, size_text};
 use hext_session::{NETWORK_GRACE, ResumeToken, SessionError};
@@ -60,6 +60,8 @@ enum UserEvent {
     Back(Box<Result<ClientHandle>>),
     /// News of the host's displays.
     Displays,
+    /// The person wrote in the chat window.
+    ChatOut(ChatText),
     /// News of a file.
     Transfer(Transfer),
     /// The host wants to send this file: receive it?
@@ -136,6 +138,9 @@ pub fn run(args: ViewArgs) -> Result<()> {
         tokio::spawn(share_clipboard(&mut session));
         tokio::spawn(share_files(&mut session, proxy.clone()));
         tokio::spawn(hear_displays(&session, proxy.clone()));
+        if args.report_to_ui {
+            tokio::spawn(hear_chat(&mut session));
+        }
         anyhow::Ok(session)
     })?;
     info!(
@@ -151,6 +156,7 @@ pub fn run(args: ViewArgs) -> Result<()> {
             crate::ui_link::VIEWER_CONNECTED,
             crate::signaling::shown_name(&session.host.device_name)
         );
+        listen_to_ui(proxy.clone());
     }
 
     let host_is_mac = session.host.os == Os::MacOs;
@@ -195,6 +201,8 @@ pub fn run(args: ViewArgs) -> Result<()> {
         display_bar: None,
         switching: None,
         picture: None,
+        chat_link: args.report_to_ui,
+        chat_button: None,
         last_title: Instant::now(),
     };
     event_loop.run_app(&mut app)?;
@@ -251,6 +259,10 @@ struct Viewer {
     switching: Option<(u8, Instant)>,
     /// The display in the picture on screen.
     picture: Option<u8>,
+    /// Opened by the interface, whose windows hold the chat.
+    chat_link: bool,
+    /// The chat button on screen.
+    chat_button: Option<VideoRect>,
     last_title: Instant,
 }
 
@@ -449,12 +461,15 @@ impl Viewer {
         // (As many as the shortcut reaches, whatever the host says.)
         let buttons = count.min(9).into();
         let bar = DisplayBar::new(rect, buttons, current.into(), scale).filter(|_| count > 1);
+        let left = bar.map_or(rect.x, |bar| bar.rect.x);
+        let chat = chat_button_rect(left, rect, scale).filter(|_| self.chat_link);
         // The buttons call for each other: all up, all down.
-        let called = bar.map_or(rect, |bar| VideoRect {
-            x: bar.rect.x,
-            width: rect.x + rect.width - bar.rect.x,
+        let left = chat.map_or(left, |chat| chat.x);
+        let called = VideoRect {
+            x: left,
+            width: rect.x + rect.width - left,
             ..rect
-        });
+        };
         let near = self
             .cursor
             .is_some_and(|(x, y)| button_called(called, self.button.is_some(), x, y));
@@ -466,12 +481,15 @@ impl Viewer {
         let shown = near || self.button_hint.is_some();
         let button = shown.then_some((action, rect));
         let bar = bar.filter(|_| shown);
-        if self.button != button || self.display_bar != bar {
+        let chat = chat.filter(|_| shown);
+        if self.button != button || self.display_bar != bar || self.chat_button != chat {
             self.button = button;
             self.display_bar = bar;
+            self.chat_button = chat;
             if let Some(renderer) = &mut self.renderer {
                 renderer.set_button(button);
                 renderer.set_display_bar(bar);
+                renderer.set_chat_button(chat);
             }
             self.draw(false);
         }
@@ -482,6 +500,14 @@ impl Viewer {
         let (x, y) = self.cursor?;
         let index = self.display_bar?.display_at(x, y)?;
         u8::try_from(index).ok()
+    }
+
+    /// Whether the mouse is on the chat button.
+    fn on_chat_button(&self) -> bool {
+        match (self.chat_button, self.cursor) {
+            (Some(rect), Some((x, y))) => rect.contains(x, y, 0.0),
+            _ => false,
+        }
     }
 
     /// Whether the mouse is on the button.
@@ -611,6 +637,9 @@ impl ApplicationHandler<UserEvent> for Viewer {
                         .spawn(share_files(&mut session, self.proxy.clone()));
                     self.runtime
                         .spawn(hear_displays(&session, self.proxy.clone()));
+                    if self.chat_link {
+                        self.runtime.spawn(hear_chat(&mut session));
+                    }
                     // The host starts over on a display of its choosing: back
                     // to where this was. (If it is gone, nothing changes.)
                     let index = self.displays.current;
@@ -629,6 +658,10 @@ impl ApplicationHandler<UserEvent> for Viewer {
             },
             // (Taken right after this, as after any event.)
             UserEvent::Displays => {}
+            UserEvent::ChatOut(text) => match &self.session {
+                Some(session) => session.send_chat(text),
+                None => tell_ui(crate::ui_link::VIEWER_CHAT_NO_ONE),
+            },
             UserEvent::Transfer(transfer) => {
                 let until = (!matches!(transfer.stage, Stage::Going { .. }))
                     .then(|| Instant::now() + TRANSFER_SHOWN);
@@ -678,6 +711,11 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     if let Some(index) = self.on_display_bar().filter(|_| pressed) {
                         self.button_pressed = true;
                         self.select_display(index);
+                        return;
+                    }
+                    if pressed && self.on_chat_button() {
+                        self.button_pressed = true;
+                        tell_ui(crate::ui_link::VIEWER_CHAT_OPEN);
                         return;
                     }
                     if pressed && self.on_button() {
@@ -755,6 +793,16 @@ impl ApplicationHandler<UserEvent> for Viewer {
                 {
                     self.local_key = Some(code);
                     self.select_display(index);
+                    return;
+                }
+                // Ctrl+Alt+C: the chat, where the interface can show it.
+                if event.state == ElementState::Pressed
+                    && code == KeyCode::KeyC
+                    && self.chat_link
+                    && self.ctrl_alt()
+                {
+                    self.local_key = Some(code);
+                    tell_ui(crate::ui_link::VIEWER_CHAT_OPEN);
                     return;
                 }
                 // Ctrl+Alt+Enter: full screen, and back.
@@ -863,6 +911,41 @@ fn hear_displays(
             let _ = proxy.send_event(UserEvent::Displays);
         }
     }
+}
+
+/// Hands the interface what the chat brings, for as long as the session lasts.
+fn hear_chat(session: &mut ClientHandle) -> impl Future<Output = ()> + Send + 'static {
+    let chat = session.chat();
+    async move {
+        let Some(mut chat) = chat else { return };
+        while let Some(news) = chat.recv().await {
+            match news {
+                client::ChatNews::Text(text) => {
+                    tell_ui(&crate::ui_link::viewer_chat_line(&text));
+                }
+                client::ChatNews::NoOne => tell_ui(crate::ui_link::VIEWER_CHAT_NO_ONE),
+            }
+        }
+    }
+}
+
+/// A line for the interface that opened this viewer. If it is gone, nobody
+/// is waiting: the session goes on. (`println!` would stop it right there.)
+fn tell_ui(line: &str) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}").and_then(|()| out.flush());
+}
+
+/// Takes what the person writes in the interface's chat window, on a thread
+/// that may wait for as long as the interface stays quiet.
+fn listen_to_ui(proxy: EventLoopProxy<UserEvent>) {
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines().map_while(std::result::Result::ok) {
+            if let Some(text) = crate::ui_link::chat_of_json(&line) {
+                let _ = proxy.send_event(UserEvent::ChatOut(text));
+            }
+        }
+    });
 }
 
 /// Tells the window when this session's connection ends.

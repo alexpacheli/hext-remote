@@ -10,13 +10,15 @@
 //! Windows are made when needed: this stays running in every session of
 //! an installed computer, and an idle webview is not cheap.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hext_proto::Permissions;
+use hext_proto::{ChatText, Permissions};
 use hext_signal::DeviceId;
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -30,8 +32,12 @@ use tracing::warn;
 use zeroize::Zeroizing;
 
 use crate::agent::{read_msg, write_msg};
+use crate::chat::{Author, Chat, HOST_CHAT};
 use crate::recent::{Computer, Recent};
-use crate::ui_link::{FromUi, HOST_LOCKED, SessionView, ToUi, UiHub, VIEWER_CONNECTED};
+use crate::ui_link::{
+    FromUi, HOST_LOCKED, SessionView, ToUi, UiHub, VIEWER_CHAT_NO_ONE, VIEWER_CHAT_OPEN,
+    VIEWER_CONNECTED, chat_json, chat_of_viewer_line,
+};
 
 /// Tells the pages to read [`View`] again.
 const CHANGED: &str = "changed";
@@ -100,6 +106,11 @@ struct Shared {
     to_host: mpsc::UnboundedSender<FromUi>,
     /// The sessions are the service's, not this process's.
     managed: bool,
+    /// The conversations, by the label of their window.
+    chats: Mutex<HashMap<String, Chat>>,
+    /// Where each viewer running takes its messages, by that same label.
+    viewers: Mutex<HashMap<String, ChildStdin>>,
+    next_viewer: AtomicU64,
 }
 
 impl Shared {
@@ -250,6 +261,39 @@ fn open_bar(app: &AppHandle) {
     });
 }
 
+/// The chat window `label`. A message must not take the keyboard from what
+/// the person is typing, or a text could land in the conversation, or the
+/// other way around: only asking for the window gives it `focus`.
+fn open_chat(app: &AppHandle, label: String, focus: bool) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let chat = window(&app, &label, "chat.html", |builder| {
+            builder
+                .title("Hext Remote: chat")
+                .inner_size(340.0, 420.0)
+                .min_inner_size(260.0, 260.0)
+                .always_on_top(true)
+                .focused(focus)
+        });
+        let Some(chat) = chat else { return };
+        if focus {
+            let _ = chat.show();
+            let _ = chat.unminimize();
+            let _ = chat.set_focus();
+        } else if !chat.is_focused().unwrap_or(true) {
+            let _ = chat.request_user_attention(Some(tauri::UserAttentionType::Informational));
+        }
+    });
+}
+
+/// Who a session on this computer is with.
+fn peer_of(session: &SessionView) -> String {
+    match &session.id {
+        Some(id) => format!("{} (ID {id})", session.name),
+        None => session.name.clone(),
+    }
+}
+
 /// Closes a window without passing through its close button.
 fn dismiss(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
@@ -298,6 +342,14 @@ fn received(app: &AppHandle, msg: ToUi) {
             }
         }
         ToUi::SessionStarted(session) => {
+            let mut chats = shared.chats.lock().expect("lock");
+            if let Some(chat) = chats.get_mut(HOST_CHAT)
+                && !chat.stays_for(&peer_of(&session), session.id.is_some())
+            {
+                chats.remove(HOST_CHAT);
+                dismiss(app, HOST_CHAT);
+            }
+            drop(chats);
             view.session = Some(session);
             view.sessions += 1;
             open_bar(app);
@@ -306,6 +358,9 @@ fn received(app: &AppHandle, msg: ToUi) {
             view.session = None;
             view.transfer = None;
             dismiss(app, "bar");
+            if let Some(chat) = shared.chats.lock().expect("lock").get_mut(HOST_CHAT) {
+                chat.live = false;
+            }
         }
         ToUi::Transfer {
             text,
@@ -316,6 +371,18 @@ fn received(app: &AppHandle, msg: ToUi) {
             view.transfer_news += u64::from(news);
             if finished {
                 forget_transfer(app.clone(), view.transfer_news);
+            }
+        }
+        ToUi::Chat(text) => {
+            if let Some(session) = &view.session {
+                shared
+                    .chats
+                    .lock()
+                    .expect("lock")
+                    .entry(HOST_CHAT.into())
+                    .or_insert_with(|| Chat::new(peer_of(session)))
+                    .push(Author::Them, text.into());
+                open_chat(app, HOST_CHAT.into(), false);
             }
         }
     }
@@ -496,6 +563,61 @@ fn fold_bar(window: WebviewWindow, folded: bool) {
     let _ = window.set_position(PhysicalPosition::new(x, position.y));
 }
 
+/// The conversation of this chat window.
+#[tauri::command]
+fn chat_view(window: WebviewWindow, shared: State<'_, Shared>) -> Option<Chat> {
+    let chats = shared.chats.lock().expect("lock");
+    chats.get(window.label()).cloned()
+}
+
+/// Sends what the person wrote in this chat window.
+#[tauri::command(async)]
+fn chat_send(app: AppHandle, window: WebviewWindow, shared: State<'_, Shared>, text: String) {
+    let Some(text) = ChatText::new(&text) else {
+        return;
+    };
+    let label = window.label();
+    let live = |chats: &HashMap<String, Chat>| chats.get(label).is_some_and(|chat| chat.live);
+    if !live(&shared.chats.lock().expect("lock")) {
+        return;
+    }
+    // (With no lock held: a viewer that stopped reading holds only this up.)
+    let sent = if label == HOST_CHAT {
+        shared.send(FromUi::Chat(text.clone()));
+        true
+    } else {
+        let mut viewers = shared.viewers.lock().expect("lock");
+        viewers
+            .get_mut(label)
+            .is_some_and(|viewer| writeln!(viewer, "{}", chat_json(&text)).is_ok())
+    };
+    if let Some(chat) = shared.chats.lock().expect("lock").get_mut(label) {
+        if sent {
+            chat.push(Author::Me, text.into());
+        } else {
+            chat.push(Author::App, "Não foi possível enviar.".into());
+        }
+    }
+    changed(&app);
+}
+
+/// The Chat button of the bar.
+#[tauri::command(async)]
+fn open_host_chat(app: AppHandle, window: WebviewWindow, shared: State<'_, Shared>) {
+    if window.label() != "bar" {
+        return;
+    }
+    let session = shared.view.lock().expect("lock").session.clone();
+    if let Some(session) = session {
+        let mut chats = shared.chats.lock().expect("lock");
+        chats
+            .entry(HOST_CHAT.into())
+            .or_insert_with(|| Chat::new(peer_of(&session)));
+        drop(chats);
+        open_chat(&app, HOST_CHAT.into(), true);
+    }
+}
+
 #[tauri::command]
 fn end_session(window: WebviewWindow, shared: State<'_, Shared>) {
     if window.label() == "bar" {
@@ -589,6 +711,11 @@ fn open_viewer(app: AppHandle, id: DeviceId, password: Option<Zeroizing<String>>
     // Not the key the portable host is using: our relay serves one
     // connection per key, so the two would keep knocking each other off.
     let key = hext_crypto::config_dir()?.join("viewer.key");
+    let number = app
+        .state::<Shared>()
+        .next_viewer
+        .fetch_add(1, Ordering::Relaxed);
+    let label = format!("chat-viewer-{number}");
     let mut command = Command::new(std::env::current_exe()?);
     command
         .arg("view")
@@ -596,11 +723,7 @@ fn open_viewer(app: AppHandle, id: DeviceId, password: Option<Zeroizing<String>>
         .arg("--device-key")
         .arg(key)
         .arg("--report-to-ui")
-        .stdin(if password.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
@@ -614,19 +737,46 @@ fn open_viewer(app: AppHandle, id: DeviceId, password: Option<Zeroizing<String>>
         command.arg("--password-stdin");
     }
     let mut child = command.spawn().context("iniciar o visualizador")?;
-    if let (Some(password), Some(mut stdin)) = (&password, child.stdin.take()) {
+    let mut stdin = child.stdin.take().context("entrada do visualizador")?;
+    if let Some(password) = &password {
         writeln!(stdin, "{}", password.as_str()).context("passar a senha ao visualizador")?;
     }
+    let shared = app.state::<Shared>();
+    let mut viewers = shared.viewers.lock().expect("lock");
+    viewers.insert(label.clone(), stdin);
+    drop(viewers);
     let stdout = child.stdout.take().context("saída do visualizador")?;
     let stderr = child.stderr.take().context("erros do visualizador")?;
 
     let connected = app.clone();
+    let chat_label = label.clone();
     std::thread::spawn(move || {
+        let in_chat = |author, text: String| {
+            let shared = connected.state::<Shared>();
+            if let Some(chat) = shared.chats.lock().expect("lock").get_mut(&chat_label) {
+                chat.push(author, text);
+            }
+            changed(&connected);
+        };
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
             if let Some(name) = line.strip_prefix(VIEWER_CONNECTED) {
+                let chat = Chat::new(name.trim().to_owned());
+                let shared = connected.state::<Shared>();
+                let mut chats = shared.chats.lock().expect("lock");
+                chats.insert(chat_label.clone(), chat);
+                drop(chats);
                 remember(&connected, &id.to_string(), name.trim());
                 changed(&connected);
+            } else if line == VIEWER_CHAT_OPEN {
+                open_chat(&connected, chat_label.clone(), true);
+            } else if line == VIEWER_CHAT_NO_ONE {
+                let text = "Ninguém recebeu: não há usuário no computador, ou a conexão caiu.";
+                in_chat(Author::App, text.into());
+                open_chat(&connected, chat_label.clone(), false);
+            } else if let Some(text) = chat_of_viewer_line(&line) {
+                in_chat(Author::Them, text.into());
+                open_chat(&connected, chat_label.clone(), false);
             } else if line == HOST_LOCKED {
                 connected
                     .state::<Shared>()
@@ -652,7 +802,12 @@ fn open_viewer(app: AppHandle, id: DeviceId, password: Option<Zeroizing<String>>
                 message: "A conexão terminou com um erro.".into(),
             },
         };
-        app.state::<Shared>().view.lock().expect("lock").viewer = state;
+        let shared = app.state::<Shared>();
+        shared.view.lock().expect("lock").viewer = state;
+        shared.viewers.lock().expect("lock").remove(&label);
+        if let Some(chat) = shared.chats.lock().expect("lock").get_mut(&label) {
+            chat.live = false;
+        }
         changed(&app);
     });
     Ok(())
@@ -697,6 +852,9 @@ pub fn run(link: Link) -> Result<()> {
             }),
             to_host,
             managed,
+            chats: Mutex::default(),
+            viewers: Mutex::default(),
+            next_viewer: AtomicU64::new(1),
         })
         .invoke_handler(tauri::generate_handler![
             view,
@@ -704,6 +862,9 @@ pub fn run(link: Link) -> Result<()> {
             end_session,
             fold_bar,
             send_files,
+            chat_view,
+            chat_send,
+            open_host_chat,
             connect,
             forget
         ])
@@ -751,7 +912,15 @@ pub fn run(link: Link) -> Result<()> {
             label,
             event: WindowEvent::Destroyed,
             ..
-        } => reopen(app, &label),
+        } => {
+            reopen(app, &label);
+            // Closed for good: what was said goes with it.
+            let shared = app.state::<Shared>();
+            let mut chats = shared.chats.lock().expect("lock");
+            if chats.get(&label).is_some_and(|chat| !chat.live) {
+                chats.remove(&label);
+            }
+        }
         _ => {}
     });
     Ok(())

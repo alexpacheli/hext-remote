@@ -16,12 +16,13 @@ use hext_input::Area;
 use hext_net::video::{LOG_TARGET, ResendRequest, VideoSender};
 use hext_net::{Admission, Connection, ConnectionError, NetError};
 use hext_proto::{
-    Control, Displays, ENDED_ON_HOST, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions,
-    RejectReason, StreamKind, VideoFrame,
+    ChatText, Control, Displays, ENDED_ON_HOST, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo,
+    Permissions, RejectReason, StreamKind, VideoFrame,
 };
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
+use crate::chat_pace::ChatPace;
 use crate::files::{self, Direction, FileAccess, FileEnd, Stage, Tell, Transfer};
 use crate::{KeptResume, Lockout, Result, ResumeTokens, SessionError, codes_match};
 
@@ -120,6 +121,16 @@ pub trait Presence: Send + Sync {
     }
     /// How a file is going.
     fn transfer(&self, _transfer: &Transfer) {}
+    /// A message from the viewer, for the host's user; whether someone is
+    /// there to read it.
+    fn chat(&self, _text: ChatText) -> bool {
+        false
+    }
+    /// What the host's user writes during the session started last. Once for
+    /// each session.
+    fn chat_out(&self) -> Option<mpsc::UnboundedReceiver<ChatText>> {
+        None
+    }
 }
 
 /// The session on the indicator, until dropped.
@@ -167,6 +178,16 @@ pub trait Screen: Send {
     }
     /// Stops streaming, releasing any key or button still held.
     fn close(self: Box<Self>) -> BoxFuture<'static, ()>;
+}
+
+/// The next message of the host's user; with none to come, this waits on.
+async fn next_chat(chat: &mut Option<mpsc::UnboundedReceiver<ChatText>>) -> ChatText {
+    if let Some(chat) = chat
+        && let Some(text) = chat.recv().await
+    {
+        return text;
+    }
+    std::future::pending().await
 }
 
 /// The next news of [`Screen::displays`]; with none to come, this waits on.
@@ -672,6 +693,10 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         ),
         confirm: None,
     };
+    let mut chat_out = config
+        .presence
+        .as_ref()
+        .and_then(|presence| presence.chat_out());
     let mut input = tokio::spawn(receive_input(
         conn.clone(),
         screen.clone(),
@@ -692,6 +717,7 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     let mut lost = false;
     // Once: the system refuses a second restart while one is under way.
     let mut restarting = false;
+    let mut chat_pace = ChatPace::new();
 
     let result = loop {
         tokio::select! {
@@ -733,6 +759,19 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                         screen.select_display(index.into());
                     }
                 }
+                // It takes no permission either: the host's user is who reads
+                // it, and who can end the session.
+                Ok(Control::Chat { text }) => {
+                    if !text.is_empty() && chat_pace.allows(Instant::now()) {
+                        let heard = config
+                            .presence
+                            .as_ref()
+                            .is_some_and(|presence| presence.chat(text));
+                        if !heard && let Err(e) = control.send(&Control::ChatNoOne).await {
+                            break Err(e.into());
+                        }
+                    }
+                }
                 Ok(other) => debug!("mensagem inesperada: {other:?}"),
                 // A peer that left is a clean end; anything else is an error.
                 Err(e) if e.is_peer_closed() => break Ok(()),
@@ -745,6 +784,11 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             }
             Some((id, outcome)) = file_outcomes.recv() => {
                 if let Err(e) = control.send(&Control::FileAnswer { id, outcome }).await {
+                    break Err(e.into());
+                }
+            }
+            text = next_chat(&mut chat_out) => {
+                if let Err(e) = control.send(&Control::Chat { text }).await {
                     break Err(e.into());
                 }
             }

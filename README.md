@@ -155,6 +155,10 @@ inteira sem distorcer. Levar o mouse até a borda de cima, no centro, mostra um 
 outro computador tiver mais de um monitor, os botões numerados aparecem ao lado desse botão: o 1 é o monitor
 principal, e os outros seguem da esquerda para a direita. **Ctrl+Alt+1..9** faz o mesmo.
 
+Para conversar durante a sessão, o técnico usa o botão com um balão ou **Ctrl+Alt+C**, e quem está no outro
+computador usa o botão **Chat** da barra de sessão. A janela abre sozinha quando chega uma mensagem, sem tirar
+o foco. O chat funciona nas conexões abertas pela tela inicial do app, e as mensagens não ficam salvas.
+
 ## Testar: controlar o Mac a partir do Windows
 
 1. **No Mac**, no Terminal: `./HextRemote host`.
