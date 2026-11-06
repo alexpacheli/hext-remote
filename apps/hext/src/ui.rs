@@ -228,6 +228,8 @@ fn open_ask(app: &AppHandle) {
 
 /// The bar: on top of everything for as long as the session lasts, at the
 /// top of the main screen. It takes no focus from what the user is doing.
+/// It is for the user: left out of the picture, it covers nothing for the
+/// technician.
 fn open_bar(app: &AppHandle) {
     const WIDTH: f64 = BAR_OPEN.0;
     let app = app.clone();
@@ -243,6 +245,7 @@ fn open_bar(app: &AppHandle) {
                 .always_on_top(true)
                 .skip_taskbar(true)
                 .focused(false)
+                .content_protected(true)
         });
         let Some(bar) = bar else {
             // A session must not go on without its indicator.
