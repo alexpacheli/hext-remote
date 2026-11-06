@@ -12,7 +12,7 @@ use hext_codec::EncoderSettings;
 use hext_crypto::PublicKey;
 use hext_crypto::pake::Verifier;
 use hext_input::Area;
-use hext_net::video::VideoSender;
+use hext_net::video::{LOG_TARGET, ResendRequest, VideoSender};
 use hext_net::{Admission, Connection, ConnectionError, NetError};
 use hext_proto::{
     Control, ENDED_ON_HOST, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions,
@@ -516,14 +516,20 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // Video goes out as datagrams with FEC (see `hext_net::video`).
     let video = conn.clone();
     let bitrate = config.desktop.bitrate_bps();
+    // A few slots: a viewer asking for more than this is past saving.
+    let (resend_tx, mut resend_rx) = mpsc::channel::<ResendRequest>(32);
     let mut writer = tokio::spawn(async move {
         let mut sender = VideoSender::new(bitrate);
         loop {
-            match tokio::time::timeout(IDLE_NOTICE, frames_rx.recv()).await {
-                Ok(Some(frame)) => sender.send(&video, &frame).await?,
-                Ok(None) => return Ok::<_, NetError>(()),
-                // A still screen: let the viewer check it has the last frame.
-                Err(_) => sender.send_idle(&video).await?,
+            tokio::select! {
+                biased;
+                Some(request) = resend_rx.recv() => sender.resend(&video, &request).await?,
+                frame = tokio::time::timeout(IDLE_NOTICE, frames_rx.recv()) => match frame {
+                    Ok(Some(frame)) => sender.send(&video, &frame, &mut resend_rx).await?,
+                    Ok(None) => return Ok::<_, NetError>(()),
+                    // A still screen: let the viewer check it has the last frame.
+                    Err(_) => sender.send_idle(&video).await?,
+                },
             }
         }
     });
@@ -579,6 +585,9 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                     if let Some(screen) = screen.lock().expect("lock").as_ref() {
                         screen.request_keyframe();
                     }
+                }
+                Ok(Control::ResendVideo { frame, packets }) => {
+                    let _ = resend_tx.try_send(ResendRequest { frame, packets });
                 }
                 Ok(Control::Bye) => {
                     // Closing here is what lets the client's `bye()` return.
@@ -725,6 +734,51 @@ fn restart(config: &HostConfig, session: &ActiveSession, token: Option<&crate::T
     }
 }
 
+/// What the capture did in a second, for the log (`hext_video=debug`): when
+/// the frame rate falls and the network was not busy, this says why.
+struct CaptureReport {
+    since: Instant,
+    /// Images that differed from the one before.
+    changed: u32,
+    /// Images encoded, and those the encoder held back.
+    encoded: u32,
+    skipped: u32,
+    /// The longest encode, and the time waiting for the network to take
+    /// frames.
+    longest_encode: Duration,
+    network: Duration,
+}
+
+impl CaptureReport {
+    fn new() -> Self {
+        Self {
+            since: Instant::now(),
+            changed: 0,
+            encoded: 0,
+            skipped: 0,
+            longest_encode: Duration::ZERO,
+            network: Duration::ZERO,
+        }
+    }
+
+    fn roll(&mut self) {
+        if self.since.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        debug!(
+            target: LOG_TARGET,
+            "captura: {} imagens novas, {} codificadas (a mais lenta em {} ms), {} seguradas pelo \
+             codificador, {} ms esperando a rede",
+            self.changed,
+            self.encoded,
+            self.longest_encode.as_millis(),
+            self.skipped,
+            self.network.as_millis(),
+        );
+        *self = Self::new();
+    }
+}
+
 fn capture_loop(
     config: &CaptureSettings,
     shared: &Shared,
@@ -755,8 +809,10 @@ fn capture_loop(
     let mut seq = 0u64;
     // Rate control skipped the last image; it must still be sent.
     let mut skipped = false;
+    let mut report = CaptureReport::new();
 
     while !shared.stop.load(Ordering::Relaxed) {
+        report.roll();
         // Respect the frame-rate cap; changes accumulate in the meantime.
         if let Some(last) = last_encode {
             let since = last.elapsed();
@@ -790,6 +846,7 @@ fn capture_loop(
             height: rect.height,
         };
 
+        report.changed += u32::from(changed);
         let forced = shared.keyframe.swap(false, Ordering::Relaxed);
         if forced {
             encoder.force_keyframe();
@@ -842,6 +899,7 @@ fn capture_loop(
             Ok(Some(encoded)) => encoded,
             Ok(None) => {
                 skipped = true;
+                report.skipped += 1;
                 last_encode = Some(tick);
                 continue;
             }
@@ -856,6 +914,8 @@ fn capture_loop(
             }
         };
         let encode_time = started.elapsed();
+        report.encoded += 1;
+        report.longest_encode = report.longest_encode.max(encode_time);
         last_encode = Some(tick);
         skipped = false;
         if hardware != encoder.is_hardware() {
@@ -863,6 +923,7 @@ fn capture_loop(
             warn!("codificador agora: {}", encoder.name());
         }
 
+        let waited = Instant::now();
         let sent = send_frame(
             frames,
             &mut seq,
@@ -872,6 +933,7 @@ fn capture_loop(
             encode_time,
             hardware,
         );
+        report.network += waited.elapsed();
         if !sent {
             break;
         }

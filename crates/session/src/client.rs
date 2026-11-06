@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hext_codec::{DecoderPreference, YuvFrame};
-use hext_net::video::{Counters, Event, LOG_TARGET, Reassembler};
+use hext_net::video::{Counters, Event, LOG_TARGET, MAX_WAITING, Reassembler, ResendRequest};
 use hext_net::{Connection, ConnectionError, ControlStream, FramedSend, NetError, PasswordLogin};
 use hext_proto::{
     Control, Datagram, ENDED_ON_HOST, FileOutcome, Hello, InputEvent, PeerInfo, Permissions,
@@ -18,6 +18,32 @@ use tracing::{debug, info, warn};
 
 use crate::files::{self, Confirm, FileAccess, FileEnd, Tell};
 use crate::{NETWORK_GRACE, RESTART_LIFETIME, Result, ResumeToken, SessionError, Stats};
+
+/// Frames waiting for the decoder at most. A keyframe takes a while to
+/// decode, and frames held back by a missing one arrive all at once, so a
+/// short queue would give up and ask for a keyframe at the worst moment.
+const DECODE_QUEUE: usize = MAX_WAITING + 2;
+
+/// A decoder this many frames behind for this long is not catching up.
+const BEHIND_FRAMES: usize = 3;
+const BEHIND_FOR: Duration = Duration::from_millis(250);
+
+/// Whether the decoder keeps falling behind: a queue that drains again is a
+/// burst, one that stays is delay that would never go away.
+#[derive(Default)]
+struct Backlog {
+    since: Option<Instant>,
+}
+
+impl Backlog {
+    fn behind(&mut self, queued: usize, now: Instant) -> bool {
+        if queued <= BEHIND_FRAMES {
+            self.since = None;
+            return false;
+        }
+        now.duration_since(*self.since.get_or_insert(now)) > BEHIND_FOR
+    }
+}
 
 /// A frame taking longer than this to decode is worth a log line.
 const SLOW_DECODE: Duration = Duration::from_millis(33);
@@ -288,7 +314,7 @@ async fn run(
     on_frame: impl FnMut(DecodedFrame) + Send + 'static,
 ) -> Result<()> {
     // Decoding is CPU-bound, so it gets its own thread, behind a short queue.
-    let (frames_tx, mut frames_rx) = mpsc::channel::<VideoFrame>(2);
+    let (frames_tx, mut frames_rx) = mpsc::channel::<VideoFrame>(DECODE_QUEUE);
     let (keyframe_tx, mut keyframe_rx) = mpsc::unbounded_channel::<()>();
     let (loss_tx, video_conn, video_stats) = (keyframe_tx.clone(), conn.clone(), stats.clone());
     let decoder = std::thread::Builder::new()
@@ -304,7 +330,14 @@ async fn run(
             )
         })
         .map_err(|e| SessionError::Protocol(format!("decoder thread: {e}")))?;
-    let mut receiver = tokio::spawn(receive_video(video_conn, frames_tx, loss_tx, video_stats));
+    let (resend_tx, mut resend_rx) = mpsc::unbounded_channel();
+    let mut receiver = tokio::spawn(receive_video(
+        video_conn,
+        frames_tx,
+        loss_tx,
+        resend_tx,
+        video_stats,
+    ));
 
     let mut say_bye = false;
     let result = loop {
@@ -321,6 +354,11 @@ async fn run(
             }
             Some(()) = keyframe_rx.recv() => {
                 if let Err(e) = control.send(&Control::RequestKeyframe).await {
+                    break peer_closed_is_ok(&conn, e);
+                }
+            }
+            Some(ResendRequest { frame, packets }) = resend_rx.recv() => {
+                if let Err(e) = control.send(&Control::ResendVideo { frame, packets }).await {
                     break peer_closed_is_ok(&conn, e);
                 }
             }
@@ -379,15 +417,18 @@ async fn run(
 }
 
 /// Rebuilds frames from the host's video datagrams and queues them for the
-/// decoder; a frame lost despite FEC asks the host for a keyframe.
+/// decoder; a frame lacking packets despite FEC asks the host for them, and
+/// for a keyframe if they don't come.
 async fn receive_video(
     conn: Connection,
     frames: mpsc::Sender<VideoFrame>,
     keyframe: mpsc::UnboundedSender<()>,
+    resend: mpsc::UnboundedSender<ResendRequest>,
     stats: Arc<Mutex<Stats>>,
 ) -> hext_net::Result<()> {
     let mut reassembler = Reassembler::new();
     let mut report = ArrivalReport::new(&conn);
+    let mut backlog = Backlog::default();
     // Also notices a lost frame when nothing newer arrives (a still screen).
     let mut tick = tokio::time::interval(Duration::from_millis(10));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -428,7 +469,16 @@ async fn receive_video(
                 // must keep flowing. A decoder that can't keep up drops to
                 // the next keyframe instead of falling ever further behind.
                 Event::Frame(frame) => match frames.try_send(frame) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        report.frames += 1;
+                        let queued = frames.max_capacity() - frames.capacity();
+                        if backlog.behind(queued, Instant::now()) {
+                            info!(target: LOG_TARGET, "decodificador atrás há muito tempo; pulando até um keyframe");
+                            reassembler.resync(Instant::now());
+                            let _ = keyframe.send(());
+                            break;
+                        }
+                    }
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         info!(target: LOG_TARGET, "fila do decodificador cheia; pulando até um keyframe");
                         reassembler.resync(Instant::now());
@@ -438,6 +488,9 @@ async fn receive_video(
                     // Decoder gone: the session is ending.
                     Err(mpsc::error::TrySendError::Closed(_)) => return Ok(()),
                 },
+                Event::Resend(request) => {
+                    let _ = resend.send(request);
+                }
                 Event::Lost => {
                     debug!("quadro perdido apesar do FEC; pedindo keyframe");
                     let _ = keyframe.send(());
@@ -452,6 +505,8 @@ async fn receive_video(
 /// otherwise at `debug`.
 struct ArrivalReport {
     since: Instant,
+    /// Frames handed to the decoder in this second.
+    frames: u32,
     /// Datagrams read since this began.
     read: u64,
     /// QUIC's count of those it received, and `read`, a second ago.
@@ -464,6 +519,7 @@ impl ArrivalReport {
     fn new(conn: &Connection) -> Self {
         Self {
             since: Instant::now(),
+            frames: 0,
             read: 0,
             quic_before: conn.stats().frame_rx.datagram,
             read_before: 0,
@@ -481,10 +537,15 @@ impl ArrivalReport {
         let arrival = reassembler.take_arrival();
         let counters = reassembler.counters;
         let lost = counters.lost - self.counters_before.lost;
+        if let Some(path) = hext_net::path(conn) {
+            reassembler.set_rtt(path.rtt);
+        }
+        let saved = counters.resent - self.counters_before.resent;
         let line = format!(
-            "chegada: {received} datagramas ({} não lidos), maior intervalo num quadro {} ms, \
+            "chegada: {} quadros, {received} datagramas ({} não lidos), maior intervalo num quadro {} ms, \
              maior transferência {} ms, até {} quadros passaram à frente | {lost} perdidos, \
-             {} recuperados, {} pacotes tardios",
+             {saved} salvos por reenvio, {} recuperados, {} pacotes tardios",
+            self.frames,
             received.saturating_sub(read),
             arrival.max_gap.as_millis(),
             arrival.max_transfer.as_millis(),
@@ -492,12 +553,13 @@ impl ArrivalReport {
             counters.recovered - self.counters_before.recovered,
             counters.late_packets - self.counters_before.late_packets,
         );
-        if lost > 0 {
+        if lost > 0 || saved > 0 {
             info!(target: LOG_TARGET, "{line}");
         } else {
             debug!(target: LOG_TARGET, "{line}");
         }
         self.since = Instant::now();
+        self.frames = 0;
         self.quic_before = quic;
         self.read_before = self.read;
         self.counters_before = counters;
@@ -610,5 +672,22 @@ fn decode_loop(
                 let _ = keyframe.send(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_burst_for_the_decoder_is_not_falling_behind() {
+        let mut backlog = Backlog::default();
+        let t0 = Instant::now();
+        assert!(!backlog.behind(DECODE_QUEUE - 1, t0));
+        assert!(!backlog.behind(10, t0 + BEHIND_FOR));
+        // It drained: the clock starts over.
+        assert!(!backlog.behind(1, t0 + BEHIND_FOR));
+        assert!(!backlog.behind(10, t0 + BEHIND_FOR * 2));
+        assert!(backlog.behind(10, t0 + BEHIND_FOR * 3 + Duration::from_millis(1)));
     }
 }
