@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ use hext_codec::EncoderSettings;
 use hext_crypto::PublicKey;
 use hext_crypto::pake::Verifier;
 use hext_input::Area;
-use hext_net::video::VideoSender;
+use hext_net::video::{LOG_TARGET, ResendRequest, VideoSender};
 use hext_net::{Admission, Connection, ConnectionError, NetError};
 use hext_proto::{
     Control, ENDED_ON_HOST, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions,
@@ -149,6 +149,8 @@ pub trait Desktop: Send + Sync {
 pub trait Screen: Send {
     /// The viewer lost video: the next frame must be a keyframe.
     fn request_keyframe(&self);
+    /// The network takes about this much video now.
+    fn set_bitrate(&self, _bitrate_bps: u32) {}
     /// Replays the viewer's input.
     fn inject(&mut self, event: &InputEvent);
     /// Puts text from the viewer on this computer's clipboard.
@@ -182,6 +184,7 @@ impl Desktop for LocalDesktop {
             let shared = Arc::new(Shared {
                 stop: AtomicBool::new(false),
                 keyframe: AtomicBool::new(false),
+                bitrate: AtomicU32::new(settings.encoder.bitrate_bps),
                 area: Mutex::new(Area::default()),
             });
             // Capture and encoding run on their own thread: both are
@@ -293,6 +296,10 @@ impl Screen for LocalScreen {
         self.shared.keyframe.store(true, Ordering::Relaxed);
     }
 
+    fn set_bitrate(&self, bitrate_bps: u32) {
+        self.shared.bitrate.store(bitrate_bps, Ordering::Relaxed);
+    }
+
     fn inject(&mut self, event: &InputEvent) {
         if *event == InputEvent::SecureAttention {
             // Takes the Windows service (this process is not it).
@@ -340,6 +347,8 @@ impl Screen for LocalScreen {
 struct Shared {
     stop: AtomicBool,
     keyframe: AtomicBool,
+    /// What the encoder should aim for.
+    bitrate: AtomicU32,
     area: Mutex<Area>,
 }
 
@@ -516,14 +525,26 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // Video goes out as datagrams with FEC (see `hext_net::video`).
     let video = conn.clone();
     let bitrate = config.desktop.bitrate_bps();
+    let encoding = screen.clone();
+    // A few slots: a viewer asking for more than this is past saving.
+    let (resend_tx, mut resend_rx) = mpsc::channel::<ResendRequest>(32);
     let mut writer = tokio::spawn(async move {
         let mut sender = VideoSender::new(bitrate);
         loop {
-            match tokio::time::timeout(IDLE_NOTICE, frames_rx.recv()).await {
-                Ok(Some(frame)) => sender.send(&video, &frame).await?,
-                Ok(None) => return Ok::<_, NetError>(()),
-                // A still screen: let the viewer check it has the last frame.
-                Err(_) => sender.send_idle(&video).await?,
+            tokio::select! {
+                biased;
+                Some(request) = resend_rx.recv() => sender.resend(&video, &request).await?,
+                frame = tokio::time::timeout(IDLE_NOTICE, frames_rx.recv()) => match frame {
+                    Ok(Some(frame)) => sender.send(&video, &frame, &mut resend_rx).await?,
+                    Ok(None) => return Ok::<_, NetError>(()),
+                    // A still screen: let the viewer check it has the last frame.
+                    Err(_) => sender.send_idle(&video).await?,
+                },
+            }
+            if let Some(bitrate) = sender.take_bitrate()
+                && let Some(screen) = encoding.lock().expect("lock").as_ref()
+            {
+                screen.set_bitrate(bitrate);
             }
         }
     });
@@ -579,6 +600,9 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                     if let Some(screen) = screen.lock().expect("lock").as_ref() {
                         screen.request_keyframe();
                     }
+                }
+                Ok(Control::ResendVideo { frame, packets }) => {
+                    let _ = resend_tx.try_send(ResendRequest { frame, packets });
                 }
                 Ok(Control::Bye) => {
                     // Closing here is what lets the client's `bye()` return.
@@ -725,6 +749,51 @@ fn restart(config: &HostConfig, session: &ActiveSession, token: Option<&crate::T
     }
 }
 
+/// What the capture did in a second, for the log (`hext_video=debug`): when
+/// the frame rate falls and the network was not busy, this says why.
+struct CaptureReport {
+    since: Instant,
+    /// Images that differed from the one before.
+    changed: u32,
+    /// Images encoded, and those the encoder held back.
+    encoded: u32,
+    skipped: u32,
+    /// The longest encode, and the time waiting for the network to take
+    /// frames.
+    longest_encode: Duration,
+    network: Duration,
+}
+
+impl CaptureReport {
+    fn new() -> Self {
+        Self {
+            since: Instant::now(),
+            changed: 0,
+            encoded: 0,
+            skipped: 0,
+            longest_encode: Duration::ZERO,
+            network: Duration::ZERO,
+        }
+    }
+
+    fn roll(&mut self) {
+        if self.since.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        debug!(
+            target: LOG_TARGET,
+            "captura: {} imagens novas, {} codificadas (a mais lenta em {} ms), {} seguradas pelo \
+             codificador, {} ms esperando a rede",
+            self.changed,
+            self.encoded,
+            self.longest_encode.as_millis(),
+            self.skipped,
+            self.network.as_millis(),
+        );
+        *self = Self::new();
+    }
+}
+
 fn capture_loop(
     config: &CaptureSettings,
     shared: &Shared,
@@ -753,10 +822,13 @@ fn capture_loop(
     let min_interval = Duration::from_secs_f32(1.0 / config.encoder.max_fps.max(1.0));
     let mut last_encode: Option<Instant> = None;
     let mut seq = 0u64;
+    let mut bitrate = config.encoder.bitrate_bps;
     // Rate control skipped the last image; it must still be sent.
     let mut skipped = false;
+    let mut report = CaptureReport::new();
 
     while !shared.stop.load(Ordering::Relaxed) {
+        report.roll();
         // Respect the frame-rate cap; changes accumulate in the meantime.
         if let Some(last) = last_encode {
             let since = last.elapsed();
@@ -790,6 +862,12 @@ fn capture_loop(
             height: rect.height,
         };
 
+        report.changed += u32::from(changed);
+        let wanted = shared.bitrate.load(Ordering::Relaxed);
+        if wanted != bitrate {
+            encoder.set_bitrate(wanted);
+            bitrate = wanted;
+        }
         let forced = shared.keyframe.swap(false, Ordering::Relaxed);
         if forced {
             encoder.force_keyframe();
@@ -806,6 +884,7 @@ fn capture_loop(
                         let Some(frame) = capturer.frame() else {
                             continue;
                         };
+                        let waited = Instant::now();
                         let sent = send_frame(
                             frames,
                             &mut seq,
@@ -815,6 +894,7 @@ fn capture_loop(
                             started.elapsed(),
                             hardware,
                         );
+                        report.network += waited.elapsed();
                         if !sent {
                             break;
                         }
@@ -842,6 +922,7 @@ fn capture_loop(
             Ok(Some(encoded)) => encoded,
             Ok(None) => {
                 skipped = true;
+                report.skipped += 1;
                 last_encode = Some(tick);
                 continue;
             }
@@ -856,6 +937,8 @@ fn capture_loop(
             }
         };
         let encode_time = started.elapsed();
+        report.encoded += 1;
+        report.longest_encode = report.longest_encode.max(encode_time);
         last_encode = Some(tick);
         skipped = false;
         if hardware != encoder.is_hardware() {
@@ -863,6 +946,7 @@ fn capture_loop(
             warn!("codificador agora: {}", encoder.name());
         }
 
+        let waited = Instant::now();
         let sent = send_frame(
             frames,
             &mut seq,
@@ -872,6 +956,7 @@ fn capture_loop(
             encode_time,
             hardware,
         );
+        report.network += waited.elapsed();
         if !sent {
             break;
         }

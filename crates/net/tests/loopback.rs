@@ -1,7 +1,8 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hext_crypto::DeviceKey;
 use hext_crypto::pake::Verifier;
+use hext_net::video::{Event, Reassembler, VideoSender};
 use hext_net::{
     Admission, Endpoint, EndpointAddr, EndpointConfig, NetError, bind, client_handshake, connect,
     host_handshake, recv_datagram, remote_key, send_datagram,
@@ -66,6 +67,76 @@ async fn serve_one(endpoint: Endpoint) -> Result<PeerInfo, NetError> {
             }
         }
     }
+}
+
+/// A frame that loses packets on the way is completed by resending them,
+/// with no keyframe.
+#[tokio::test]
+async fn lost_packets_are_resent() {
+    let (host_end, addr) = local_host().await;
+    let (viewer_end, _) = viewer().await;
+    let accept = tokio::spawn(async move {
+        let conn = host_end.accept().await.unwrap().await.unwrap();
+        (host_end, conn)
+    });
+    let viewer = connect(&viewer_end, addr).await.unwrap();
+    let (_host_end, host) = accept.await.unwrap();
+    let frame = |seq, keyframe| hext_proto::VideoFrame {
+        seq,
+        width: 64,
+        height: 64,
+        keyframe,
+        capture_micros: 1,
+        encode_micros: 1,
+        hardware: false,
+        data: vec![seq as u8; 60_000],
+    };
+    let (requests, mut resends) = tokio::sync::mpsc::channel(4);
+    let sender = tokio::spawn(async move {
+        let mut sender = VideoSender::new(80_000_000);
+        sender.send(&host, &frame(0, true), &mut resends).await?;
+        sender.send(&host, &frame(1, false), &mut resends).await?;
+        while let Some(request) = resends.recv().await {
+            sender.resend(&host, &request).await?;
+        }
+        Ok::<_, hext_net::NetError>(host)
+    });
+
+    let mut reassembler = Reassembler::new();
+    let mut delivered = Vec::new();
+    // Frame 1 loses more packets than FEC can rebuild.
+    let (mut seen, mut asked) = (0, false);
+    while delivered.len() < 2 {
+        let datagram = tokio::time::timeout(Duration::from_millis(30), recv_datagram(&viewer));
+        let events = match datagram.await {
+            Ok(Ok(Datagram::Video(packet))) => {
+                let first_pass = packet.frame == 1 && !asked;
+                seen += u32::from(first_pass);
+                if first_pass && seen > 12 {
+                    Vec::new()
+                } else {
+                    reassembler.push(packet, Instant::now())
+                }
+            }
+            Ok(other) => panic!("{other:?}"),
+            Err(_) => reassembler.tick(Instant::now()),
+        };
+        for event in events {
+            match event {
+                Event::Frame(frame) => delivered.push(frame.seq),
+                Event::Resend(request) => {
+                    asked = true;
+                    requests.send(request).await.unwrap();
+                }
+                Event::Lost => panic!("given up on"),
+            }
+        }
+    }
+    assert_eq!(delivered, vec![0, 1]);
+    assert_eq!(reassembler.counters.resent, 1);
+    assert_eq!(reassembler.counters.lost, 0);
+    drop(requests);
+    sender.await.unwrap().unwrap();
 }
 
 #[tokio::test]

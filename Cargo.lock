@@ -2585,6 +2585,7 @@ version = "0.1.0"
 name = "hext-net"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "hext-crypto",
  "hext-proto",
  "iroh",

@@ -12,8 +12,10 @@ const DATAGRAM_RECEIVE_BUFFER: usize = 4 * 1024 * 1024;
 
 /// Video datagrams waiting to be sent. Small, so that when the network
 /// can't keep up the host waits (and skips screen updates) instead of
-/// queueing seconds of video: ~200 ms at 10 Mbps.
-const DATAGRAM_SEND_BUFFER: usize = 256 * 1024;
+/// queueing seconds of video: ~50 ms at 10 Mbps. Resent packets join the
+/// back of this queue, which at the 2 Mbps seen under congestion takes
+/// about 300 ms to clear, while the viewer is stopped.
+const DATAGRAM_SEND_BUFFER: usize = 64 * 1024;
 
 /// A peer silent this long (keep-alives included) is gone.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(10);

@@ -115,3 +115,28 @@ pub fn encoders() -> Result<()> {
 pub fn encoders() -> Result<()> {
     anyhow::bail!("por enquanto só no Windows")
 }
+
+/// `encoder-rates`: whether this machine's GPU encoders follow a new rate
+/// while encoding.
+#[cfg(windows)]
+pub fn encoder_rates() -> Result<()> {
+    let (width, height) = (1920, 1080);
+    println!("Mudando a taxa dos codificadores da GPU com {width}x{height}...\n");
+    let mut last = String::new();
+    for r in hext_codec::probe_encoder_rates(width, height)? {
+        if r.encoder != last {
+            println!("{}", r.encoder);
+            last = r.encoder.clone();
+        }
+        match r.result {
+            Ok(ok) => println!("  ok     {:<32} {ok}", r.variant),
+            Err(e) => println!("  FALHA  {:<32} {e}", r.variant),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn encoder_rates() -> Result<()> {
+    anyhow::bail!("por enquanto só no Windows")
+}

@@ -225,6 +225,14 @@ impl VideoEncoder for VtEncoder {
         self.force_keyframe = true;
     }
 
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        self.settings.bitrate_bps = bitrate_bps;
+        if let Some(session) = &self.session {
+            let rate = CFNumber::new_i64(i64::from(bitrate_bps));
+            session.set(unsafe { kVTCompressionPropertyKey_AverageBitRate }, &rate);
+        }
+    }
+
     fn name(&self) -> String {
         format!("GPU ({})", self.description())
     }

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod frame;
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u16 = 10;
+pub const PROTOCOL_VERSION: u16 = 11;
 
 /// The longest text the clipboard shares, in bytes: it fits a control frame.
 pub const MAX_CLIPBOARD_TEXT: usize = 512 * 1024;
@@ -180,6 +180,12 @@ pub enum Control {
     Reject(RejectReason),
     /// Client asks for a fresh keyframe (start of stream, decode error).
     RequestKeyframe,
+    /// Client lacks these packets (block, index) of a video frame, or all of
+    /// them if none is named.
+    ResendVideo {
+        frame: u64,
+        packets: Vec<(u16, u16)>,
+    },
     /// Orderly end of session.
     Bye,
     /// Host's answer to a [`Control::Hello`] that takes the unattended
@@ -383,6 +389,10 @@ mod tests {
                 resume: Some([7; 32]),
             }),
             Control::RequestKeyframe,
+            Control::ResendVideo {
+                frame: 7,
+                packets: vec![(0, 3), (1, 70)],
+            },
             Control::ResumeToken([9; 32]),
             Control::Restart,
             Control::RestartAnswer { ok: true },

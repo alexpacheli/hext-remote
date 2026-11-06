@@ -24,11 +24,12 @@ use windows::Win32::Foundation::VARIANT_TRUE;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Media::MediaFoundation::{
+    CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMaxBitRate,
     CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode,
     CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
-    CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate,
-    IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown, IMFTransform,
-    METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
+    CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVEncVideoMinQP, CODECAPI_AVLowLatencyMode,
+    ICodecAPI, IMFActivate, IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown,
+    IMFTransform, METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY,
     MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
     MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE,
@@ -109,6 +110,9 @@ pub struct MfEncoder {
     only: Option<String>,
     /// Memory images go with this device attached (probing).
     memory_device: Option<ID3D11Device>,
+    /// The rate asked for now. Sessions open at `settings.bitrate_bps`: one
+    /// that ignores new rates (Intel Quick Sync) would stay at a low one.
+    target_bps: u32,
 }
 
 /// The optional encoder settings, each of which a driver may refuse.
@@ -223,6 +227,7 @@ impl MfEncoder {
             tweaks: Tweaks::ALL,
             only: None,
             memory_device: None,
+            target_bps: settings.bitrate_bps,
         })
     }
 
@@ -258,6 +263,9 @@ impl MfEncoder {
         let session = self.open_session(width, height, device)?;
         self.session = Some(session);
         self.frame_index = 0;
+        if self.target_bps != self.settings.bitrate_bps {
+            self.apply_target();
+        }
         Ok(())
     }
 
@@ -507,6 +515,11 @@ impl VideoEncoder for MfEncoder {
         self.force_keyframe = true;
     }
 
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        self.target_bps = bitrate_bps;
+        self.apply_target();
+    }
+
     fn name(&self) -> String {
         format!("GPU ({})", self.name)
     }
@@ -517,6 +530,26 @@ impl VideoEncoder for MfEncoder {
 }
 
 impl MfEncoder {
+    /// Tells the running session the target rate.
+    fn apply_target(&self) {
+        let codec = self.session.as_ref().and_then(|s| s.codec.as_ref());
+        if let Some(codec) = codec.filter(|_| self.tweaks.rate_control) {
+            let target = u32_variant(self.target_bps);
+            let taken = set(codec, &CODECAPI_AVEncCommonMeanBitRate, target.clone());
+            // AMD accepts the mean alone and keeps going at the old rate.
+            set(codec, &CODECAPI_AVEncCommonMaxBitRate, target);
+            if !taken {
+                tracing::warn!("{} não aceitou mudar a taxa", self.name);
+            }
+        }
+    }
+
+    /// Whether the driver took `qp` as the new quality floor.
+    fn set_min_qp(&self, qp: u32) -> bool {
+        let codec = self.session.as_ref().and_then(|s| s.codec.as_ref());
+        codec.is_some_and(|codec| set(codec, &CODECAPI_AVEncVideoMinQP, u32_variant(qp)))
+    }
+
     /// One try at encoding `image` with the current way (opening it if
     /// needed).
     fn encode_once(
@@ -1370,6 +1403,152 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
         }
     }
     Ok(results)
+}
+
+/// A way to get a new rate to a running encoder.
+#[derive(Clone, Copy)]
+enum Retarget {
+    /// [`VideoEncoder::set_bitrate`] alone.
+    Live,
+    /// With the buffer resized to match.
+    Buffer,
+    /// With a keyframe right after: some drivers may wait for one.
+    Keyframe,
+    /// Closing the encoder and opening it at the new rate.
+    Reopen,
+    /// No new rate: a worse quality floor, which costs no keyframe.
+    MinQp(u32),
+}
+
+/// Whether each hardware H.264 encoder follows a new rate while encoding: a
+/// driver may accept the change and keep going at the old rate.
+pub fn probe_rates(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
+    let settings = EncoderSettings::default();
+    let first = MfEncoder::new(settings)?;
+    let mut names: Vec<String> = Vec::new();
+    for name in enumerate(None)?.iter().map(friendly_name) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    drop(first);
+    let mut results = Vec::new();
+    for name in &names {
+        for (variant, how) in [
+            ("taxa média e máxima", Retarget::Live),
+            ("e também o buffer", Retarget::Buffer),
+            ("e também um keyframe", Retarget::Keyframe),
+            ("reabrindo o encoder", Retarget::Reopen),
+            ("qualidade mínima 30", Retarget::MinQp(30)),
+            ("qualidade mínima 36", Retarget::MinQp(36)),
+            ("qualidade mínima 42", Retarget::MinQp(42)),
+        ] {
+            results.push(ProbeResult {
+                encoder: name.clone(),
+                variant: variant.into(),
+                result: probe_rate(settings, name, how, width, height),
+            });
+        }
+    }
+    Ok(results)
+}
+
+/// Encodes faint noise, changes the rate as `how`, and compares what came
+/// out before and after, with what the change itself cost. Pure noise hits
+/// the worst quality at any rate.
+fn probe_rate(
+    settings: EncoderSettings,
+    name: &str,
+    how: Retarget,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
+    const TARGET: u32 = 1_000_000;
+    const SETTLE: usize = 60;
+    const MEASURE: usize = 60;
+    let mut encoder = MfEncoder::new(settings).map_err(|e| e.to_string())?;
+    encoder.only = Some(name.to_owned());
+    let pixels = width as usize * height as usize;
+    let mut state = 0x9E37_79B9u32;
+    let frames: Vec<Vec<u8>> = (0..8)
+        .map(|_| {
+            let mut data = vec![128u8; pixels * 3 / 2];
+            for y in &mut data[..pixels] {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                *y = 96 + (state as u8 & 31);
+            }
+            data
+        })
+        .collect();
+    let mut next = 0;
+    let mut largest = 0;
+    let mut encode = |encoder: &mut MfEncoder, count: usize| -> Result<(usize, usize), String> {
+        let mut bytes = 0;
+        largest = 0;
+        for _ in 0..count {
+            next += 1;
+            let image = Image {
+                width,
+                height,
+                format: PixelFormat::Nv12,
+                pixels: Pixels::Memory(&frames[next % frames.len()]),
+            };
+            let out = encoder.encode(&image).map_err(|e| e.to_string())?;
+            let size = out.map_or(0, |encoded| encoded.data.len());
+            bytes += size;
+            largest = largest.max(size);
+        }
+        Ok((bytes, largest))
+    };
+    let mbps = |bytes: usize| {
+        bytes as f64 * 8.0 * f64::from(settings.max_fps) / MEASURE as f64 / 1_000_000.0
+    };
+    encode(&mut encoder, SETTLE)?;
+    let (before, _) = encode(&mut encoder, MEASURE)?;
+    if !matches!(how, Retarget::MinQp(_)) {
+        encoder.set_bitrate(TARGET);
+    }
+    match how {
+        Retarget::Live => {}
+        Retarget::Buffer => {
+            let codec = encoder.session.as_ref().and_then(|s| s.codec.as_ref());
+            if let Some(codec) = codec {
+                set(codec, &CODECAPI_AVEncCommonBufferSize, u32_variant(TARGET));
+            }
+        }
+        Retarget::Keyframe => encoder.force_keyframe(),
+        Retarget::Reopen => {
+            encoder.settings.bitrate_bps = TARGET;
+            encoder.session = None;
+        }
+        Retarget::MinQp(qp) => {
+            if !encoder.set_min_qp(qp) {
+                return Err("o driver recusou".into());
+            }
+        }
+    }
+    let started = Instant::now();
+    let (_, first) = encode(&mut encoder, 1)?;
+    let took = started.elapsed();
+    let (_, rest) = encode(&mut encoder, SETTLE)?;
+    let (after, _) = encode(&mut encoder, MEASURE)?;
+    let change = format!(
+        "{:.1} para {:.1} Mbps, 1º quadro em {} ms, maior {} kB",
+        mbps(before),
+        mbps(after),
+        took.as_millis(),
+        first.max(rest) / 1000
+    );
+    if !matches!(how, Retarget::MinQp(_)) {
+        return Ok(format!("{change} (alvo 1.0)"));
+    }
+    // A floor that cannot be lifted again would be no use.
+    encoder.set_min_qp(0);
+    encode(&mut encoder, SETTLE)?;
+    let (back, _) = encode(&mut encoder, MEASURE)?;
+    Ok(format!("{change}, volta a {:.1} Mbps", mbps(back)))
 }
 
 /// Every hardware adapter, with a device on it (video support).

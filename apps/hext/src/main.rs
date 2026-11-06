@@ -98,6 +98,9 @@ enum Command {
     /// Testa os codificadores de vídeo da GPU com várias configurações
     /// (diagnóstico, Windows).
     Encoders,
+    /// Testa se os codificadores da GPU mudam a taxa com o vídeo rodando
+    /// (diagnóstico, Windows).
+    EncoderRates,
     /// Instala o Hext Remote como serviço do Windows: online com o ID deste
     /// computador desde o boot, antes de alguém entrar.
     Service {
@@ -295,6 +298,7 @@ fn main() -> Result<()> {
         Some(Command::View(args)) => viewer::run(args),
         Some(Command::Bench(args)) => bench::run(&args),
         Some(Command::Encoders) => bench::encoders(),
+        Some(Command::EncoderRates) => bench::encoder_rates(),
         Some(Command::Service { action }) => service::command(action),
         Some(Command::Agent { pipe }) => service::agent(&pipe),
         #[cfg(windows)]
