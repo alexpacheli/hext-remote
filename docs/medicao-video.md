@@ -137,16 +137,16 @@ continua igual, no mesmo protocolo. Para comparar com a taxa fixa, rode o host c
 
 - `taxa: 8.0 para 5.6 Mbps (RTT subiu)`: desceu. Os motivos são `preso no controle de congestionamento`, `RTT subiu` e
   `perda alta`.
-- `taxa: 1.0 para 1.1 Mbps (rede boa)`: subiu, depois de 5 segundos bons com o vídeo usando pelo menos metade da taxa.
+- `taxa: 1.0 para 1.5 Mbps (rede boa)`: subiu, depois de 5 segundos bons com o vídeo usando pelo menos metade da taxa.
 - `não aceitou mudar a taxa`: o driver recusou. Confira também se `Mbps` em `envio:` acompanha a taxa pedida, porque um
   driver pode aceitar e ignorar.
 
 ## Decisão depois da oitava medição
 
 Na tela, a rodada fixa pareceu melhor: com a taxa baixa, a janela demorava mais para aparecer ao maximizar e minimizar.
-Por isso o host não reabre mais o codificador. Quem ignora a nova taxa (hoje, o Intel) fica na taxa cheia pelo resto da
-sessão, e o log mostra `ignorou a nova taxa: fica em 8.0 Mbps`. As linhas `taxa:` que vierem antes ou depois dessa não
-mudam nada nele. Em codificadores que obedecem, como o AMD, a taxa continua adaptativa, ainda sem medição em sessão real.
+Por isso o host não reabre mais o codificador. Quem ignora a nova taxa (hoje, o Intel) fica na taxa cheia, e as linhas
+`taxa:` não mudam nada nele. Em codificadores que obedecem, como o AMD, a taxa continua adaptativa, ainda sem medição em
+sessão real. Para saber o que um computador faz, use `hext encoder-rates`.
 
 ## A oitava medição
 

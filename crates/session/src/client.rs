@@ -48,7 +48,13 @@ impl Backlog {
             // where the queue stands while it is still draining it; one that
             // only ever grows ends at the full queue.
             Some((settled, since)) if queued == settled || queued == settled + 1 => {
-                now.duration_since(since) > BEHIND_FOR
+                let behind = now.duration_since(since) > BEHIND_FOR;
+                if behind {
+                    // Skipping to a keyframe is the answer: what stays in the
+                    // queue while it arrives is not a second verdict.
+                    self.settled = None;
+                }
+                behind
             }
             _ => {
                 self.settled = Some((queued, now));
@@ -719,6 +725,16 @@ mod tests {
         assert!(!backlog.behind(11, t0 + BEHIND_FOR + Duration::from_millis(16)));
         assert!(!backlog.behind(10, t0 + BEHIND_FOR + Duration::from_millis(32)));
         assert!(backlog.behind(11, t0 + BEHIND_FOR * 2 + Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn falling_behind_starts_over_once_it_is_noticed() {
+        let mut backlog = Backlog::default();
+        let t0 = Instant::now();
+        assert!(!backlog.behind(5, t0));
+        let late = t0 + BEHIND_FOR + Duration::from_millis(1);
+        assert!(backlog.behind(5, late));
+        assert!(!backlog.behind(6, late + Duration::from_millis(1)));
     }
 
     #[test]

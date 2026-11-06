@@ -24,7 +24,7 @@ const RTT_RISE: Duration = Duration::from_millis(100);
 const LOSS_PERCENT: u64 = 10;
 
 /// Bad seconds in a row before going down: Wi-Fi has single bad seconds that
-/// do no harm, and on an encoder that must reopen each change has a price.
+/// do no harm.
 const BAD_SECONDS: u32 = 2;
 /// What a bad second takes off, as a fraction.
 const DOWN: (u32, u32) = (7, 10);

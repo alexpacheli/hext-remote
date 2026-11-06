@@ -442,7 +442,7 @@ impl VideoSender {
             last_frame: None,
             timers: None,
             report: SendReport::new(),
-            // Temporary: to compare with a fixed rate in the field.
+            // To compare with a fixed rate (see `docs/medicao-video.md`).
             rate: std::env::var_os("HEXT_TAXA_FIXA")
                 .is_none()
                 .then(|| RateControl::new(bitrate_bps)),
@@ -596,7 +596,7 @@ impl VideoSender {
             // The path MTU shrank mid-frame: this frame is lost (the viewer
             // asks for a keyframe), the next one uses the new size.
             if !self.paced(conn, packet.datagram).await? {
-                return Ok(());
+                break;
             }
         }
         let took = started.elapsed();

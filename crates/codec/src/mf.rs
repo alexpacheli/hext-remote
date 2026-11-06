@@ -58,7 +58,6 @@ use windows::core::{GUID, Interface, PWSTR, Ref, implement};
 use crate::d3d11::Readback;
 use crate::h264::{self, PROFILE_BASELINE};
 use crate::nv12::bgra_to_nv12;
-use crate::rate_watch::RateWatch;
 use crate::{
     CodecError, Encoded, EncoderSettings, Image, PixelFormat, Pixels, VideoEncoder, check_frame,
     merge, profile_error,
@@ -111,12 +110,9 @@ pub struct MfEncoder {
     only: Option<String>,
     /// Memory images go with this device attached (probing).
     memory_device: Option<ID3D11Device>,
-    /// The rate asked for now; sessions open at `settings.bitrate_bps`.
+    /// The rate asked for now. Sessions open at `settings.bitrate_bps`: one
+    /// that ignores new rates (Intel Quick Sync) would stay at a low one.
     target_bps: u32,
-    /// Whether the encoder follows a new rate, seen from what comes out.
-    rate_watch: RateWatch,
-    /// Seen ignoring new rates: it stays at its full rate.
-    fixed_rate: bool,
 }
 
 /// The optional encoder settings, each of which a driver may refuse.
@@ -232,8 +228,6 @@ impl MfEncoder {
             only: None,
             memory_device: None,
             target_bps: settings.bitrate_bps,
-            rate_watch: RateWatch::new(Instant::now()),
-            fixed_rate: false,
         })
     }
 
@@ -269,7 +263,6 @@ impl MfEncoder {
         let session = self.open_session(width, height, device)?;
         self.session = Some(session);
         self.frame_index = 0;
-        self.rate_watch = RateWatch::new(Instant::now());
         if self.target_bps != self.settings.bitrate_bps {
             self.apply_target();
         }
@@ -491,10 +484,7 @@ impl VideoEncoder for MfEncoder {
         for _ in 0..MAX_ATTEMPTS {
             self.tried_gpu_input = self.session.as_ref().is_some_and(|s| s.gpu_input);
             match self.encode_once(image, device.as_ref()) {
-                Ok(encoded) => {
-                    self.watch_output(encoded.as_ref());
-                    return Ok(encoded);
-                }
+                Ok(encoded) => return Ok(encoded),
                 // No encoder left to try: the first failure says why.
                 Err(CodecError::NoHardware) if first_error.is_some() => break,
                 Err(e) => {
@@ -515,9 +505,8 @@ impl VideoEncoder for MfEncoder {
             return Ok(None);
         };
         let result = session.drain();
-        match &result {
-            Ok(encoded) => self.watch_output(encoded.as_ref()),
-            Err(_) => self.session = None,
+        if result.is_err() {
+            self.session = None;
         }
         result
     }
@@ -527,10 +516,8 @@ impl VideoEncoder for MfEncoder {
     }
 
     fn set_bitrate(&mut self, bitrate_bps: u32) {
-        if !self.fixed_rate {
-            self.target_bps = bitrate_bps;
-            self.apply_target();
-        }
+        self.target_bps = bitrate_bps;
+        self.apply_target();
     }
 
     fn name(&self) -> String {
@@ -554,29 +541,6 @@ impl MfEncoder {
             if !taken {
                 tracing::warn!("{} não aceitou mudar a taxa", self.name);
             }
-        }
-    }
-
-    fn watch_output(&mut self, encoded: Option<&Encoded>) {
-        let Some(encoded) = encoded else { return };
-        // Probing changes rates on purpose, faster than real time.
-        if self.fixed_rate || self.only.is_some() {
-            return;
-        }
-        let target = self.target_bps;
-        if target < self.settings.bitrate_bps
-            && self
-                .rate_watch
-                .output(encoded.data.len(), target, Instant::now())
-        {
-            tracing::info!(
-                "{} ignorou a nova taxa: fica em {:.1} Mbps",
-                self.name,
-                f64::from(self.settings.bitrate_bps) / 1e6,
-            );
-            self.fixed_rate = true;
-            self.target_bps = self.settings.bitrate_bps;
-            self.apply_target();
         }
     }
 
