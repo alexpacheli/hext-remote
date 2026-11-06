@@ -16,8 +16,8 @@ use hext_codec::{DecoderPreference, YuvFrame};
 use hext_input::keymap::{self, CommandKey};
 use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::Os;
-use hext_proto::{Hello, InputEvent, MouseButton, PeerInfo, RejectReason};
-use hext_render::{ButtonAction, Renderer, VideoRect, button_rect};
+use hext_proto::{Displays, Hello, InputEvent, MouseButton, PeerInfo, RejectReason};
+use hext_render::{ButtonAction, DisplayBar, Renderer, VideoRect, button_rect};
 use hext_session::client::{self, ClientHandle};
 use hext_session::files::{Confirm, OwnFiles, Stage, Transfer, size_text};
 use hext_session::{NETWORK_GRACE, ResumeToken, SessionError};
@@ -50,12 +50,16 @@ const BACK_FIRST: Duration = Duration::from_secs(2);
 const BACK_MAX: Duration = Duration::from_secs(10);
 /// How long the title says how a file ended.
 const TRANSFER_SHOWN: Duration = Duration::from_secs(8);
+/// How long the mouse waits for the host to change displays.
+const SWITCH_WAIT: Duration = Duration::from_secs(2);
 
 enum UserEvent {
     Frame,
     SessionEnded,
     /// The attempt to come back ended.
     Back(Box<Result<ClientHandle>>),
+    /// News of the host's displays.
+    Displays,
     /// News of a file.
     Transfer(Transfer),
     /// The host wants to send this file: receive it?
@@ -86,9 +90,12 @@ struct Opened {
 struct Back {
     route: Route,
     decoder: DecoderPreference,
-    latest: Arc<Mutex<Option<YuvFrame>>>,
+    latest: Latest,
     proxy: EventLoopProxy<UserEvent>,
 }
+
+/// The newest picture, and the host's display it shows.
+type Latest = Arc<Mutex<Option<(YuvFrame, u8)>>>;
 
 pub fn run(args: ViewArgs) -> Result<()> {
     let password = read_password(&args)?;
@@ -113,7 +120,7 @@ pub fn run(args: ViewArgs) -> Result<()> {
 
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let latest: Arc<Mutex<Option<YuvFrame>>> = Arc::default();
+    let latest: Latest = Arc::default();
 
     let session = runtime.block_on(async {
         let mut session = client::start(
@@ -128,6 +135,7 @@ pub fn run(args: ViewArgs) -> Result<()> {
         tokio::spawn(end_of(&session, proxy.clone()));
         tokio::spawn(share_clipboard(&mut session));
         tokio::spawn(share_files(&mut session, proxy.clone()));
+        tokio::spawn(hear_displays(&session, proxy.clone()));
         anyhow::Ok(session)
     })?;
     info!(
@@ -183,6 +191,10 @@ pub fn run(args: ViewArgs) -> Result<()> {
         button: None,
         button_hint: None,
         button_pressed: false,
+        displays: Displays::default(),
+        display_bar: None,
+        switching: None,
+        picture: None,
         last_title: Instant::now(),
     };
     event_loop.run_app(&mut app)?;
@@ -198,7 +210,7 @@ struct Viewer {
     session: Option<ClientHandle>,
     /// Closed (gracefully, relay included) when the window closes.
     endpoint: Option<Endpoint>,
-    latest: Arc<Mutex<Option<YuvFrame>>>,
+    latest: Latest,
     /// How to open the session again; `None`: connected by IP.
     back: Option<Arc<Back>>,
     /// What the title says while coming back.
@@ -231,6 +243,14 @@ struct Viewer {
     button_hint: Option<Instant>,
     /// The button took a press: its release is not for the host either.
     button_pressed: bool,
+    /// The host's displays, as last told (kept while coming back).
+    displays: Displays,
+    /// The numbered buttons on screen, next to the full screen one.
+    display_bar: Option<DisplayBar>,
+    /// The display asked for, and when.
+    switching: Option<(u8, Instant)>,
+    /// The display in the picture on screen.
+    picture: Option<u8>,
     last_title: Instant,
 }
 
@@ -322,10 +342,63 @@ impl Viewer {
     }
 
     fn send(&self, event: InputEvent) {
+        if self.switching().is_some() && aimed_at_the_picture(&event) {
+            return;
+        }
         // (The host refuses it anyway; this saves sending it.)
         if let Some(session) = self.session.as_ref().filter(|s| s.permissions.control) {
             session.send_input(event);
         }
+    }
+
+    /// Asks the host for display `index`. It takes no permission: whoever
+    /// sees the screen sees them all.
+    fn select_display(&mut self, index: u8) {
+        let aimed = self.switching().unwrap_or(self.displays.current);
+        if let Some(session) = &self.session
+            && index < self.displays.count
+            && index != aimed
+        {
+            session.select_display(index);
+            self.switching = Some((index, Instant::now()));
+        }
+    }
+
+    /// The display coming, while the picture on screen is still of another.
+    fn switching(&self) -> Option<u8> {
+        let (index, asked) = self.switching?;
+        (self.picture != Some(index) && asked.elapsed() < SWITCH_WAIT).then_some(index)
+    }
+
+    /// The host's mouse stays where it was until it moves: on the display
+    /// left behind, where the next click would land, unseen.
+    fn aim_mouse(&self) {
+        let rect = self.renderer.as_ref().and_then(Renderer::video_rect);
+        if let (Some(rect), Some((x, y))) = (rect, self.cursor)
+            && let Some((x, y)) = rect.normalize(x, y)
+        {
+            self.send(InputEvent::MouseMove { x, y });
+        }
+    }
+
+    /// Takes what the host told of its displays.
+    fn update_displays(&mut self) {
+        let Some(told) = self.session.as_ref().map(ClientHandle::displays) else {
+            return;
+        };
+        // (Nothing yet: the session just came back.)
+        if told == self.displays || told.count == 0 {
+            return;
+        }
+        let first_time = told.count > 1 && self.displays.count <= 1;
+        self.displays = told;
+        // There is more to see: let it be known once.
+        if first_time {
+            self.button_hint = Some(Instant::now() + BUTTON_HINT);
+        }
+        self.update_button();
+        self.last_title = Instant::now() - Duration::from_secs(1);
+        self.update_title();
     }
 
     /// Uploads the newest decoded frame, if any, and redraws.
@@ -340,13 +413,20 @@ impl Viewer {
             return;
         };
         let frame = self.latest.lock().expect("lock").take();
+        let mut arrived = false;
         match frame {
-            Some(frame) => renderer.upload(&frame),
+            Some((frame, display)) => {
+                renderer.upload(&frame);
+                arrived = self.picture.replace(display) != Some(display);
+            }
             None if only_if_new => return,
             None => {}
         }
         if let Err(e) = renderer.render() {
             warn!("render: {e}");
+        }
+        if arrived {
+            self.aim_mouse();
         }
     }
 
@@ -363,23 +443,45 @@ impl Viewer {
     fn update_button(&mut self) {
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
-        let rect = button_rect((size.width, size.height), window.scale_factor());
+        let scale = window.scale_factor();
+        let rect = button_rect((size.width, size.height), scale);
+        let Displays { count, current } = self.displays;
+        // (As many as the shortcut reaches, whatever the host says.)
+        let buttons = count.min(9).into();
+        let bar = DisplayBar::new(rect, buttons, current.into(), scale).filter(|_| count > 1);
+        // The buttons call for each other: all up, all down.
+        let called = bar.map_or(rect, |bar| VideoRect {
+            x: bar.rect.x,
+            width: rect.x + rect.width - bar.rect.x,
+            ..rect
+        });
         let near = self
             .cursor
-            .is_some_and(|(x, y)| button_called(rect, self.button.is_some(), x, y));
+            .is_some_and(|(x, y)| button_called(called, self.button.is_some(), x, y));
         let action = if window.fullscreen().is_some() {
             ButtonAction::Leave
         } else {
             ButtonAction::Enter
         };
-        let button = (near || self.button_hint.is_some()).then_some((action, rect));
-        if self.button != button {
+        let shown = near || self.button_hint.is_some();
+        let button = shown.then_some((action, rect));
+        let bar = bar.filter(|_| shown);
+        if self.button != button || self.display_bar != bar {
             self.button = button;
+            self.display_bar = bar;
             if let Some(renderer) = &mut self.renderer {
                 renderer.set_button(button);
+                renderer.set_display_bar(bar);
             }
             self.draw(false);
         }
+    }
+
+    /// The display whose numbered button is under the mouse.
+    fn on_display_bar(&self) -> Option<u8> {
+        let (x, y) = self.cursor?;
+        let index = self.display_bar?.display_at(x, y)?;
+        u8::try_from(index).ok()
     }
 
     /// Whether the mouse is on the button.
@@ -436,6 +538,10 @@ impl Viewer {
             "Hext Remote — {}{view_only}{path}",
             session.host.device_name
         );
+        let Displays { count, current } = self.displays;
+        if count > 1 {
+            title += &format!(" — monitor {} de {count}", u16::from(current) + 1);
+        }
         if let Some(snapshot) = stats.snapshot() {
             title += &format!(
                 " — {}x{} | {snapshot} | RTT {:.1} ms",
@@ -503,6 +609,14 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     self.runtime.spawn(share_clipboard(&mut session));
                     self.runtime
                         .spawn(share_files(&mut session, self.proxy.clone()));
+                    self.runtime
+                        .spawn(hear_displays(&session, self.proxy.clone()));
+                    // The host starts over on a display of its choosing: back
+                    // to where this was. (If it is gone, nothing changes.)
+                    let index = self.displays.current;
+                    session.select_display(index);
+                    self.switching = Some((index, Instant::now()));
+                    self.picture = None;
                     self.session = Some(session);
                     self.coming_back = None;
                     self.last_title = Instant::now() - Duration::from_secs(1);
@@ -513,6 +627,8 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     event_loop.exit();
                 }
             },
+            // (Taken right after this, as after any event.)
+            UserEvent::Displays => {}
             UserEvent::Transfer(transfer) => {
                 let until = (!matches!(transfer.stage, Stage::Going { .. }))
                     .then(|| Instant::now() + TRANSFER_SHOWN);
@@ -559,6 +675,11 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     let pressed = state == ElementState::Pressed;
                     // (Pressed again: its release got lost, as with `local_key`.)
                     let was_ours = std::mem::replace(&mut self.button_pressed, false);
+                    if let Some(index) = self.on_display_bar().filter(|_| pressed) {
+                        self.button_pressed = true;
+                        self.select_display(index);
+                        return;
+                    }
                     if pressed && self.on_button() {
                         self.button_pressed = true;
                         self.toggle_fullscreen();
@@ -625,6 +746,17 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     self.ask_restart();
                     return;
                 }
+                // Ctrl+Alt+1..9: another display of the host. (With no such
+                // display, the keys are the host's.)
+                if event.state == ElementState::Pressed
+                    && self.ctrl_alt()
+                    && self.displays.count > 1
+                    && let Some(index) = display_key(code).filter(|i| *i < self.displays.count)
+                {
+                    self.local_key = Some(code);
+                    self.select_display(index);
+                    return;
+                }
                 // Ctrl+Alt+Enter: full screen, and back.
                 if event.state == ElementState::Pressed
                     && matches!(code, KeyCode::Enter | KeyCode::NumpadEnter)
@@ -650,6 +782,7 @@ impl ApplicationHandler<UserEvent> for Viewer {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.update_displays();
         self.update_title();
         if self
             .button_hint
@@ -709,12 +842,26 @@ impl ApplicationHandler<UserEvent> for Viewer {
 
 /// Hands decoded frames to the window.
 fn show_frames(
-    latest: Arc<Mutex<Option<YuvFrame>>>,
+    latest: Latest,
     proxy: EventLoopProxy<UserEvent>,
 ) -> impl FnMut(client::DecodedFrame) + Send + 'static {
     move |frame| {
-        *latest.lock().expect("lock") = Some(frame.yuv);
+        *latest.lock().expect("lock") = Some((frame.yuv, frame.display));
         let _ = proxy.send_event(UserEvent::Frame);
+    }
+}
+
+/// Wakes the window at each news of the host's displays: a still screen
+/// brings no event of its own.
+fn hear_displays(
+    session: &ClientHandle,
+    proxy: EventLoopProxy<UserEvent>,
+) -> impl Future<Output = ()> + Send + 'static {
+    let mut displays = session.displays_changed();
+    async move {
+        while displays.changed().await.is_ok() {
+            let _ = proxy.send_event(UserEvent::Displays);
+        }
     }
 }
 
@@ -887,6 +1034,33 @@ fn belongs_to_shortcut(
     }
     *held = None;
     released
+}
+
+/// The display of a Ctrl+Alt+1..9 key, from 0.
+fn display_key(code: KeyCode) -> Option<u8> {
+    const KEYS: [KeyCode; 9] = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+    ];
+    KEYS.iter().position(|key| *key == code).map(|i| i as u8)
+}
+
+/// Whether input takes its meaning from the picture on screen. A release is
+/// not such a thing: the button it lets go of would stay down on the host.
+fn aimed_at_the_picture(event: &InputEvent) -> bool {
+    matches!(
+        event,
+        InputEvent::MouseMove { .. }
+            | InputEvent::Wheel { .. }
+            | InputEvent::MouseButton { pressed: true, .. }
+    )
 }
 
 /// Whether the mouse at (`x`, `y`) calls for the button at `rect`: it comes up
@@ -1124,6 +1298,29 @@ mod tests {
             false
         ));
         assert!(!belongs_to_shortcut(&mut held, KeyCode::Enter, false, true));
+    }
+
+    #[test]
+    fn the_shortcut_numbers_displays_from_the_first() {
+        assert_eq!(display_key(KeyCode::Digit1), Some(0));
+        assert_eq!(display_key(KeyCode::Digit9), Some(8));
+        assert_eq!(display_key(KeyCode::Digit0), None);
+        assert_eq!(display_key(KeyCode::KeyR), None);
+    }
+
+    #[test]
+    fn a_held_button_can_always_be_let_go() {
+        let button = |pressed| InputEvent::MouseButton {
+            button: MouseButton::Left,
+            pressed,
+        };
+        assert!(aimed_at_the_picture(&button(true)));
+        assert!(!aimed_at_the_picture(&button(false)));
+        assert!(aimed_at_the_picture(&InputEvent::MouseMove {
+            x: 0.5,
+            y: 0.5
+        }));
+        assert!(!aimed_at_the_picture(&InputEvent::ReleaseAll));
     }
 
     #[test]

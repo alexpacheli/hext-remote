@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod frame;
 
 /// Bumped on any incompatible change to the messages below.
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 12;
 
 /// The longest text the clipboard shares, in bytes: it fits a control frame.
 pub const MAX_CLIPBOARD_TEXT: usize = 512 * 1024;
@@ -220,6 +220,18 @@ pub enum Control {
     /// What became of file `id` ([`FileMessage::Start`]), from the side that
     /// got it.
     FileAnswer { id: u64, outcome: FileOutcome },
+    /// Host → client, at the start and at each change.
+    Displays(Displays),
+    /// Client → host: show this display. Seeing the screen takes no
+    /// permission of its own, and that covers every display.
+    SelectDisplay { index: u8 },
+}
+
+/// The displays a host has, numbered from 0, and the one being shown.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Displays {
+    pub count: u8,
+    pub current: u8,
 }
 
 /// What the receiving side did with a file.
@@ -307,6 +319,8 @@ pub struct VideoPacket {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct VideoFrame {
     pub seq: u64,
+    /// The display this shows ([`Displays::current`]).
+    pub display: u8,
     pub width: u32,
     pub height: u32,
     pub keyframe: bool,
@@ -403,6 +417,11 @@ mod tests {
                 id: 3,
                 outcome: FileOutcome::NoUser,
             },
+            Control::Displays(Displays {
+                count: 3,
+                current: 1,
+            }),
+            Control::SelectDisplay { index: 2 },
             Control::HelloAck {
                 peer: PeerInfo::local("0.1.0", "laptop"),
                 permissions: Permissions {
@@ -478,6 +497,7 @@ mod tests {
     fn video_and_input_roundtrip() {
         let frame = VideoFrame {
             seq: 7,
+            display: 2,
             width: 1920,
             height: 1080,
             keyframe: true,

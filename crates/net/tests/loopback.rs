@@ -83,6 +83,7 @@ async fn lost_packets_are_resent() {
     let (_host_end, host) = accept.await.unwrap();
     let frame = |seq, keyframe| hext_proto::VideoFrame {
         seq,
+        display: 0,
         width: 64,
         height: 64,
         keyframe,

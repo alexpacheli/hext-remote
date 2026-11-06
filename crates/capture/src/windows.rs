@@ -27,7 +27,8 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
-    IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
+    DXGI_OUTPUT_DESC, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
+    IDXGIOutputDuplication, IDXGIResource,
 };
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -35,7 +36,7 @@ use windows::Win32::UI::HiDpi::{
 use windows::core::Interface;
 
 use crate::gpu_nv12::Nv12Converter;
-use crate::{CaptureError, Capturer, Frame, PixelFormat, Rect, even};
+use crate::{CaptureError, Capturer, Display, Frame, PixelFormat, Rect, even};
 
 fn platform(e: windows::core::Error) -> CaptureError {
     CaptureError::Platform(e.to_string())
@@ -66,13 +67,14 @@ pub struct DxgiCapturer {
 const FOLLOW_EVERY: Duration = Duration::from_millis(500);
 
 impl DxgiCapturer {
-    pub fn new(index: usize) -> Result<Self, CaptureError> {
-        // Work in physical pixels: capture size and input coordinates must agree.
-        // Fails harmlessly if the process is already DPI aware.
-        let _ =
-            unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
-
-        let (adapter, output) = find_output(index)?;
+    /// Opens display `id` ([`Display::id`]).
+    pub fn new(id: &str) -> Result<Self, CaptureError> {
+        let (adapter, output) = outputs()?
+            .into_iter()
+            .find_map(|(adapter, output, desc)| {
+                (device_name(&desc) == id).then_some((adapter, output))
+            })
+            .ok_or_else(|| CaptureError::DisplayGone(id.into()))?;
         // Video support lets the GPU convert to NV12 and the hardware
         // encoder use the same device; without it, the CPU path still works.
         let (device, context, video) = match create_device(
@@ -119,13 +121,7 @@ impl DxgiCapturer {
 
     fn duplicate(&mut self) -> Result<(), CaptureError> {
         let desc = unsafe { self.output.GetDesc() }.map_err(platform)?;
-        let r = desc.DesktopCoordinates;
-        self.rect = Rect {
-            x: r.left,
-            y: r.top,
-            width: (r.right - r.left) as u32,
-            height: (r.bottom - r.top) as u32,
-        };
+        self.rect = rect(&desc);
         let duplication = unsafe { self.output.DuplicateOutput(&self.device) }.map_err(platform)?;
         // A new duplication (mode change, secure desktop over): worth
         // trying the GPU conversion again.
@@ -365,10 +361,32 @@ fn create_device(
     Ok((device, context))
 }
 
-/// Finds the `index`-th output across all adapters (0 = first, usually primary).
-fn find_output(index: usize) -> Result<(IDXGIAdapter1, IDXGIOutput), CaptureError> {
+/// Where a display sits on the virtual desktop.
+fn rect(desc: &DXGI_OUTPUT_DESC) -> Rect {
+    let r = desc.DesktopCoordinates;
+    Rect {
+        x: r.left,
+        y: r.top,
+        width: (r.right - r.left) as u32,
+        height: (r.bottom - r.top) as u32,
+    }
+}
+
+/// The system's name for a display (`\\.\DISPLAY2`).
+fn device_name(desc: &DXGI_OUTPUT_DESC) -> String {
+    let name = &desc.DeviceName;
+    let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    String::from_utf16_lossy(&name[..end])
+}
+
+/// The displays on the desktop, across all adapters.
+fn outputs() -> Result<Vec<(IDXGIAdapter1, IDXGIOutput, DXGI_OUTPUT_DESC)>, CaptureError> {
+    // Work in physical pixels: capture size and input coordinates must agree.
+    // Fails harmlessly if the process is already DPI aware.
+    let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(platform)?;
-    let mut seen = 0;
+    let mut found = Vec::new();
     for a in 0.. {
         let Ok(adapter) = (unsafe { factory.EnumAdapters1(a) }) else {
             break;
@@ -377,11 +395,21 @@ fn find_output(index: usize) -> Result<(IDXGIAdapter1, IDXGIOutput), CaptureErro
             let Ok(output) = (unsafe { adapter.EnumOutputs(o) }) else {
                 break;
             };
-            if seen == index {
-                return Ok((adapter, output));
+            let desc = unsafe { output.GetDesc() }.map_err(platform)?;
+            if desc.AttachedToDesktop.as_bool() {
+                found.push((adapter.clone(), output, desc));
             }
-            seen += 1;
         }
     }
-    Err(CaptureError::NoSuchDisplay(index))
+    Ok(found)
+}
+
+pub fn displays() -> Result<Vec<Display>, CaptureError> {
+    Ok(outputs()?
+        .iter()
+        .map(|(_, _, desc)| Display {
+            id: device_name(desc),
+            rect: rect(desc),
+        })
+        .collect())
 }

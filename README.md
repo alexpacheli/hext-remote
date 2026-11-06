@@ -76,7 +76,8 @@ Os binários ainda não são assinados (isso entra na F6):
 
 - **Tecla Command:** por padrão funciona como Ctrl (Cmd+C copia no Windows). Use `--cmd-key win` para que ela seja a tecla Windows.
 - **Fora de casa:** conecte pelo ID (abaixo); pelo IP, os dois precisam estar na mesma rede (ou no Tailscale).
-- **Outros monitores:** `host --display 1` compartilha o segundo monitor.
+- **Outros monitores:** o técnico troca de monitor durante a sessão com **Ctrl+Alt+1..9** ou pelos botões
+  numerados no topo da janela. `host --display 1` começa no segundo monitor.
 - **Ajustes:** `host --bitrate-mbps 15 --fps 60`.
 - **Codificador:** por padrão usa a placa de vídeo (NVIDIA, AMD ou Intel, via Media Foundation) e volta
   para o processador se ela não existir ou falhar. O título da janela mostra `(GPU)` ou `(CPU)` ao lado
@@ -150,7 +151,9 @@ em `C:\ProgramData\HextRemote\audit.log`. A tela inicial guarda o nome e o ID do
 nunca a senha.
 
 Na janela do visualizador, **Ctrl+Alt+Enter** entra e sai da tela cheia, com a imagem ocupando a tela
-inteira sem distorcer. Levar o mouse até a borda de cima, no centro, mostra um botão que faz o mesmo.
+inteira sem distorcer. Levar o mouse até a borda de cima, no centro, mostra um botão que faz o mesmo. Se o
+outro computador tiver mais de um monitor, os botões numerados aparecem ao lado desse botão: o 1 é o monitor
+principal, e os outros seguem da esquerda para a direita. **Ctrl+Alt+1..9** faz o mesmo.
 
 ## Testar: controlar o Mac a partir do Windows
 

@@ -8,18 +8,35 @@ use std::time::Duration;
 use hext_codec::DecoderPreference;
 use hext_crypto::DeviceKey;
 use hext_net::EndpointConfig;
-use hext_proto::{Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions, VideoFrame};
+use hext_proto::{
+    Displays, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions, VideoFrame,
+};
 use hext_session::host::{ActiveSession, BoxFuture, Desktop, HostConfig, Presence, Screen};
 use hext_session::{Grant, SessionCodes, client, host};
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, watch};
 
 /// A desktop that only counts the input reaching it.
-#[derive(Default)]
 struct Counting {
     injected: Arc<AtomicU32>,
     /// Where to tell what is copied here, if the session may know.
     copied: Arc<Mutex<Option<mpsc::Sender<String>>>>,
     pasted: Arc<Mutex<Vec<String>>>,
+    /// Two displays: the first shown.
+    displays: watch::Sender<Displays>,
+}
+
+impl Default for Counting {
+    fn default() -> Self {
+        Self {
+            injected: Arc::default(),
+            copied: Arc::default(),
+            pasted: Arc::default(),
+            displays: watch::Sender::new(Displays {
+                count: 2,
+                current: 0,
+            }),
+        }
+    }
 }
 
 impl Desktop for Counting {
@@ -34,6 +51,7 @@ impl Desktop for Counting {
                 _frames: frames,
                 injected: self.injected.clone(),
                 pasted: self.pasted.clone(),
+                displays: self.displays.clone(),
             }) as Box<dyn Screen>)
         })
     }
@@ -48,6 +66,7 @@ struct CountingScreen {
     _frames: mpsc::Sender<VideoFrame>,
     injected: Arc<AtomicU32>,
     pasted: Arc<Mutex<Vec<String>>>,
+    displays: watch::Sender<Displays>,
 }
 
 impl Screen for CountingScreen {
@@ -59,6 +78,18 @@ impl Screen for CountingScreen {
 
     fn set_clipboard(&mut self, text: String) {
         self.pasted.lock().unwrap().push(text);
+    }
+
+    fn select_display(&self, index: usize) {
+        self.displays.send_modify(|displays| {
+            if index < displays.count.into() {
+                displays.current = index as u8;
+            }
+        });
+    }
+
+    fn displays(&self) -> Option<watch::Receiver<Displays>> {
+        Some(self.displays.subscribe())
     }
 
     fn close(self: Box<Self>) -> BoxFuture<'static, ()> {
@@ -89,6 +120,7 @@ impl Presence for Indicator {
 
 struct Running {
     session: client::ClientHandle,
+    displays: watch::Sender<Displays>,
     injected: Arc<AtomicU32>,
     copied: Arc<Mutex<Option<mpsc::Sender<String>>>>,
     pasted: Arc<Mutex<Vec<String>>>,
@@ -119,6 +151,7 @@ async fn session_with(permissions: Permissions) -> Running {
         },
     );
     let desktop = Counting::default();
+    let displays = desktop.displays.clone();
     let injected = desktop.injected.clone();
     let copied = desktop.copied.clone();
     let pasted = desktop.pasted.clone();
@@ -158,6 +191,7 @@ async fn session_with(permissions: Permissions) -> Running {
     .unwrap();
     Running {
         session,
+        displays,
         injected,
         copied,
         pasted,
@@ -253,6 +287,84 @@ async fn control_needs_the_permission() {
     let refused = session_with(Permissions::VIEW_ONLY).await;
     assert_eq!(try_input(&refused).await, 0);
     assert!(!refused.session.is_finished(), "the session goes on");
+}
+
+/// Waits for the host to tell `displays`.
+async fn told(running: &Running, displays: Displays) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while running.session.displays() != displays {
+        assert!(tokio::time::Instant::now() < deadline, "the host told");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_viewer_learns_the_displays_and_chooses_one() {
+    let running = session_with(Permissions::CONTROL).await;
+    let first = Displays {
+        count: 2,
+        current: 0,
+    };
+    told(&running, first).await;
+    running.session.select_display(1);
+    let second = Displays {
+        count: 2,
+        current: 1,
+    };
+    told(&running, second).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn seeing_covers_every_display_but_the_mouse_stays_out() {
+    let running = session_with(Permissions::VIEW_ONLY).await;
+    running.session.select_display(1);
+    let second = Displays {
+        count: 2,
+        current: 1,
+    };
+    told(&running, second).await;
+    assert_eq!(
+        try_input(&running).await,
+        0,
+        "on this display as on the other"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_display_that_does_not_exist_changes_nothing() {
+    let running = session_with(Permissions::CONTROL).await;
+    running.session.select_display(u8::MAX);
+    running.session.select_display(1);
+    let second = Displays {
+        count: 2,
+        current: 1,
+    };
+    told(&running, second).await;
+    assert!(!running.session.is_finished(), "the session goes on");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_display_past_the_list_is_not_believed() {
+    let running = session_with(Permissions::CONTROL).await;
+    let first = Displays {
+        count: 2,
+        current: 0,
+    };
+    told(&running, first).await;
+
+    running.displays.send_replace(Displays {
+        count: 2,
+        current: 7,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(running.session.displays(), first);
+
+    let second = Displays {
+        count: 2,
+        current: 1,
+    };
+    running.displays.send_replace(second);
+    told(&running, second).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

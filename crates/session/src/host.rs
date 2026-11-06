@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use hext_capture::{CaptureError, Capturer, Display};
 use hext_clipboard::Clipboard;
 use hext_codec::EncoderSettings;
 use hext_crypto::PublicKey;
@@ -15,10 +16,10 @@ use hext_input::Area;
 use hext_net::video::{LOG_TARGET, ResendRequest, VideoSender};
 use hext_net::{Admission, Connection, ConnectionError, NetError};
 use hext_proto::{
-    Control, ENDED_ON_HOST, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions,
+    Control, Displays, ENDED_ON_HOST, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo, Permissions,
     RejectReason, StreamKind, VideoFrame,
 };
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
 use crate::files::{self, Direction, FileAccess, FileEnd, Stage, Tell, Transfer};
@@ -28,6 +29,8 @@ use crate::{KeptResume, Lockout, Result, ResumeTokens, SessionError, codes_match
 const BYE_WAIT: Duration = Duration::from_secs(1);
 /// How often a still screen repeats the number of its last frame.
 const IDLE_NOTICE: Duration = Duration::from_millis(250);
+/// How often to check whether a monitor came or went.
+const DISPLAYS_CHECK: Duration = Duration::from_secs(3);
 
 pub struct HostConfig {
     pub peer: PeerInfo,
@@ -155,8 +158,25 @@ pub trait Screen: Send {
     fn inject(&mut self, event: &InputEvent);
     /// Puts text from the viewer on this computer's clipboard.
     fn set_clipboard(&mut self, text: String);
+    /// Streams display `index` from now on, with a keyframe, and the mouse
+    /// goes to it. A number with no display changes nothing.
+    fn select_display(&self, _index: usize) {}
+    /// The displays there are and the one streamed; `None`: one, and no news.
+    fn displays(&self) -> Option<watch::Receiver<Displays>> {
+        None
+    }
     /// Stops streaming, releasing any key or button still held.
     fn close(self: Box<Self>) -> BoxFuture<'static, ()>;
+}
+
+/// The next news of [`Screen::displays`]; with none to come, this waits on.
+pub async fn next_displays(displays: &mut Option<watch::Receiver<Displays>>) -> Displays {
+    if let Some(displays) = displays
+        && displays.changed().await.is_ok()
+    {
+        return *displays.borrow_and_update();
+    }
+    std::future::pending().await
 }
 
 /// The screen of this process's desktop: capture and encoding on a thread
@@ -186,6 +206,9 @@ impl Desktop for LocalDesktop {
                 keyframe: AtomicBool::new(false),
                 bitrate: AtomicU32::new(settings.encoder.bitrate_bps),
                 area: Mutex::new(Area::default()),
+                wanted: Mutex::new(None),
+                listed: Mutex::new(None),
+                displays: watch::Sender::default(),
             });
             // Capture and encoding run on their own thread: both are
             // blocking, and capture objects (COM on Windows) must stay on
@@ -204,6 +227,7 @@ impl Desktop for LocalDesktop {
                 .await
                 .map_err(|_| SessionError::Protocol("capture thread died".into()))?;
             started?;
+            tokio::spawn(check_displays(shared.clone(), settings.test_pattern));
             let (input, input_thread) = spawn_input(shared.clone())?;
             // A session goes on without it.
             let clipboard = clipboard.and_then(|changed| {
@@ -256,6 +280,28 @@ struct LocalScreen {
 impl Drop for LocalScreen {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Keeps the capture up to date with the monitors, for as long as it runs.
+/// (Not on the capture's thread: asking the system can take a while, and the
+/// video would feel it.)
+async fn check_displays(shared: Arc<Shared>, test_pattern: bool) {
+    loop {
+        tokio::time::sleep(DISPLAYS_CHECK).await;
+        if shared.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let listed = tokio::task::spawn_blocking(move || hext_capture::displays(test_pattern));
+        match listed.await {
+            // (None at all: the computer is between two arrangements.)
+            Ok(Ok(displays)) if !displays.is_empty() => {
+                *shared.listed.lock().expect("lock") = Some(displays);
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => debug!("monitores: {e}"),
+            Err(_) => return,
+        }
     }
 }
 
@@ -321,6 +367,14 @@ impl Screen for LocalScreen {
         }
     }
 
+    fn select_display(&self, index: usize) {
+        *self.shared.wanted.lock().expect("lock") = Some(index);
+    }
+
+    fn displays(&self) -> Option<watch::Receiver<Displays>> {
+        Some(self.shared.displays.subscribe())
+    }
+
     fn close(mut self: Box<Self>) -> BoxFuture<'static, ()> {
         // Releases the keys and stops the capture (`Drop`), then waits for
         // the capture to let go of the screen and the encoder.
@@ -350,6 +404,45 @@ struct Shared {
     /// What the encoder should aim for.
     bitrate: AtomicU32,
     area: Mutex<Area>,
+    /// The display the viewer asked for last, until the capture takes it.
+    wanted: Mutex<Option<usize>>,
+    /// The monitors as last checked, until the capture takes them.
+    listed: Mutex<Option<Vec<Display>>>,
+    /// What the viewer is told.
+    displays: watch::Sender<Displays>,
+}
+
+/// The monitors of this computer, and which one is being captured.
+struct Layout {
+    displays: Vec<Display>,
+    /// `None`: that one is gone.
+    current: Option<usize>,
+}
+
+impl Layout {
+    /// As the viewer sees it.
+    fn view(&self) -> Displays {
+        Displays {
+            count: self.displays.len().min(u8::MAX.into()) as u8,
+            current: self.current.unwrap_or(0).min(u8::MAX.into()) as u8,
+        }
+    }
+
+    /// The monitors changed: the one captured may have another number now,
+    /// or be gone.
+    fn update(&mut self, displays: Vec<Display>) {
+        let current = self.current.map(|current| &self.displays[current].id);
+        self.current = displays.iter().position(|d| Some(&d.id) == current);
+        self.displays = displays;
+    }
+
+    /// Display `index`, unless it is the one captured already.
+    fn other(&self, index: usize) -> Option<Display> {
+        if self.current == Some(index) {
+            return None;
+        }
+        self.displays.get(index).cloned()
+    }
 }
 
 /// How a session with the password is told apart in the audit.
@@ -514,8 +607,15 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // A few slots: a burst of copies loses the middle ones, which is fine.
     let (clipboard_tx, mut clipboard_rx) = mpsc::channel::<String>(4);
     let clipboard = session.permissions.clipboard.then_some(clipboard_tx);
-    let screen = match config.desktop.open(frames_tx, clipboard).await {
-        Ok(screen) => Arc::new(Mutex::new(Some(screen))),
+    let (screen, mut displays) = match config.desktop.open(frames_tx, clipboard).await {
+        Ok(screen) => {
+            let mut displays = screen.displays();
+            // What there is now is news for the viewer, too.
+            if let Some(displays) = &mut displays {
+                displays.mark_changed();
+            }
+            (Arc::new(Mutex::new(Some(screen))), displays)
+        }
         Err(e) => {
             conn.close(1u32.into(), b"capture unavailable");
             return Err(e);
@@ -627,6 +727,12 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                 Ok(Control::FileAnswer { id, outcome }) => {
                     let _ = file_answers.send((id, outcome));
                 }
+                // No permission to check: whoever sees the screen sees them all.
+                Ok(Control::SelectDisplay { index }) => {
+                    if let Some(screen) = screen.lock().expect("lock").as_ref() {
+                        screen.select_display(index.into());
+                    }
+                }
                 Ok(other) => debug!("mensagem inesperada: {other:?}"),
                 // A peer that left is a clean end; anything else is an error.
                 Err(e) if e.is_peer_closed() => break Ok(()),
@@ -639,6 +745,14 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             }
             Some((id, outcome)) = file_outcomes.recv() => {
                 if let Err(e) = control.send(&Control::FileAnswer { id, outcome }).await {
+                    break Err(e.into());
+                }
+            }
+            shown = next_displays(&mut displays) => {
+                // (None yet: an agent has not told.)
+                if shown.count > 0
+                    && let Err(e) = control.send(&Control::Displays(shown)).await
+                {
                     break Err(e.into());
                 }
             }
@@ -794,21 +908,110 @@ impl CaptureReport {
     }
 }
 
+/// Opens the display `config` names. A session going on with a new agent may
+/// name one that is gone: then the main one.
+fn open_first(
+    config: &CaptureSettings,
+) -> std::result::Result<(Box<dyn Capturer>, Layout), CaptureError> {
+    let displays = hext_capture::displays(config.test_pattern)?;
+    let current = if config.display < displays.len() {
+        config.display
+    } else {
+        warn!(
+            "o monitor {} não existe: mostrando o principal",
+            config.display + 1
+        );
+        0
+    };
+    let display = displays
+        .get(current)
+        .ok_or(CaptureError::NoSuchDisplay(current))?;
+    let capturer = hext_capture::open_display(display, config.test_pattern, fps(config))?;
+    let current = Some(current);
+    Ok((capturer, Layout { displays, current }))
+}
+
+fn fps(config: &CaptureSettings) -> u32 {
+    config.encoder.max_fps.round() as u32
+}
+
+/// Sends the mouse where the capturer is.
+fn aim_input(shared: &Shared, capturer: &dyn Capturer) {
+    let rect = capturer.rect();
+    *shared.area.lock().expect("lock") = Area {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    };
+}
+
+/// Takes what changed in the monitors and what the viewer asked for, and
+/// tells the viewer how that left things; whether the capture moved. If the
+/// display does not open, the capture stays where it is: the encoder takes
+/// whatever comes, so only the capturer changes.
+fn follow_displays(
+    config: &CaptureSettings,
+    shared: &Shared,
+    layout: &mut Layout,
+    capturer: &mut Box<dyn Capturer>,
+) -> bool {
+    let listed = shared.listed.lock().expect("lock").take();
+    let news = listed.is_some();
+    if let Some(displays) = listed {
+        layout.update(displays);
+    }
+    let asked = shared.wanted.lock().expect("lock").take();
+    let gone = layout.current.is_none().then_some(0);
+    // The same display, somewhere else on the desktop: not every capture
+    // notices, and the mouse must go there.
+    let shifted = layout
+        .current
+        .filter(|&current| news && layout.displays[current].rect != capturer.rect());
+    let target = asked
+        .or(gone)
+        .and_then(|index| Some((index, layout.other(index)?)))
+        .or_else(|| shifted.map(|index| (index, layout.displays[index].clone())));
+    let mut moved = false;
+    if let Some((index, display)) = target {
+        match hext_capture::open_display(&display, config.test_pattern, fps(config)) {
+            Ok(opened) => {
+                *capturer = opened;
+                aim_input(shared, capturer.as_ref());
+                layout.current = Some(index);
+                moved = true;
+                info!("mostrando o monitor {}", index + 1);
+            }
+            Err(e) => {
+                warn!("monitor {}: {e}", index + 1);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+    let view = layout.view();
+    // Who asked hears the outcome, even if it is what they already had.
+    shared.displays.send_if_modified(|shown| {
+        let changed = *shown != view;
+        *shown = view;
+        changed || asked.is_some()
+    });
+    moved
+}
+
 fn capture_loop(
     config: &CaptureSettings,
     shared: &Shared,
     frames: &mpsc::Sender<VideoFrame>,
     started: oneshot::Sender<Result<()>>,
 ) {
-    let opened = hext_capture::open(
-        config.display,
-        config.test_pattern,
-        config.encoder.max_fps.round() as u32,
-    )
-    .map_err(SessionError::from)
-    .and_then(|capturer| Ok((capturer, hext_codec::open_encoder(config.encoder)?)));
-    let (mut capturer, mut encoder) = match opened {
+    let opened = open_first(config)
+        .map_err(SessionError::from)
+        .and_then(|(capturer, layout)| {
+            Ok((capturer, layout, hext_codec::open_encoder(config.encoder)?))
+        });
+    let (mut capturer, mut layout, mut encoder) = match opened {
         Ok(opened) => {
+            shared.displays.send_replace(opened.1.view());
             let _ = started.send(Ok(()));
             opened
         }
@@ -829,6 +1032,11 @@ fn capture_loop(
 
     while !shared.stop.load(Ordering::Relaxed) {
         report.roll();
+        if follow_displays(config, shared, &mut layout, &mut capturer) {
+            // What the encoder held back is of the other display.
+            skipped = false;
+            shared.keyframe.store(true, Ordering::Relaxed);
+        }
         // Respect the frame-rate cap; changes accumulate in the meantime.
         if let Some(last) = last_encode {
             let since = last.elapsed();
@@ -854,13 +1062,7 @@ fn capture_loop(
                 continue;
             }
         };
-        let rect = capturer.rect();
-        *shared.area.lock().expect("lock") = Area {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-        };
+        aim_input(shared, capturer.as_ref());
 
         report.changed += u32::from(changed);
         let wanted = shared.bitrate.load(Ordering::Relaxed);
@@ -881,16 +1083,13 @@ fn capture_loop(
                 let started = Instant::now();
                 match encoder.drain() {
                     Ok(Some(encoded)) => {
-                        let Some(frame) = capturer.frame() else {
-                            continue;
-                        };
                         let waited = Instant::now();
                         let sent = send_frame(
                             frames,
                             &mut seq,
-                            frame,
+                            capturer.as_ref(),
+                            layout.view().current,
                             encoded,
-                            capturer.copy_time(),
                             started.elapsed(),
                             hardware,
                         );
@@ -910,9 +1109,11 @@ fn capture_loop(
             continue;
         }
         let Some(frame) = capturer.frame() else {
-            // Nothing captured yet: keep a pending keyframe request alive.
+            // Nothing captured yet: keep a pending keyframe request alive,
+            // without spinning (with one, the capture does not wait).
             if forced {
                 shared.keyframe.store(true, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(5));
             }
             continue;
         };
@@ -950,9 +1151,9 @@ fn capture_loop(
         let sent = send_frame(
             frames,
             &mut seq,
-            frame,
+            capturer.as_ref(),
+            layout.view().current,
             encoded,
-            capturer.copy_time(),
             encode_time,
             hardware,
         );
@@ -991,18 +1192,22 @@ fn gpu_texture(_frame: &hext_capture::Frame) -> Option<hext_codec::Pixels<'_>> {
 fn send_frame(
     frames: &mpsc::Sender<VideoFrame>,
     seq: &mut u64,
-    frame: &hext_capture::Frame,
+    capturer: &dyn Capturer,
+    display: u8,
     encoded: hext_codec::Encoded,
-    capture_time: Duration,
     encode_time: Duration,
     hardware: bool,
 ) -> bool {
+    let Some(frame) = capturer.frame() else {
+        return true;
+    };
     let msg = VideoFrame {
         seq: *seq,
+        display,
         width: frame.width,
         height: frame.height,
         keyframe: encoded.keyframe,
-        capture_micros: micros(capture_time),
+        capture_micros: micros(capturer.copy_time()),
         encode_micros: micros(encode_time),
         hardware,
         data: encoded.data,
@@ -1058,4 +1263,169 @@ async fn receive_input(
 
 fn micros(d: Duration) -> u32 {
     d.as_micros().min(u32::MAX as u128) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use hext_capture::Rect;
+
+    use super::*;
+
+    fn monitor(id: &str) -> Display {
+        Display {
+            id: id.into(),
+            rect: Rect::default(),
+        }
+    }
+
+    fn layout(ids: &[&str], current: usize) -> Layout {
+        Layout {
+            displays: ids.iter().map(|id| monitor(id)).collect(),
+            current: Some(current),
+        }
+    }
+
+    #[test]
+    fn the_monitor_on_screen_keeps_its_place_when_another_arrives() {
+        let mut layout = layout(&["principal", "direita"], 1);
+        layout.update(vec![
+            monitor("principal"),
+            monitor("esquerda"),
+            monitor("direita"),
+        ]);
+        let view = Displays {
+            count: 3,
+            current: 2,
+        };
+        assert_eq!(layout.view(), view);
+        assert_eq!(layout.other(2), None, "already there");
+    }
+
+    #[test]
+    fn a_monitor_that_goes_sends_the_capture_to_the_main_one() {
+        let mut layout = layout(&["principal", "direita"], 1);
+        layout.update(vec![monitor("principal")]);
+        assert_eq!(layout.current, None);
+        assert_eq!(layout.other(0), Some(monitor("principal")));
+        let view = Displays {
+            count: 1,
+            current: 0,
+        };
+        assert_eq!(layout.view(), view);
+    }
+
+    #[test]
+    fn a_number_with_no_monitor_changes_nothing() {
+        let layout = layout(&["principal", "direita"], 0);
+        assert_eq!(layout.other(2), None);
+        assert_eq!(layout.other(0), None);
+        assert_eq!(layout.other(1), Some(monitor("direita")));
+    }
+
+    fn settings() -> CaptureSettings {
+        CaptureSettings {
+            display: 0,
+            test_pattern: true,
+            encoder: EncoderSettings::default(),
+        }
+    }
+
+    /// Capture and encoding on their thread, on the test pattern's displays,
+    /// until `stop`.
+    fn capture(frames: mpsc::Sender<VideoFrame>) -> Arc<Shared> {
+        let shared = Arc::new(Shared {
+            stop: AtomicBool::new(false),
+            keyframe: AtomicBool::new(false),
+            bitrate: AtomicU32::new(settings().encoder.bitrate_bps),
+            area: Mutex::new(Area::default()),
+            wanted: Mutex::new(None),
+            listed: Mutex::new(None),
+            displays: watch::Sender::default(),
+        });
+        let running = shared.clone();
+        std::thread::spawn(move || {
+            capture_loop(&settings(), &running, &frames, oneshot::channel().0);
+        });
+        shared
+    }
+
+    #[test]
+    fn the_mouse_goes_with_the_picture_to_the_other_monitor() {
+        let (frames_tx, mut frames) = mpsc::channel(1);
+        let shared = capture(frames_tx);
+        let first = frames.blocking_recv().expect("a frame");
+        assert_eq!((first.width, first.height), (1280, 720));
+
+        *shared.wanted.lock().unwrap() = Some(1);
+        let frame = loop {
+            let frame = frames.blocking_recv().expect("a frame");
+            if frame.width == 640 {
+                break frame;
+            }
+        };
+        assert!(frame.keyframe, "the other monitor starts with a keyframe");
+        assert_eq!(frame.display, 1, "and says which it is");
+        let view = Displays {
+            count: 2,
+            current: 1,
+        };
+        assert_eq!(*shared.displays.borrow(), view);
+        // Left of the main monitor: nowhere near where the mouse was going.
+        let area = *shared.area.lock().unwrap();
+        assert_eq!(area.to_pixel(0.0, 0.0), (-640, 0));
+        assert_eq!(area.to_pixel(1.0, 1.0), (-1, 359));
+
+        // What the viewer asks for and does not exist leaves it there, and
+        // the viewer hears it.
+        let mut told = shared.displays.subscribe();
+        *shared.wanted.lock().unwrap() = Some(7);
+        while told.has_changed().is_ok_and(|changed| !changed) {
+            let _ = frames.try_recv();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(*told.borrow_and_update(), view);
+        shared.stop.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_monitor_moved_on_the_desktop_takes_the_mouse_with_it() {
+        let (frames_tx, mut frames) = mpsc::channel(1);
+        let shared = capture(frames_tx);
+        frames.blocking_recv().expect("a frame");
+
+        let mut moved = hext_capture::displays(true).unwrap();
+        moved[0].rect.y = 300;
+        *shared.listed.lock().unwrap() = Some(moved);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while shared.area.lock().unwrap().y != 300 {
+            assert!(Instant::now() < deadline, "the mouse stayed behind");
+            let _ = frames.try_recv();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        shared.stop.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_monitor_that_goes_brings_the_picture_back_to_the_main_one() {
+        let (frames_tx, mut frames) = mpsc::channel(1);
+        let shared = capture(frames_tx);
+        *shared.wanted.lock().unwrap() = Some(1);
+        while frames.blocking_recv().expect("a frame").width != 640 {}
+
+        let main = hext_capture::displays(true).unwrap().remove(0);
+        *shared.listed.lock().unwrap() = Some(vec![main]);
+        let frame = loop {
+            let frame = frames.blocking_recv().expect("a frame");
+            if frame.width == 1280 {
+                break frame;
+            }
+        };
+        assert!(frame.keyframe);
+        let view = Displays {
+            count: 1,
+            current: 0,
+        };
+        assert_eq!(*shared.displays.borrow(), view);
+        shared.stop.store(true, Ordering::Relaxed);
+    }
 }
