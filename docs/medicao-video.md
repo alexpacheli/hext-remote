@@ -167,7 +167,21 @@ Três rodadas seguidas no `DESKTOP-U6JQMAA`, com a mesma ação. E e G com taxa 
 - **Falso atraso do decodificador:** não apareceu nas 3 rodadas, mesmo com até 20 quadros passando à frente.
 
 `hext encoders` nunca mudou taxa; para testar isso sem rede, use `hext encoder-rates`. Ele compara quatro formas de
-mudar a taxa em cada codificador e mostra o que realmente saiu.
+mudar a taxa em cada codificador e mostra o que realmente saiu, quanto demorou o primeiro quadro depois da mudança e o
+maior quadro.
+
+| Com alvo de 1 Mbps | AMD (visualizador) | Intel Quick Sync (`DESKTOP-U6JQMAA`) |
+| --- | --- | --- |
+| Taxa média e máxima | 8,8 para 1,1 Mbps | 8,1 para 8,1 Mbps |
+| Também o buffer | 8,8 para 1,1 Mbps | 8,1 para 8,1 Mbps |
+| Também um keyframe | 8,8 para 1,0 Mbps | 8,1 para 8,1 Mbps |
+| Reabrindo o codificador | 8,8 para 0,9 Mbps | 8,1 para 2,1 Mbps |
+
+NVIDIA não entrou: nesse notebook ela falha ao abrir (`Falha catastrófica`) e o host cai para o Intel.
+
+Por isso o host passou a observar a saída: dois segundos seguidos 50% acima do alvo marcam o codificador como um que
+ignora a taxa. A partir daí, cada mudança de 25% ou mais abre uma sessão nova, com 5 s de intervalo. Cada sessão nova
+custa um keyframe e o tempo de abrir: no AMD, 410 ms e 16 kB a 1 Mbps. O número do Intel ainda falta medir.
 
 ## A quinta medição
 

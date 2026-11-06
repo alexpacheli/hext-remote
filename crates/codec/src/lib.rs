@@ -26,6 +26,8 @@ mod mf;
 #[cfg(windows)]
 mod mf_decode;
 mod nv12;
+#[cfg(windows)]
+mod rate_watch;
 mod software;
 #[cfg(target_os = "macos")]
 mod vt;

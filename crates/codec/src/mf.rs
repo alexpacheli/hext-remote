@@ -58,6 +58,7 @@ use windows::core::{GUID, Interface, PWSTR, Ref, implement};
 use crate::d3d11::Readback;
 use crate::h264::{self, PROFILE_BASELINE};
 use crate::nv12::bgra_to_nv12;
+use crate::rate_watch::RateWatch;
 use crate::{
     CodecError, Encoded, EncoderSettings, Image, PixelFormat, Pixels, VideoEncoder, check_frame,
     merge, profile_error,
@@ -110,6 +111,8 @@ pub struct MfEncoder {
     only: Option<String>,
     /// Memory images go with this device attached (probing).
     memory_device: Option<ID3D11Device>,
+    /// Whether the encoder follows a new rate, seen from what comes out.
+    rate_watch: RateWatch,
 }
 
 /// The optional encoder settings, each of which a driver may refuse.
@@ -224,6 +227,7 @@ impl MfEncoder {
             tweaks: Tweaks::ALL,
             only: None,
             memory_device: None,
+            rate_watch: RateWatch::new(settings.bitrate_bps, Instant::now()),
         })
     }
 
@@ -259,6 +263,8 @@ impl MfEncoder {
         let session = self.open_session(width, height, device)?;
         self.session = Some(session);
         self.frame_index = 0;
+        self.rate_watch
+            .opened(self.settings.bitrate_bps, Instant::now());
         Ok(())
     }
 
@@ -477,7 +483,10 @@ impl VideoEncoder for MfEncoder {
         for _ in 0..MAX_ATTEMPTS {
             self.tried_gpu_input = self.session.as_ref().is_some_and(|s| s.gpu_input);
             match self.encode_once(image, device.as_ref()) {
-                Ok(encoded) => return Ok(encoded),
+                Ok(encoded) => {
+                    self.watch_output(encoded.as_ref());
+                    return Ok(encoded);
+                }
                 // No encoder left to try: the first failure says why.
                 Err(CodecError::NoHardware) if first_error.is_some() => break,
                 Err(e) => {
@@ -498,8 +507,9 @@ impl VideoEncoder for MfEncoder {
             return Ok(None);
         };
         let result = session.drain();
-        if result.is_err() {
-            self.session = None;
+        match &result {
+            Ok(encoded) => self.watch_output(encoded.as_ref()),
+            Err(_) => self.session = None,
         }
         result
     }
@@ -539,6 +549,16 @@ impl VideoEncoder for MfEncoder {
 }
 
 impl MfEncoder {
+    fn watch_output(&mut self, encoded: Option<&Encoded>) {
+        if let Some(encoded) = encoded {
+            self.rate_watch.output(
+                encoded.data.len(),
+                self.settings.bitrate_bps,
+                Instant::now(),
+            );
+        }
+    }
+
     /// One try at encoding `image` with the current way (opening it if
     /// needed).
     fn encode_once(
@@ -548,6 +568,17 @@ impl MfEncoder {
     ) -> Result<Option<Encoded>, CodecError> {
         let (width, height) = (image.width, image.height);
         let device = device.cloned();
+        // Probing measures each way of changing the rate by itself.
+        let target = self.settings.bitrate_bps;
+        if self.only.is_none() && self.rate_watch.reopen_due(target, Instant::now()) {
+            tracing::info!(
+                "{} ignorou a nova taxa: reabrindo, de {:.1} para {:.1} Mbps",
+                self.name,
+                f64::from(self.rate_watch.session_bps()) / 1e6,
+                f64::from(target) / 1e6,
+            );
+            self.session = None;
+        }
         // A new size, the first texture (or a new capture device), or memory
         // images after textures: the encoder must be opened for it.
         let reopen = match &self.session {
@@ -1438,7 +1469,8 @@ pub fn probe_rates(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecErr
 }
 
 /// Encodes faint noise, changes the rate as `how`, and compares what came
-/// out before and after. Pure noise hits the worst quality at any rate.
+/// out before and after, with what the change itself cost. Pure noise hits
+/// the worst quality at any rate.
 fn probe_rate(
     settings: EncoderSettings,
     name: &str,
@@ -1466,8 +1498,10 @@ fn probe_rate(
         })
         .collect();
     let mut next = 0;
-    let mut encode = |encoder: &mut MfEncoder, count: usize| -> Result<usize, String> {
+    let mut largest = 0;
+    let mut encode = |encoder: &mut MfEncoder, count: usize| -> Result<(usize, usize), String> {
         let mut bytes = 0;
+        largest = 0;
         for _ in 0..count {
             next += 1;
             let image = Image {
@@ -1477,15 +1511,17 @@ fn probe_rate(
                 pixels: Pixels::Memory(&frames[next % frames.len()]),
             };
             let out = encoder.encode(&image).map_err(|e| e.to_string())?;
-            bytes += out.map_or(0, |encoded| encoded.data.len());
+            let size = out.map_or(0, |encoded| encoded.data.len());
+            bytes += size;
+            largest = largest.max(size);
         }
-        Ok(bytes)
+        Ok((bytes, largest))
     };
     let mbps = |bytes: usize| {
         bytes as f64 * 8.0 * f64::from(settings.max_fps) / MEASURE as f64 / 1_000_000.0
     };
     encode(&mut encoder, SETTLE)?;
-    let before = encode(&mut encoder, MEASURE)?;
+    let (before, _) = encode(&mut encoder, MEASURE)?;
     encoder.set_bitrate(TARGET);
     match how {
         Retarget::Live => {}
@@ -1498,12 +1534,17 @@ fn probe_rate(
         Retarget::Keyframe => encoder.force_keyframe(),
         Retarget::Reopen => encoder.session = None,
     }
-    encode(&mut encoder, SETTLE)?;
-    let after = encode(&mut encoder, MEASURE)?;
+    let started = Instant::now();
+    let (_, first) = encode(&mut encoder, 1)?;
+    let took = started.elapsed();
+    let (_, rest) = encode(&mut encoder, SETTLE)?;
+    let (after, _) = encode(&mut encoder, MEASURE)?;
     Ok(format!(
-        "{:.1} para {:.1} Mbps (alvo 1.0)",
+        "{:.1} para {:.1} Mbps (alvo 1.0), 1º quadro em {} ms, maior {} kB",
         mbps(before),
-        mbps(after)
+        mbps(after),
+        took.as_millis(),
+        first.max(rest) / 1000
     ))
 }
 
