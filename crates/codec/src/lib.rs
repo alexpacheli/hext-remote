@@ -33,7 +33,7 @@ mod vt;
 mod vt_decode;
 
 #[cfg(windows)]
-pub use mf::{ProbeResult, probe as probe_hardware_encoders};
+pub use mf::{ProbeResult, probe as probe_hardware_encoders, probe_rates as probe_encoder_rates};
 pub use nv12::{bgra_to_nv12, split_uv};
 pub use software::SoftwareEncoder;
 #[cfg(target_os = "macos")]

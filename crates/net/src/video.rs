@@ -247,11 +247,6 @@ impl Pacer {
         Self::new(u64::from(bitrate_bps) * u64::from(PACING_HEADROOM))
     }
 
-    /// The video's rate changed; what is already reserved stands.
-    pub fn set_bitrate(&mut self, bitrate_bps: u32) {
-        self.bytes_per_sec = Self::for_bitrate(bitrate_bps).bytes_per_sec;
-    }
-
     /// A new frame starts: time not used since the last one is not saved
     /// up, except for [`PACING_BURST`].
     pub fn begin_frame(&mut self, now: Instant) {
@@ -479,7 +474,8 @@ impl VideoSender {
                 f64::from(change.bitrate_bps) / 1_000_000.0,
                 change.why,
             );
-            self.pacer.set_bitrate(change.bitrate_bps);
+            // The pacing stays: it only spreads out what the encoder makes,
+            // and held to the target it would throttle one that overshoots.
             self.new_bitrate = Some(change.bitrate_bps);
         }
     }

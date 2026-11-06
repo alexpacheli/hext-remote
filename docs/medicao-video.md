@@ -141,6 +141,34 @@ continua igual, no mesmo protocolo. Para comparar com a taxa fixa, rode o host c
 - `não aceitou mudar a taxa`: o driver recusou. Confira também se `Mbps` em `envio:` acompanha a taxa pedida, porque um
   driver pode aceitar e ignorar.
 
+## A sexta medição
+
+Três rodadas seguidas no `DESKTOP-U6JQMAA`, com a mesma ação. E e G com taxa adaptativa, F com taxa fixa.
+
+| | E: adaptativa | F: fixa | G: adaptativa |
+| --- | --- | --- | --- |
+| Quadros por segundo, média | 32 | 53 | 58 |
+| Segundos abaixo de 30 quadros | 20 de 45 | 6 de 61 | 0 de 52 |
+| Tempo parado até o keyframe | 0 | 2,88 s | 0 |
+| Quadros perdidos | 0 | 3 | 0 |
+| Preso no controle de congestionamento | 3,2 s | 3,8 s | 0,2 s |
+| Perda no QUIC | 2,46% | 1,15% | 0,76% |
+| RTT mediano e máximo | 25 e 483 ms | 16 e 48 ms | 17 e 22 ms |
+| Caminho | Tailscale | IP público | Tailscale |
+
+- **O Intel aceitou e ignorou a taxa:** nenhum `não aceitou mudar a taxa`, mas em E, com alvo abaixo de 5 Mbps, os quadros
+  tinham 16,0 kB, o mesmo que 8 Mbps a 60 quadros. Em G, com alvo de 5,6 Mbps, saíram 6,3 a 9 Mbps.
+- **O pacing derrubou os quadros de E:** ele acompanhava a taxa-alvo, a 4 vezes ela. Com o encoder ignorando o alvo, o
+  envio bateu nesse teto (com alvo de 1,3 Mbps, ficou em 4,2 Mbps) e a captura chegou a esperar 1157 ms em um segundo.
+  Foi erro nosso: a qualidade não caiu, e os quadros sim. O pacing voltou a ser fixo.
+- **G não prova a taxa adaptativa:** o encoder não obedeceu e a rede estava melhor. Mesmo assim mostra perda de 129 e 270
+  pacotes em um segundo sem nenhum quadro perdido.
+- **Keyframe depois de perda é o que trava:** em F, um keyframe de 207 kB com janela de 28 kB deu a parada de 2,6 s.
+- **Falso atraso do decodificador:** não apareceu nas 3 rodadas, mesmo com até 20 quadros passando à frente.
+
+`hext encoders` nunca mudou taxa; para testar isso sem rede, use `hext encoder-rates`. Ele compara quatro formas de
+mudar a taxa em cada codificador e mostra o que realmente saiu.
+
 ## A quinta medição
 
 Quatro rodadas no mesmo dia, todas com `HEXT_VBV_MS=100`. A e B no LD-NB-01, que está na mesma rede do visualizador

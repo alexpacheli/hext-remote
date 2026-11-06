@@ -24,11 +24,12 @@ use windows::Win32::Foundation::VARIANT_TRUE;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Media::MediaFoundation::{
-    CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
-    CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
-    CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
-    ICodecAPI, IMFActivate, IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown,
-    IMFTransform, METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
+    CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMaxBitRate,
+    CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode,
+    CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
+    CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate,
+    IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown, IMFTransform,
+    METransformHaveOutput, METransformNeedInput, MF_16_BYTE_ALIGNMENT,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY,
     MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
     MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_MPEG2_PROFILE,
@@ -1391,6 +1392,119 @@ pub fn probe(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
         }
     }
     Ok(results)
+}
+
+/// A way to get a new rate to a running encoder.
+#[derive(Clone, Copy)]
+enum Retarget {
+    /// [`VideoEncoder::set_bitrate`] alone.
+    Live,
+    /// With the buffer resized to match.
+    Buffer,
+    /// With a keyframe right after: some drivers may wait for one.
+    Keyframe,
+    /// Closing the encoder and opening it at the new rate.
+    Reopen,
+}
+
+/// Whether each hardware H.264 encoder follows a new rate while encoding: a
+/// driver may accept the change and keep going at the old rate.
+pub fn probe_rates(width: u32, height: u32) -> Result<Vec<ProbeResult>, CodecError> {
+    let settings = EncoderSettings::default();
+    let first = MfEncoder::new(settings)?;
+    let mut names: Vec<String> = Vec::new();
+    for name in enumerate(None)?.iter().map(friendly_name) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    drop(first);
+    let mut results = Vec::new();
+    for name in &names {
+        for (variant, how) in [
+            ("taxa média e máxima", Retarget::Live),
+            ("e também o buffer", Retarget::Buffer),
+            ("e também um keyframe", Retarget::Keyframe),
+            ("reabrindo o encoder", Retarget::Reopen),
+        ] {
+            results.push(ProbeResult {
+                encoder: name.clone(),
+                variant: variant.into(),
+                result: probe_rate(settings, name, how, width, height),
+            });
+        }
+    }
+    Ok(results)
+}
+
+/// Encodes faint noise, changes the rate as `how`, and compares what came
+/// out before and after. Pure noise hits the worst quality at any rate.
+fn probe_rate(
+    settings: EncoderSettings,
+    name: &str,
+    how: Retarget,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
+    const TARGET: u32 = 1_000_000;
+    const SETTLE: usize = 60;
+    const MEASURE: usize = 60;
+    let mut encoder = MfEncoder::new(settings).map_err(|e| e.to_string())?;
+    encoder.only = Some(name.to_owned());
+    let pixels = width as usize * height as usize;
+    let mut state = 0x9E37_79B9u32;
+    let frames: Vec<Vec<u8>> = (0..8)
+        .map(|_| {
+            let mut data = vec![128u8; pixels * 3 / 2];
+            for y in &mut data[..pixels] {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                *y = 96 + (state as u8 & 31);
+            }
+            data
+        })
+        .collect();
+    let mut next = 0;
+    let mut encode = |encoder: &mut MfEncoder, count: usize| -> Result<usize, String> {
+        let mut bytes = 0;
+        for _ in 0..count {
+            next += 1;
+            let image = Image {
+                width,
+                height,
+                format: PixelFormat::Nv12,
+                pixels: Pixels::Memory(&frames[next % frames.len()]),
+            };
+            let out = encoder.encode(&image).map_err(|e| e.to_string())?;
+            bytes += out.map_or(0, |encoded| encoded.data.len());
+        }
+        Ok(bytes)
+    };
+    let mbps = |bytes: usize| {
+        bytes as f64 * 8.0 * f64::from(settings.max_fps) / MEASURE as f64 / 1_000_000.0
+    };
+    encode(&mut encoder, SETTLE)?;
+    let before = encode(&mut encoder, MEASURE)?;
+    encoder.set_bitrate(TARGET);
+    match how {
+        Retarget::Live => {}
+        Retarget::Buffer => {
+            let codec = encoder.session.as_ref().and_then(|s| s.codec.as_ref());
+            if let Some(codec) = codec {
+                set(codec, &CODECAPI_AVEncCommonBufferSize, u32_variant(TARGET));
+            }
+        }
+        Retarget::Keyframe => encoder.force_keyframe(),
+        Retarget::Reopen => encoder.session = None,
+    }
+    encode(&mut encoder, SETTLE)?;
+    let after = encode(&mut encoder, MEASURE)?;
+    Ok(format!(
+        "{:.1} para {:.1} Mbps (alvo 1.0)",
+        mbps(before),
+        mbps(after)
+    ))
 }
 
 /// Every hardware adapter, with a device on it (video support).
