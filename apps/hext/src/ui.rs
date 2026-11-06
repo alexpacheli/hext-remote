@@ -46,7 +46,11 @@ const CHANGED: &str = "changed";
 const TRANSFER_SHOWN: Duration = Duration::from_secs(8);
 /// The session bar: width and height, in logical pixels.
 const BAR_OPEN: (f64, f64) = (540.0, 56.0);
-const BAR_FOLDED: (f64, f64) = (210.0, 32.0);
+/// Folded: a strip on the top edge, with the dot. Nothing in it ends the
+/// session, so a click meant for what is below does no harm.
+const BAR_FOLDED: (f64, f64) = (96.0, 14.0);
+/// How far from the top edge the open bar stands, in physical pixels.
+const BAR_TOP: i32 = 8;
 
 /// Who owns the sessions.
 pub enum Link {
@@ -228,15 +232,18 @@ fn open_ask(app: &AppHandle) {
 
 /// The bar: on top of everything for as long as the session lasts, at the
 /// top of the main screen. It takes no focus from what the user is doing.
-/// It is for the user: left out of the picture, it covers nothing for the
-/// technician.
 fn open_bar(app: &AppHandle) {
     const WIDTH: f64 = BAR_OPEN.0;
     let app = app.clone();
     std::thread::spawn(move || {
         let bar = window(&app, "bar", "bar.html", |builder| {
+            // (On the Mac a transparent window takes a private API: there the
+            // strip is solid.)
+            #[cfg(not(target_os = "macos"))]
+            let builder = builder.transparent(true);
             builder
                 .title("Hext Remote: sessão ativa")
+                .shadow(false)
                 .inner_size(WIDTH, BAR_OPEN.1)
                 .decorations(false)
                 .resizable(false)
@@ -245,7 +252,6 @@ fn open_bar(app: &AppHandle) {
                 .always_on_top(true)
                 .skip_taskbar(true)
                 .focused(false)
-                .content_protected(true)
         });
         let Some(bar) = bar else {
             // A session must not go on without its indicator.
@@ -259,7 +265,8 @@ fn open_bar(app: &AppHandle) {
         if let Ok(Some(monitor)) = bar.primary_monitor() {
             let width = (WIDTH * monitor.scale_factor()) as i32;
             let x = monitor.position().x + (monitor.size().width as i32 - width) / 2;
-            let _ = bar.set_position(PhysicalPosition::new(x, monitor.position().y + 8));
+            let y = monitor.position().y + BAR_TOP;
+            let _ = bar.set_position(PhysicalPosition::new(x, y));
         }
     });
 }
@@ -545,8 +552,9 @@ fn refuse(app: &AppHandle) {
     }
 }
 
-/// The bar's size, open and folded: folded it still shows and ends the
-/// session. It stays centered where it is (it can be dragged).
+/// The bar's size, open and folded: folded it goes to the top edge of its
+/// screen and shows the dot. It stays centered where it is (it can be
+/// dragged).
 #[tauri::command]
 fn fold_bar(window: WebviewWindow, folded: bool) {
     if window.label() != "bar" {
@@ -562,8 +570,14 @@ fn fold_bar(window: WebviewWindow, folded: bool) {
     };
     let new = (width * scale) as i32;
     let x = position.x + (old.width as i32 - new) / 2;
+    let top = |monitor: tauri::Monitor| monitor.position().y + if folded { 0 } else { BAR_TOP };
+    let y = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map_or(position.y, top);
     let _ = window.set_size(LogicalSize::new(width, height));
-    let _ = window.set_position(PhysicalPosition::new(x, position.y));
+    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
 /// The conversation of this chat window.
