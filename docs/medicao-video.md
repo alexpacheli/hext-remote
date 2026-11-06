@@ -44,10 +44,12 @@ Sem `RUST_LOG`, só os segundos com problema vão para o log (no serviço, em `C
 | `quadro N salvo por reenvio em X ms` | visualizador | a perda custou X ms e nenhum keyframe |
 | `quadro N perdido por …` | visualizador | o reenvio falhou; `reenvio sem resposta` ou `MAX_WAITING` |
 | `quadro N perdido cedo demais` | visualizador | esperar mais teria salvo: rever `RESEND_TRIES` e a espera por resposta |
+| Log em UTF-16 | ambos | o `Tee-Object` grava assim: para usar `grep`, converta antes, ou ele não acha nada |
 | `imagem voltou após X ms` | visualizador | tempo parado até o keyframe, com tamanho e tempo de chegada dele |
 | `fila do decodificador cheia` | visualizador | o decodificador não acompanhou |
 | `chegada: …` | visualizador | por segundo: quadros, datagramas, maior intervalo e pacotes tardios |
-| `envio: …` | host | por segundo: quadros, taxa, tempo enviando, tempo preso, perda real do QUIC, cwnd |
+| `envio: …` | host | por segundo: quadros, taxa, tempo enviando, tempo preso, perda real do QUIC, cwnd, RTT |
+| `caminho: …` | host | endereço do caminho em uso, ao começar e a cada troca |
 | `captura: …` | host | por segundo: imagens novas, codificadas, seguradas e espera pela rede |
 
 Para achar a causa de uma queda de fps num segundo:
@@ -74,3 +76,26 @@ Em 5/11, com o host DESKTOP-U6JQMAA (Intel Quick Sync) e o visualizador ALEX-LIN
   sem perda ficaram sem explicação nessa rodada, por isso existe a linha `captura`.
 
 Daí vieram o reenvio dos pacotes que faltam, antes de recorrer ao keyframe, e a fila maior do decodificador.
+
+## O que a segunda medição mostrou
+
+Mesmos computadores, com reenvio, em 54 s. As rodadas **não são comparáveis**: a perda real do QUIC subiu de
+0,18% (64 de 34.747 pacotes) para 5,21% (1.815 de 34.834), e o reenvio não explica isso: em um segundo foram 248
+pacotes perdidos e 39 reenviados.
+
+- **A cascata acabou:** a fila do decodificador não encheu nenhuma vez.
+- **O reenvio funciona:** 14 quadros salvos, em 16 a 636 ms, sem keyframe.
+- **A perda vem em rajada:** 86% dela caiu em segundos com um quadro de 100 kB ou mais, e nas duas rodadas o
+  primeiro keyframe já perdia de 3 a 6% dos pacotes.
+- **Sobraram 11 quadros perdidos, com 4 s parados na soma,** por defeitos do reenvio: pedir um quadro por vez fazia
+  as esperas somarem, `MAX_WAITING` em 16 desistia de quadros ainda não pedidos, e duas tentativas desistiram
+  cedo de 5 quadros cujos pacotes chegaram até 175 ms depois.
+- **Houve segundos parados sem perda:** 873 ms presos a 1,7 Mbps com janela de 199 kB, o que daria um RTT perto de
+  1 s, impossível numa LAN limpa. Essa rodada não registrava o caminho, então a causa ficou em aberto.
+
+Daí vieram os pedidos de todos os quadros parados de uma vez, `MAX_WAITING` em 48 com histórico de 64 quadros no
+host, 3 tentativas, a fila de datagramas de 64 kB e o registro de caminho e RTT.
+
+**Para a próxima rodada, olhe primeiro `caminho:` e `RTT`:** relay ou endereço `100.x` (Tailscale) em computadores
+na mesma rede mudam a conclusão. Compare também o total de pacotes perdidos com os `no caminho em uso`: a diferença
+é de caminhos testados e abandonados, não do vídeo.

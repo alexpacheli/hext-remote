@@ -23,7 +23,7 @@
 //! ([`VideoSender::send_idle`]), so a frame that lost every packet is
 //! noticed even with nothing after it.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -67,8 +67,9 @@ const SEND_STALL: Duration = Duration::from_millis(1);
 /// again what is still on its way, onto a path already short of room.
 pub const RESEND_AFTER: Duration = Duration::from_millis(40);
 
-/// How many times the missing packets are asked for.
-pub const RESEND_TRIES: u32 = 2;
+/// How many times the missing packets are asked for. In the field, answers
+/// held up by congestion came up to 175 ms after a second try's wait.
+pub const RESEND_TRIES: u32 = 3;
 
 /// How long an answer may take, at the least and at the most; in between,
 /// two round trips and a margin. Without a round trip known yet, the most
@@ -81,15 +82,20 @@ const RESEND_WAIT_DEFAULT: Duration = Duration::from_millis(120);
 /// left out goes in the next try.
 const MAX_RESEND_PACKETS: usize = 1024;
 
-/// Frames the host keeps for resending (half a second at 60 fps), and their
-/// most bytes.
-const HISTORY_FRAMES: usize = 32;
+/// Most frames asked for at once: a burst of losses hits several in a row,
+/// and one by one the waits would add up. The others follow on the next
+/// tick.
+const MAX_ASKED_FRAMES: usize = 16;
+
+/// Frames the host keeps for resending (over a second at 60 fps, more than
+/// [`MAX_WAITING`]), and their most bytes.
+const HISTORY_FRAMES: usize = 64;
 const HISTORY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Complete frames that may wait behind a missing one before it counts as
-/// lost, however recent: about a quarter of a second at 60 fps. They reach
-/// the decoder in one go, so its queue must hold them.
-pub const MAX_WAITING: usize = 16;
+/// lost, however recent: about 800 ms at 60 fps, the longest wait for its
+/// packets. They reach the decoder in one go, so its queue must hold them.
+pub const MAX_WAITING: usize = 48;
 
 /// While waiting for a keyframe (the first one, or one asked for, was lost
 /// too), the request is repeated this often.
@@ -317,6 +323,10 @@ struct SendReport {
     lost_bytes: u64,
     sent_packets: u64,
     congestion_events: u64,
+    /// Lost on the selected path: `lost_packets` adds up every path, and
+    /// a path tried and dropped may lose all it sent.
+    selected_lost: u64,
+    route: String,
 }
 
 impl SendReport {
@@ -336,6 +346,8 @@ impl SendReport {
             lost_bytes: 0,
             sent_packets: 0,
             congestion_events: 0,
+            selected_lost: 0,
+            route: String::new(),
         }
     }
 
@@ -348,17 +360,26 @@ impl SendReport {
         let stats = conn.stats();
         let paths = conn.paths();
         let selected = paths.iter().find(|p| p.is_selected());
-        let path = selected.map(|p| p.stats());
+        let path = selected.as_ref().map(|p| p.stats());
         let (cwnd, congestion_events) = path
             .as_ref()
             .map_or((0, 0), |p| (p.cwnd, p.congestion_events));
+        let (rtt, selected_lost) = path
+            .as_ref()
+            .map_or((Duration::ZERO, 0), |p| (p.rtt, p.lost_packets));
+        let route =
+            selected.map_or_else(|| "nenhum".to_owned(), |p| format!("{:?}", p.remote_addr()));
+        if route != self.route {
+            info!(target: LOG_TARGET, "caminho: {route} ({} abertos)", paths.len());
+        }
         let lost = stats.lost_packets.saturating_sub(self.lost_packets);
+        let lost_selected = selected_lost.saturating_sub(self.selected_lost);
         let congestion = congestion_events.saturating_sub(self.congestion_events);
         let line = format!(
             "envio: {} quadros ({} keyframes), {:.2} Mbps, maior {} kB, enviando {} ms (maior {} ms), \
              preso no controle de congestionamento {} ms, {} pacotes reenviados ({} pedidos \
-             tarde demais) | QUIC: {lost} de {} pacotes perdidos ({} kB), \
-             {congestion} eventos de congestionamento, cwnd {} kB",
+             tarde demais) | QUIC: {lost} de {} pacotes perdidos ({} kB, {lost_selected} no \
+             caminho em uso), {congestion} eventos de congestionamento, cwnd {} kB, RTT {} ms",
             self.frames,
             self.keyframes,
             self.bytes as f64 * 8.0 / self.since.elapsed().as_secs_f64() / 1_000_000.0,
@@ -371,6 +392,7 @@ impl SendReport {
             stats.sent_packets.saturating_sub(self.sent_packets),
             stats.lost_bytes.saturating_sub(self.lost_bytes) / 1000,
             cwnd / 1000,
+            rtt.as_millis(),
         );
         let eventful = self.resent > 0 || self.too_old > 0;
         if lost > 0 || congestion > 0 || eventful || self.held > Duration::from_millis(50) {
@@ -383,6 +405,8 @@ impl SendReport {
             lost_bytes: stats.lost_bytes,
             sent_packets: stats.sent_packets,
             congestion_events,
+            selected_lost,
+            route,
             ..Self::new()
         };
     }
@@ -737,14 +761,14 @@ pub struct Reassembler {
     last_transfer: (u64, Duration),
     arrival: Arrival,
     reports: Vec<Report>,
-    /// The packets asked for last, and how long an answer may take.
-    asked: Option<Asked>,
+    /// The frames whose packets were asked for, and how long an answer may
+    /// take.
+    asked: BTreeMap<u64, Asked>,
     resend_wait: Duration,
 }
 
 /// Packets of a frame were asked for.
 struct Asked {
-    frame: u64,
     first: Instant,
     last: Instant,
     tries: u32,
@@ -753,7 +777,6 @@ struct Asked {
 /// What to do about the frame due next, which is missing.
 enum Missing {
     Wait,
-    Ask,
     GiveUp(LossTrigger),
 }
 
@@ -803,7 +826,7 @@ impl Reassembler {
             last_transfer: (u64::MAX, Duration::ZERO),
             arrival: Arrival::default(),
             reports: Vec::new(),
-            asked: None,
+            asked: BTreeMap::new(),
             resend_wait: RESEND_WAIT_DEFAULT,
         }
     }
@@ -860,7 +883,7 @@ impl Reassembler {
         let frame = packet.frame;
         if let Some(partial) = self.partial.get(&frame) {
             // (The wait for packets asked for says nothing about the network.)
-            if !self.asked.as_ref().is_some_and(|a| a.frame == frame) {
+            if !self.asked.contains_key(&frame) {
                 let gap = now.duration_since(partial.last_packet);
                 self.arrival.max_gap = self.arrival.max_gap.max(gap);
             }
@@ -898,7 +921,7 @@ impl Reassembler {
         self.awaiting_keyframe = true;
         self.keyframe_asked = Some(now);
         self.blocked_since = None;
-        self.asked = None;
+        self.asked.clear();
         self.complete.clear();
         self.partial.clear();
     }
@@ -1033,6 +1056,7 @@ impl Reassembler {
                 };
                 self.complete = self.complete.split_off(&key);
                 self.partial = self.partial.split_off(&key);
+                self.asked = self.asked.split_off(&key);
                 if let Some((since, trigger, frame)) = self.stall.take() {
                     self.report(Report::Resumed {
                         trigger,
@@ -1064,13 +1088,8 @@ impl Reassembler {
                 continue;
             }
             match self.missing(next, now) {
-                Missing::Wait => break,
-                Missing::Ask => {
-                    let packets = self.packets_lacking(next);
-                    events.push(Event::Resend(ResendRequest {
-                        frame: next,
-                        packets,
-                    }));
+                Missing::Wait => {
+                    events.extend(self.overdue(next, now).into_iter().map(Event::Resend));
                     break;
                 }
                 Missing::GiveUp(trigger) => {
@@ -1079,7 +1098,7 @@ impl Reassembler {
                     self.awaiting_keyframe = true;
                     self.keyframe_asked = Some(now);
                     self.blocked_since = None;
-                    self.asked = None;
+                    self.asked.clear();
                     self.partial = self.partial.split_off(&(next + 1));
                     // A keyframe may already be waiting.
                 }
@@ -1101,7 +1120,7 @@ impl Reassembler {
     /// `frame` was handed out: if its packets had been asked for, that
     /// spared a keyframe.
     fn saved(&mut self, frame: u64, now: Instant) {
-        if let Some(asked) = self.asked.take_if(|asked| asked.frame == frame) {
+        if let Some(asked) = self.asked.remove(&frame) {
             self.counters.resent += 1;
             self.report(Report::Resent {
                 frame,
@@ -1147,8 +1166,7 @@ impl Reassembler {
         let (missing, blocks) = unfinished.fold((0, 0), |(missing, blocks), b| {
             (missing + b.k.saturating_sub(b.received), blocks + 1)
         });
-        let since = self.blocked_since.unwrap_or(now);
-        let quiet = partial.map_or(since, |p| p.last_packet.max(since));
+        let quiet = self.quiet_since(frame, self.blocked_since.unwrap_or(now));
         let never_arrived = partial.is_none();
         self.counters.lost += 1;
         match trigger {
@@ -1185,32 +1203,69 @@ impl Reassembler {
         if self.complete.len() >= MAX_WAITING {
             return Missing::GiveUp(LossTrigger::Overtaken);
         }
-        // Only a frame that stopped receiving packets is missing some: a
-        // large one still arriving on a slow link keeps receiving them.
         let since = *self.blocked_since.get_or_insert(now);
-        let last_packet = self.partial.get(&next).map(|p| p.last_packet);
-        let quiet_since = last_packet.map_or(since, |t| t.max(since));
-        if now.duration_since(quiet_since) <= RESEND_AFTER {
-            return Missing::Wait;
-        }
-        match self.asked.as_mut().filter(|asked| asked.frame == next) {
-            None => {
-                self.asked = Some(Asked {
-                    frame: next,
-                    first: now,
-                    last: now,
-                    tries: 1,
-                });
-                Missing::Ask
+        let quiet = now.duration_since(self.quiet_since(next, since));
+        match self.asked.get(&next) {
+            Some(asked)
+                if asked.tries >= RESEND_TRIES
+                    && quiet > RESEND_AFTER
+                    && now.duration_since(asked.last) > self.resend_wait =>
+            {
+                Missing::GiveUp(LossTrigger::Quiet)
             }
-            Some(asked) if now.duration_since(asked.last) <= self.resend_wait => Missing::Wait,
-            Some(asked) if asked.tries >= RESEND_TRIES => Missing::GiveUp(LossTrigger::Quiet),
-            Some(asked) => {
-                asked.tries += 1;
-                asked.last = now;
-                Missing::Ask
-            }
+            _ => Missing::Wait,
         }
+    }
+
+    /// Since when `frame` receives nothing, with the frames before it
+    /// handed out `since`.
+    fn quiet_since(&self, frame: u64, since: Instant) -> Instant {
+        let last_packet = self.partial.get(&frame).map(|p| p.last_packet);
+        last_packet.map_or(since, |t| t.max(since))
+    }
+
+    /// What to ask for, from `next` on. Only a frame that stopped receiving
+    /// packets is missing some: a large one still arriving on a slow link
+    /// keeps receiving them.
+    fn overdue(&mut self, next: u64, now: Instant) -> Vec<ResendRequest> {
+        let (Some(newest), Some(since)) = (self.newest, self.blocked_since) else {
+            return Vec::new();
+        };
+        let mut requests = Vec::new();
+        for frame in (next..=newest).take(2 * MAX_WAITING) {
+            if requests.len() == MAX_ASKED_FRAMES {
+                break;
+            }
+            if self.complete.contains_key(&frame)
+                || now.duration_since(self.quiet_since(frame, since)) <= RESEND_AFTER
+            {
+                continue;
+            }
+            match self.asked.entry(frame) {
+                btree_map::Entry::Vacant(entry) => {
+                    entry.insert(Asked {
+                        first: now,
+                        last: now,
+                        tries: 1,
+                    });
+                }
+                btree_map::Entry::Occupied(mut entry) => {
+                    let asked = entry.get_mut();
+                    if asked.tries >= RESEND_TRIES
+                        || now.duration_since(asked.last) <= self.resend_wait
+                    {
+                        continue;
+                    }
+                    asked.tries += 1;
+                    asked.last = now;
+                }
+            }
+            requests.push(ResendRequest {
+                frame,
+                packets: self.packets_lacking(frame),
+            });
+        }
+        requests
     }
 }
 
@@ -1690,6 +1745,65 @@ mod tests {
     }
 
     #[test]
+    fn frames_lost_in_a_row_are_asked_for_at_once() {
+        let t0 = Instant::now();
+        let mut r = Reassembler::new();
+        for p in packets(&frame(0, true, 2_000)) {
+            r.push(p, t0);
+        }
+        // A burst of losses takes the tail of 1, and all of 2 and 3.
+        for p in packets(&frame(1, false, 50_000)).into_iter().take(10) {
+            r.push(p, t0);
+        }
+        for p in packets(&frame(4, false, 2_000)) {
+            r.push(p, t0);
+        }
+        let out = r.tick(t0 + RESEND_AFTER * 2);
+        let asked: Vec<u64> = out
+            .iter()
+            .filter_map(|event| match event {
+                Event::Resend(request) => Some(request.frame),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asked, vec![1, 2, 3]);
+
+        // Answered, each counts as saved and none is asked for again.
+        let at = t0 + RESEND_AFTER * 3;
+        let mut out = Vec::new();
+        for seq in 1..4 {
+            let len = if seq == 1 { 50_000 } else { 2_000 };
+            for p in packets(&frame(seq, false, len)) {
+                out.extend(r.push(p, at));
+            }
+        }
+        assert_eq!(frames(&out), vec![1, 2, 3, 4]);
+        assert_eq!(r.counters.resent, 3);
+        assert_eq!(r.counters.lost, 0);
+    }
+
+    #[test]
+    fn many_frames_behind_do_not_cut_the_wait_short() {
+        let t0 = Instant::now();
+        let (mut r, rest) = frame_one_cut_short(t0);
+        // More than a quarter of a second of video goes past while the
+        // packets are on their way.
+        let late = t0 + Duration::from_millis(300);
+        let mut out = r.tick(t0 + RESEND_AFTER * 2);
+        for seq in 2..32 {
+            for p in packets(&frame(seq, false, 2_000)) {
+                out.extend(r.push(p, late));
+            }
+        }
+        assert!(!out.contains(&Event::Lost));
+        for p in rest {
+            out.extend(r.push(p, late));
+        }
+        assert_eq!(frames(&out).len(), 31);
+        assert_eq!(r.counters.lost, 0);
+    }
+
+    #[test]
     fn a_keyframe_is_the_last_resort() {
         let t0 = Instant::now();
         let (mut r, _) = frame_one_cut_short(t0);
@@ -1698,8 +1812,8 @@ mod tests {
         assert_eq!(requests.len(), RESEND_TRIES as usize);
         // The first request after RESEND_AFTER, then an answer's wait each.
         let waited = lost_at.duration_since(t0);
-        assert!(waited >= Duration::from_millis(280), "{waited:?}");
-        assert!(waited <= Duration::from_millis(310), "{waited:?}");
+        assert!(waited >= Duration::from_millis(400), "{waited:?}");
+        assert!(waited <= Duration::from_millis(440), "{waited:?}");
     }
 
     #[test]

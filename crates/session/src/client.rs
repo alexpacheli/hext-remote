@@ -32,16 +32,23 @@ const BEHIND_FOR: Duration = Duration::from_millis(250);
 /// burst, one that stays is delay that would never go away.
 #[derive(Default)]
 struct Backlog {
-    since: Option<Instant>,
+    /// The shortest the queue was lately, and since when.
+    lowest: Option<(usize, Instant)>,
 }
 
 impl Backlog {
     fn behind(&mut self, queued: usize, now: Instant) -> bool {
         if queued <= BEHIND_FRAMES {
-            self.since = None;
+            self.lowest = None;
             return false;
         }
-        now.duration_since(*self.since.get_or_insert(now)) > BEHIND_FOR
+        match self.lowest {
+            Some((lowest, since)) if queued >= lowest => now.duration_since(since) > BEHIND_FOR,
+            _ => {
+                self.lowest = Some((queued, now));
+                false
+            }
+        }
     }
 }
 
@@ -682,5 +689,15 @@ mod tests {
         assert!(!backlog.behind(1, t0 + BEHIND_FOR));
         assert!(!backlog.behind(10, t0 + BEHIND_FOR * 2));
         assert!(backlog.behind(10, t0 + BEHIND_FOR * 3 + Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn a_long_burst_going_down_is_not_falling_behind() {
+        let mut backlog = Backlog::default();
+        let t0 = Instant::now();
+        for (i, queued) in (4..DECODE_QUEUE).rev().enumerate() {
+            let now = t0 + BEHIND_FOR / 4 * i as u32;
+            assert!(!backlog.behind(queued, now), "{queued} frames left");
+        }
     }
 }
