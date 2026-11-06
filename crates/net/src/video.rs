@@ -33,6 +33,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
+use crate::rate::{RateControl, Second};
 use crate::{NetError, Result};
 
 /// Data shards per FEC block. Reed-Solomon over GF(256) allows 256 shards
@@ -246,6 +247,11 @@ impl Pacer {
         Self::new(u64::from(bitrate_bps) * u64::from(PACING_HEADROOM))
     }
 
+    /// The video's rate changed; what is already reserved stands.
+    pub fn set_bitrate(&mut self, bitrate_bps: u32) {
+        self.bytes_per_sec = Self::for_bitrate(bitrate_bps).bytes_per_sec;
+    }
+
     /// A new frame starts: time not used since the last one is not saved
     /// up, except for [`PACING_BURST`].
     pub fn begin_frame(&mut self, now: Instant) {
@@ -277,6 +283,10 @@ pub struct VideoSender {
     /// Held while frames flow, released while the screen is still.
     timers: Option<crate::timer::FineTimers>,
     report: SendReport,
+    /// Picks the rate; without it the video stays at the one it started at.
+    rate: Option<RateControl>,
+    /// A new rate the encoder has not heard about.
+    new_bitrate: Option<u32>,
     /// The last frames sent, oldest first, for [`Self::resend`].
     history: VecDeque<SentFrame>,
     history_bytes: usize,
@@ -358,10 +368,10 @@ impl SendReport {
     }
 
     /// Logs the last second, if it is over: at `info` when packets were lost
-    /// or congestion held the video back, else at `debug`.
-    fn roll(&mut self, conn: &Connection) {
+    /// or congestion held the video back, else at `debug`. Returns it.
+    fn roll(&mut self, conn: &Connection) -> Option<Second> {
         if self.since.elapsed() < SEND_REPORT_EVERY {
-            return;
+            return None;
         }
         let stats = conn.stats();
         let paths = conn.paths();
@@ -400,6 +410,15 @@ impl SendReport {
             cwnd / 1000,
             rtt.as_millis(),
         );
+        let sent = stats.sent_packets.saturating_sub(self.sent_packets);
+        let second = Second {
+            held: self.held,
+            lost: lost_selected,
+            sent,
+            rtt,
+            bitrate_bps: (self.bytes as f64 * 8.0 / self.since.elapsed().as_secs_f64()) as u32,
+            new_path: !self.route.is_empty() && route != self.route,
+        };
         let eventful = self.resent > 0 || self.too_old > 0;
         if lost > 0 || congestion > 0 || eventful || self.held > Duration::from_millis(50) {
             info!(target: LOG_TARGET, "{line}");
@@ -415,6 +434,7 @@ impl SendReport {
             route,
             ..Self::new()
         };
+        Some(second)
     }
 }
 
@@ -427,8 +447,40 @@ impl VideoSender {
             last_frame: None,
             timers: None,
             report: SendReport::new(),
+            // Temporary: to compare with a fixed rate in the field.
+            rate: std::env::var_os("HEXT_TAXA_FIXA")
+                .is_none()
+                .then(|| RateControl::new(bitrate_bps)),
+            new_bitrate: None,
             history: VecDeque::new(),
             history_bytes: 0,
+        }
+    }
+
+    /// The rate the encoder should aim for now, once per change.
+    pub fn take_bitrate(&mut self) -> Option<u32> {
+        self.new_bitrate.take()
+    }
+
+    /// Ends the report's second, if it is over, and acts on it.
+    fn roll(&mut self, conn: &Connection) {
+        let Some(second) = self.report.roll(conn) else {
+            return;
+        };
+        let Some(rate) = &mut self.rate else {
+            return;
+        };
+        let before = rate.bitrate_bps();
+        if let Some(change) = rate.second(&second) {
+            info!(
+                target: LOG_TARGET,
+                "taxa: {:.1} para {:.1} Mbps ({})",
+                f64::from(before) / 1_000_000.0,
+                f64::from(change.bitrate_bps) / 1_000_000.0,
+                change.why,
+            );
+            self.pacer.set_bitrate(change.bitrate_bps);
+            self.new_bitrate = Some(change.bitrate_bps);
         }
     }
 
@@ -554,7 +606,7 @@ impl VideoSender {
         let took = started.elapsed();
         self.report.busy += took;
         self.report.longest = self.report.longest.max(took);
-        self.report.roll(conn);
+        self.roll(conn);
         Ok(())
     }
 
@@ -563,7 +615,7 @@ impl VideoSender {
     /// hundred milliseconds without frames.
     pub async fn send_idle(&mut self, conn: &Connection) -> Result<()> {
         self.timers = None;
-        self.report.roll(conn);
+        self.roll(conn);
         let Some(last_frame) = self.last_frame else {
             return Ok(());
         };

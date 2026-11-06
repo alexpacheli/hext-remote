@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -149,6 +149,8 @@ pub trait Desktop: Send + Sync {
 pub trait Screen: Send {
     /// The viewer lost video: the next frame must be a keyframe.
     fn request_keyframe(&self);
+    /// The network takes about this much video now.
+    fn set_bitrate(&self, _bitrate_bps: u32) {}
     /// Replays the viewer's input.
     fn inject(&mut self, event: &InputEvent);
     /// Puts text from the viewer on this computer's clipboard.
@@ -182,6 +184,7 @@ impl Desktop for LocalDesktop {
             let shared = Arc::new(Shared {
                 stop: AtomicBool::new(false),
                 keyframe: AtomicBool::new(false),
+                bitrate: AtomicU32::new(settings.encoder.bitrate_bps),
                 area: Mutex::new(Area::default()),
             });
             // Capture and encoding run on their own thread: both are
@@ -293,6 +296,10 @@ impl Screen for LocalScreen {
         self.shared.keyframe.store(true, Ordering::Relaxed);
     }
 
+    fn set_bitrate(&self, bitrate_bps: u32) {
+        self.shared.bitrate.store(bitrate_bps, Ordering::Relaxed);
+    }
+
     fn inject(&mut self, event: &InputEvent) {
         if *event == InputEvent::SecureAttention {
             // Takes the Windows service (this process is not it).
@@ -340,6 +347,8 @@ impl Screen for LocalScreen {
 struct Shared {
     stop: AtomicBool,
     keyframe: AtomicBool,
+    /// What the encoder should aim for.
+    bitrate: AtomicU32,
     area: Mutex<Area>,
 }
 
@@ -516,6 +525,7 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // Video goes out as datagrams with FEC (see `hext_net::video`).
     let video = conn.clone();
     let bitrate = config.desktop.bitrate_bps();
+    let encoding = screen.clone();
     // A few slots: a viewer asking for more than this is past saving.
     let (resend_tx, mut resend_rx) = mpsc::channel::<ResendRequest>(32);
     let mut writer = tokio::spawn(async move {
@@ -530,6 +540,11 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                     // A still screen: let the viewer check it has the last frame.
                     Err(_) => sender.send_idle(&video).await?,
                 },
+            }
+            if let Some(bitrate) = sender.take_bitrate()
+                && let Some(screen) = encoding.lock().expect("lock").as_ref()
+            {
+                screen.set_bitrate(bitrate);
             }
         }
     });
@@ -807,6 +822,7 @@ fn capture_loop(
     let min_interval = Duration::from_secs_f32(1.0 / config.encoder.max_fps.max(1.0));
     let mut last_encode: Option<Instant> = None;
     let mut seq = 0u64;
+    let mut bitrate = config.encoder.bitrate_bps;
     // Rate control skipped the last image; it must still be sent.
     let mut skipped = false;
     let mut report = CaptureReport::new();
@@ -847,6 +863,11 @@ fn capture_loop(
         };
 
         report.changed += u32::from(changed);
+        let wanted = shared.bitrate.load(Ordering::Relaxed);
+        if wanted != bitrate {
+            encoder.set_bitrate(wanted);
+            bitrate = wanted;
+        }
         let forced = shared.keyframe.swap(false, Ordering::Relaxed);
         if forced {
             encoder.force_keyframe();

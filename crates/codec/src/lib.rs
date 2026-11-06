@@ -169,6 +169,10 @@ pub trait VideoEncoder {
     /// The next encoded frame will be a keyframe.
     fn force_keyframe(&mut self);
 
+    /// Aim for `bitrate_bps` from now on, without a keyframe. Best effort: an
+    /// encoder that cannot change it stays at the rate it opened with.
+    fn set_bitrate(&mut self, _bitrate_bps: u32) {}
+
     /// Frames went in whose output has not come out yet. The caller must
     /// encode again (the latest image) even if the screen does not change,
     /// or the last update stays inside the encoder.
@@ -246,6 +250,13 @@ impl VideoEncoder for AutoEncoder {
             Some(hardware) => hardware.force_keyframe(),
             None => self.software.force_keyframe(),
         }
+    }
+
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        if let Some(hardware) = &mut self.hardware {
+            hardware.set_bitrate(bitrate_bps);
+        }
+        self.software.set_bitrate(bitrate_bps);
     }
 
     fn pending(&self) -> bool {
@@ -597,6 +608,52 @@ pub(crate) mod tests {
             }
         }
         assert!(decoded >= 9, "decoded {decoded} of 10");
+    }
+
+    /// Faint noise: pure noise hits the worst quality at any rate, this much
+    /// leaves the encoder a choice.
+    fn noise(w: u32, h: u32, t: u32) -> Vec<u8> {
+        let mut state = t.wrapping_mul(2_654_435_761) | 1;
+        (0..w * h * 4)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                96 + (state as u8 & 31)
+            })
+            .collect()
+    }
+
+    /// Bytes out of `frames` images, from image `first` on, in an encoder
+    /// that may keep some of them for a while.
+    fn bytes_out(encoder: &mut dyn VideoEncoder, w: u32, h: u32, first: u32, frames: u32) -> usize {
+        (first..first + frames)
+            .map(|t| {
+                let out = encoder.encode(&Image::bgra(w, h, &noise(w, h, t))).unwrap();
+                out.map_or(0, |encoded| encoded.data.len())
+            })
+            .sum()
+    }
+
+    #[test]
+    fn hardware_bitrate_changes_while_encoding() {
+        let (w, h) = (1280, 720);
+        let settings = EncoderSettings {
+            preference: EncoderPreference::Hardware,
+            ..Default::default()
+        };
+        // Machines without one have nothing to show.
+        let Ok(mut encoder) = open_encoder(settings) else {
+            return;
+        };
+        let name = encoder.name();
+        bytes_out(encoder.as_mut(), w, h, 0, 60);
+        let high = bytes_out(encoder.as_mut(), w, h, 60, 60);
+        encoder.set_bitrate(1_000_000);
+        bytes_out(encoder.as_mut(), w, h, 120, 60);
+        let low = bytes_out(encoder.as_mut(), w, h, 180, 60);
+        eprintln!("{name}: {high} bytes a 8 Mbps, {low} bytes a 1 Mbps");
+        assert!(low * 2 < high, "{name}: {high} bytes, then {low}");
     }
 
     #[test]

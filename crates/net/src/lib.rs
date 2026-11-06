@@ -7,6 +7,7 @@
 //! either way the session is end-to-end encrypted between the two devices.
 
 mod endpoint;
+mod rate;
 mod session;
 pub mod timer;
 pub mod video;

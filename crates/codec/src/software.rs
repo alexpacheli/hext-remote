@@ -109,6 +109,12 @@ impl VideoEncoder for SoftwareEncoder {
         }
     }
 
+    /// For the next time it opens: the crate has no way to change a running
+    /// encoder, and opening it again would cost a keyframe.
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        self.settings.bitrate_bps = bitrate_bps;
+    }
+
     fn name(&self) -> String {
         "CPU (OpenH264)".to_owned()
     }

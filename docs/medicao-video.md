@@ -130,6 +130,17 @@ Primeira com o build novo nos dois lados, em 57 s, com rede tão ruim quanto a d
 - **Falta separar as causas:** o RTT que oscila pode vir do Wi-Fi, do túnel ou da internet entre os dois. Só outra
   rodada, com o Tailscale desligado em um dos lados, mostra qual.
 
+## Comparar o bitrate adaptativo
+
+O host baixa a taxa quando a rede piora e a linha `taxa:` mostra cada mudança e o motivo. Só o host muda: o visualizador
+continua igual, no mesmo protocolo. Para comparar com a taxa fixa, rode o host com `$env:HEXT_TAXA_FIXA='1'`.
+
+- `taxa: 8.0 para 5.6 Mbps (RTT subiu)`: desceu. Os motivos são `preso no controle de congestionamento`, `RTT subiu` e
+  `perda alta`.
+- `taxa: 1.0 para 1.1 Mbps (rede boa)`: subiu, depois de 5 segundos bons com o vídeo usando pelo menos metade da taxa.
+- `não aceitou mudar a taxa`: o driver recusou. Confira também se `Mbps` em `envio:` acompanha a taxa pedida, porque um
+  driver pode aceitar e ignorar.
+
 ## A quinta medição
 
 Quatro rodadas no mesmo dia, todas com `HEXT_VBV_MS=100`. A e B no LD-NB-01, que está na mesma rede do visualizador

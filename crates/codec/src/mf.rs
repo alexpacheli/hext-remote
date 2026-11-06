@@ -24,7 +24,7 @@ use windows::Win32::Foundation::VARIANT_TRUE;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Media::MediaFoundation::{
-    CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMeanBitRate,
+    CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
     CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
     CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
     ICodecAPI, IMFActivate, IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown,
@@ -363,16 +363,6 @@ impl MfEncoder {
                     &CODECAPI_AVEncCommonMeanBitRate,
                     u32_variant(self.settings.bitrate_bps),
                 );
-                // Temporary, to find a value in the field: a short buffer
-                // keeps a full screen change from becoming a huge frame, at
-                // the cost of a moment of lower quality.
-                let buffer_ms = std::env::var("HEXT_VBV_MS").ok();
-                if let Some(ms) = buffer_ms.and_then(|ms| ms.parse::<u64>().ok()) {
-                    let bits = u64::from(self.settings.bitrate_bps) * ms / 1000;
-                    let bits = u32::try_from(bits).unwrap_or(u32::MAX);
-                    let taken = set(codec, &CODECAPI_AVEncCommonBufferSize, u32_variant(bits));
-                    tracing::info!("buffer do codificador: {ms} ms, aceito: {taken}");
-                }
             }
             if tweaks.gop {
                 set(codec, &CODECAPI_AVEncMPVGOPSize, u32_variant(GOP_FRAMES));
@@ -515,6 +505,27 @@ impl VideoEncoder for MfEncoder {
 
     fn force_keyframe(&mut self) {
         self.force_keyframe = true;
+    }
+
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        self.settings.bitrate_bps = bitrate_bps;
+        let codec = self.session.as_ref().and_then(|s| s.codec.as_ref());
+        if let Some(codec) = codec.filter(|_| self.tweaks.rate_control) {
+            let taken = set(
+                codec,
+                &CODECAPI_AVEncCommonMeanBitRate,
+                u32_variant(bitrate_bps),
+            );
+            // AMD accepts the mean alone and keeps going at the old rate.
+            set(
+                codec,
+                &CODECAPI_AVEncCommonMaxBitRate,
+                u32_variant(bitrate_bps),
+            );
+            if !taken {
+                tracing::warn!("{} não aceitou mudar a taxa", self.name);
+            }
+        }
     }
 
     fn name(&self) -> String {
