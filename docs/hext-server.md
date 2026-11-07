@@ -14,7 +14,8 @@ App                                   Servidor
  │◄── challenge {protocol, nonce} ──────│   32 bytes aleatórios
  │─── hello {chave, assinatura, nome,   │   assinatura Ed25519 de "hext-signal-auth-v1\0" + nonce
  │           host ou técnico} ─────────►│
- │◄── welcome {id, aceita attempt} ─────│   ID atribuído no primeiro login, o mesmo para sempre
+ │◄── welcome {id, aceita attempt,      │   ID atribuído no primeiro login, o mesmo para sempre
+ │            aceita presence} ─────────│
 
 Técnico                  Servidor                   Host
  │── connect {1, id} ──────►│                          │
@@ -55,6 +56,11 @@ Técnico                  Servidor                   Host
 - **Auditoria:** a tabela `audit` registra quem pediu, para qual ID, quando e o resultado (`requested`,
   `accepted`, `accepted_unattended`, `unattended_off`, `entered`, `wrong_password`, `declined`, `timeout`,
   `cancelled`, `offline`, `busy`, `rate_limited`, `host_locked`).
+- **Quem está online:** o técnico pergunta por uma lista de IDs (`presence {ids}`, até 50) e recebe os que
+  estão online (`presence {online}`). Só aparecem os computadores que aceitaram esse técnico, ou em que ele
+  entrou com a senha, nos últimos 90 dias (as tabelas `accepted` e `entered`). Qualquer outro ID aparece
+  sempre offline, como num pedido, para não dar para sondar IDs. Até 6 perguntas por minuto por computador:
+  as seguintes ficam sem resposta. Um servidor antigo não diz `aceita presence`, e o app não pergunta.
 - **Conexão viva:** o servidor manda ping a cada 20 s e desconecta quem fica 60 s em silêncio.
 
 ## Rodar

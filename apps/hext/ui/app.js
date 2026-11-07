@@ -56,7 +56,7 @@ const pages = {
       notice.hidden = !view.notice;
       notice.textContent = view.notice ?? "";
 
-      showRecent(view.recent);
+      showRecent(view.recent, view.online);
       const busy = view.viewer.state === "asking" || view.viewer.state === "connected";
       $("connect-button").disabled = busy;
       switch (view.viewer.state) {
@@ -225,8 +225,11 @@ const pages = {
   },
 };
 
-/** The computers accessed; a click fills in the ID. */
-function showRecent(computers) {
+/**
+ * The computers accessed; a click fills in the ID. `online`: the IDs online
+ * (null: not known, and no dots).
+ */
+function showRecent(computers, online) {
   $("recent-section").hidden = computers.length === 0;
   $("recent").replaceChildren(
     ...computers.map(({ id, name }) => {
@@ -235,6 +238,14 @@ function showRecent(computers) {
       pick.className = "pick";
       pick.textContent = name ? `${name} (${id})` : id;
       pick.title = pick.textContent;
+      if (online) {
+        const on = online.includes(id);
+        const dot = document.createElement("span");
+        dot.className = on ? "dot online" : "dot";
+        dot.title = on ? "Online" : "Offline";
+        pick.title = `${pick.textContent}: ${dot.title}`;
+        pick.prepend(dot);
+      }
       pick.addEventListener("click", () => {
         $("target").value = id;
         $("password").focus();

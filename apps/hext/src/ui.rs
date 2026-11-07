@@ -15,8 +15,8 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{ChildStdin, Command, Stdio};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -29,7 +29,7 @@ use tauri::{
 };
 use tauri_plugin_dialog::DialogExt;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tracing::warn;
 use zeroize::Zeroizing;
 
@@ -43,6 +43,9 @@ use crate::ui_link::{
 
 /// Tells the pages to read [`View`] again.
 const CHANGED: &str = "changed";
+/// The viewer's key, next to this computer's: the one the computers on the
+/// list know.
+const VIEWER_KEY: &str = "viewer.key";
 /// How long the bar says how a file ended, before going back to saying what
 /// the session may do.
 const TRANSFER_SHOWN: Duration = Duration::from_secs(8);
@@ -104,6 +107,8 @@ struct View {
     viewer: ViewerState,
     /// The computers this one accessed, the latest first.
     recent: Vec<Computer>,
+    /// The IDs on that list that are online; `None`: not known.
+    online: Option<Vec<String>>,
     /// How the last file of the session went.
     transfer: Option<String>,
     /// Counts what the bar should unfold for.
@@ -126,6 +131,8 @@ struct Shared {
     /// Where each viewer running takes its messages, by that same label.
     viewers: Mutex<HashMap<String, ChildStdin>>,
     next_viewer: AtomicU64,
+    /// Asks the server at once who on the list is online.
+    presence: Arc<Notify>,
 }
 
 impl Shared {
@@ -194,6 +201,7 @@ fn open_home(app: &AppHandle) {
                 let _ = home.unminimize();
                 let _ = home.show();
                 let _ = home.set_focus();
+                app.state::<Shared>().presence.notify_one();
             }
             // Portable, this window is the only way in: an app nobody can
             // see must not stay online.
@@ -820,6 +828,7 @@ fn forget(app: AppHandle, shared: State<'_, Shared>, id: String) {
     recent.save();
     shared.view.lock().expect("lock").recent = recent.into_list();
     changed(&app);
+    shared.presence.notify_one();
 }
 
 /// A viewer connected to computer `id`, called `name`: on the list it goes.
@@ -831,13 +840,59 @@ fn remember(app: &AppHandle, id: &str, name: &str) {
     let mut view = shared.view.lock().expect("lock");
     view.viewer = ViewerState::Connected;
     view.recent = recent.into_list();
+    shared.presence.notify_one();
+}
+
+/// Keeps [`View::online`] up to date while the home screen is open.
+fn watch_presence(app: AppHandle) {
+    let Ok(dir) = hext_crypto::config_dir() else {
+        return;
+    };
+    let wake = app.state::<Shared>().presence.clone();
+    let asking = app.clone();
+    let wanted = move || -> Vec<DeviceId> {
+        let open = asking
+            .get_webview_window("main")
+            .is_some_and(|home| home.is_visible().unwrap_or(false));
+        if !open {
+            return Vec::new();
+        }
+        let shared = asking.state::<Shared>();
+        let view = shared.view.lock().expect("lock");
+        view.recent
+            .iter()
+            .filter_map(|c| c.id.parse().ok())
+            .collect()
+    };
+    let show = move |online: Option<Vec<DeviceId>>| {
+        let shared = app.state::<Shared>();
+        let mut view = shared.view.lock().expect("lock");
+        let online = online.map(|online| {
+            view.recent
+                .iter()
+                .filter(|c| c.id.parse().is_ok_and(|id: DeviceId| online.contains(&id)))
+                .map(|c| c.id.clone())
+                .collect()
+        });
+        if view.online != online {
+            view.online = online;
+            drop(view);
+            changed(&app);
+        }
+    };
+    tauri::async_runtime::spawn(crate::presence::watch(
+        dir.join(VIEWER_KEY),
+        wanted,
+        show,
+        wake,
+    ));
 }
 
 /// Opens the viewer, a process of its own (ARCHITECTURE 3.5), and follows it.
 fn open_viewer(app: AppHandle, id: DeviceId, password: Option<Zeroizing<String>>) -> Result<()> {
     // Not the key the portable host is using: our relay serves one
     // connection per key, so the two would keep knocking each other off.
-    let key = hext_crypto::config_dir()?.join("viewer.key");
+    let key = hext_crypto::config_dir()?.join(VIEWER_KEY);
     let number = app
         .state::<Shared>()
         .next_viewer
@@ -994,6 +1049,7 @@ pub fn run(link: Link) -> Result<()> {
             chats: Mutex::default(),
             viewers: Mutex::default(),
             next_viewer: AtomicU64::new(1),
+            presence: Arc::default(),
         })
         .invoke_handler(tauri::generate_handler![
             view,
@@ -1009,6 +1065,10 @@ pub fn run(link: Link) -> Result<()> {
             forget
         ])
         .on_window_event(move |window, event| {
+            // Back on the home screen: who is online now.
+            if matches!(event, WindowEvent::Focused(true)) && window.label() == "main" {
+                window.app_handle().state::<Shared>().presence.notify_one();
+            }
             let WindowEvent::CloseRequested { api, .. } = event else {
                 return;
             };
@@ -1041,6 +1101,7 @@ pub fn run(link: Link) -> Result<()> {
             if !hidden {
                 open_home(&handle);
             }
+            watch_presence(handle.clone());
             connect_to_host(handle, link, outgoing);
             Ok(())
         })

@@ -38,12 +38,15 @@ type Result<T, E = ClientError> = std::result::Result<T, E>;
 
 /// Longest wait for a host's answer (the server gives up sooner).
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(90);
+/// Longest wait for the server to say who is online.
+const PRESENCE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A logged-in connection to the server.
 pub struct Client {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     id: DeviceId,
     takes_attempts: bool,
+    takes_presence: bool,
     next_request: u64,
 }
 
@@ -91,6 +94,7 @@ impl Client {
                 // Replaced once the server says.
                 id: DeviceId::new(DeviceId::MIN).expect("a valid ID"),
                 takes_attempts: false,
+                takes_presence: false,
                 next_request: 1,
             };
             let nonce = match client.recv().await? {
@@ -115,9 +119,14 @@ impl Client {
                 })
                 .await?;
             match client.recv().await? {
-                ServerMsg::Welcome { id, takes_attempts } => {
+                ServerMsg::Welcome {
+                    id,
+                    takes_attempts,
+                    takes_presence,
+                } => {
                     client.id = id;
                     client.takes_attempts = takes_attempts;
+                    client.takes_presence = takes_presence;
                 }
                 other => return Err(unexpected(&other)),
             }
@@ -181,6 +190,28 @@ impl Client {
     /// Whether the server takes [`ClientMsg::Attempt`].
     pub fn takes_attempts(&self) -> bool {
         self.takes_attempts
+    }
+
+    /// Whether the server answers [`ClientMsg::Presence`].
+    pub fn takes_presence(&self) -> bool {
+        self.takes_presence
+    }
+
+    /// Which of `ids` are online, of those the server tells this device
+    /// about (see [`ServerMsg::Presence`]). Only on servers that take it.
+    pub async fn presence(&mut self, ids: &[DeviceId]) -> Result<Vec<DeviceId>> {
+        let ids = ids.iter().copied().take(crate::MAX_PRESENCE).collect();
+        self.send(&ClientMsg::Presence { ids }).await?;
+        let answer = async {
+            loop {
+                if let ServerMsg::Presence { online } = self.recv().await? {
+                    return Ok(online);
+                }
+            }
+        };
+        tokio::time::timeout(PRESENCE_TIMEOUT, answer)
+            .await
+            .map_err(|_| ClientError::Timeout)?
     }
 
     pub async fn send(&mut self, msg: &ClientMsg) -> Result<()> {

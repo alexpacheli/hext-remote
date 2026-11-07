@@ -13,6 +13,8 @@ mod bench;
 mod chat;
 mod host;
 mod name;
+#[cfg(any(windows, target_os = "macos"))]
+mod presence;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
 mod recent;
 mod service;

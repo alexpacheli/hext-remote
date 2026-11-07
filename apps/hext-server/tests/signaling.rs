@@ -1105,3 +1105,53 @@ async fn a_locked_host_tells_the_viewer_while_it_waits() {
     host.send(&ClientMsg::Waiting { request }).await.unwrap();
     assert_eq!(recv(&mut viewer).await, ServerMsg::Waiting { request: 1 });
 }
+
+#[tokio::test]
+async fn presence_shows_only_computers_that_let_this_one_in() {
+    let (url, state) = server().await;
+    let (mut host, mut viewer) = pair(&url).await;
+    let mut stranger = login(&url, &DeviceKey::generate().unwrap(), "Outro").await;
+    let mut entered = login(&url, &DeviceKey::generate().unwrap(), "Senha").await;
+    let nobody: DeviceId = "123 456 789".parse().unwrap();
+    let ids = [host.id(), stranger.id(), entered.id(), nobody, viewer.id()];
+    assert!(viewer.takes_presence());
+
+    // Online, but it never let this one in: like an unknown ID.
+    assert_eq!(viewer.presence(&ids).await.unwrap(), vec![]);
+
+    assert!(matches!(
+        ask(&mut viewer, &mut host, 1, true).await,
+        ServerMsg::Accepted { .. }
+    ));
+    let viewer_id = viewer.id();
+    with_password(&mut viewer, &mut entered, 2).await;
+    report(&mut entered, viewer_id, true, &state).await;
+    // Declining does not count.
+    assert!(matches!(
+        ask(&mut viewer, &mut stranger, 3, false).await,
+        ServerMsg::Rejected { .. }
+    ));
+    let mut expected = vec![host.id(), entered.id()];
+    expected.sort_unstable_by_key(|id| id.get());
+    assert_eq!(viewer.presence(&ids).await.unwrap(), expected);
+
+    // Offline once it leaves.
+    host.close().await.unwrap();
+    wait_online(&state, 3).await;
+    assert_eq!(viewer.presence(&ids).await.unwrap(), vec![entered.id()]);
+}
+
+#[tokio::test]
+async fn presence_questions_are_limited() {
+    let (url, _) = server().await;
+    let (_host, mut viewer) = pair(&url).await;
+    for _ in 0..6 {
+        assert_eq!(viewer.presence(&[]).await.unwrap(), vec![]);
+    }
+    viewer
+        .send(&ClientMsg::Presence { ids: vec![] })
+        .await
+        .unwrap();
+    let answer = tokio::time::timeout(Duration::from_millis(300), viewer.recv()).await;
+    assert!(answer.is_err(), "past the limit, no answer: {answer:?}");
+}

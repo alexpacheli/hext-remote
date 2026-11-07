@@ -114,6 +114,11 @@ fieldset {
   font-size: 13px;
 }
 
+/* Hidden means hidden, whatever display a rule gives the element. */
+[hidden] {
+  display: none !important;
+}
+
 form {
   display: flex;
   gap: 8px;
@@ -410,6 +415,20 @@ input[type="password"] {
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
+}
+
+.recent .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  vertical-align: middle;
+}
+
+.recent .dot.online {
+  background: #22a559;
 }
 
 .recent .pick:hover {
