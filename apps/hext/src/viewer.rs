@@ -798,6 +798,14 @@ impl ApplicationHandler<UserEvent> for Viewer {
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            // Synthetic keys are what this computer believes held as the
+            // window gains focus, and let go as it loses it: never typed in
+            // the window, so not the host's. (Pressed there, an Esc held to
+            // leave another window interrupted the host's program on every
+            // return; losing focus already releases everything.)
+            WindowEvent::KeyboardInput {
+                is_synthetic: true, ..
+            } => {}
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
