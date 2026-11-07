@@ -151,9 +151,10 @@ em `C:\ProgramData\HextRemote\audit.log`. A tela inicial guarda o nome e o ID do
 nunca a senha.
 
 Na janela do visualizador, **Ctrl+Alt+Enter** entra e sai da tela cheia, com a imagem ocupando a tela
-inteira sem distorcer. Levar o mouse até a borda de cima, no centro, mostra um botão que faz o mesmo. Se o
-outro computador tiver mais de um monitor, os botões numerados aparecem ao lado desse botão: o 1 é o monitor
-principal, e os outros seguem da esquerda para a direita. **Ctrl+Alt+1..9** faz o mesmo.
+inteira sem distorcer. No topo da janela, no centro, fica sempre uma faixa fina: passar o mouse nela abre os
+botões, que recolhem pouco depois de o mouse sair. Um deles faz o mesmo que o atalho. Se o outro computador
+tiver mais de um monitor, os botões numerados ficam ao lado: o 1 é o monitor principal, e os outros seguem da
+esquerda para a direita. **Ctrl+Alt+1..9** faz o mesmo.
 
 Para conversar durante a sessão, o técnico usa o botão com um balão ou **Ctrl+Alt+C**, e quem está no outro
 computador usa o botão **Chat** da barra de sessão. A janela abre sozinha quando chega uma mensagem, sem tirar
