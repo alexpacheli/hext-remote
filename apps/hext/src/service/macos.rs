@@ -211,7 +211,7 @@ fn unload() {
     let _ = launchctl(&["bootout", &format!("{}/{LABEL}", domain())]);
 }
 
-pub fn install() -> Result<()> {
+pub fn install(name: Option<String>) -> Result<()> {
     if getuid() == 0 {
         bail!(
             "no Mac, rode sem sudo: o Hext Remote passa a abrir no login de quem rodar este comando"
@@ -240,6 +240,9 @@ pub fn install() -> Result<()> {
     }
     std::fs::write(&file, plist(&exe)).with_context(|| file.display().to_string())?;
     let _ = std::fs::remove_file(id_file()?);
+    if let Some(name) = name {
+        crate::name::write(&dir, Some(&name))?;
+    }
     // The one just taken out may still be on its way.
     let path = file.to_string_lossy();
     let mut loaded = launchctl(&["bootstrap", &domain(), &path]);
@@ -318,7 +321,28 @@ pub fn status() -> Result<()> {
         Ok(id) => println!("ID deste computador: {}", id.trim()),
         Err(_) => println!("ID: ainda não"),
     }
+    println!(
+        "Nome deste computador: {}",
+        crate::name::described(&data_dir()?)
+    );
     println!("Acesso não assistido: não existe no Mac por enquanto (cada acesso pede aceite)");
+    Ok(())
+}
+
+/// Shows or changes this computer's name (the user's: the app opened by
+/// hand has it too). Installed, the app reopens to take it.
+pub fn name(change: super::NameChange) -> Result<()> {
+    let dir = data_dir()?;
+    let changed = super::apply_name(&dir, change)?;
+    println!("Nome deste computador: {}", crate::name::described(&dir));
+    if changed {
+        if installed() && launchctl(&["kickstart", "-k", &format!("{}/{LABEL}", domain())]).is_ok()
+        {
+            println!("O Hext Remote reabriu com o nome novo.");
+        } else {
+            println!("Vale a partir da próxima vez que o Hext Remote abrir.");
+        }
+    }
     Ok(())
 }
 

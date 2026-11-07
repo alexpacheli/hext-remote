@@ -12,6 +12,7 @@ mod bench;
 #[cfg(any(windows, target_os = "macos"))]
 mod chat;
 mod host;
+mod name;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
 mod recent;
 mod service;
@@ -128,7 +129,20 @@ enum Command {
 enum ServiceAction {
     /// Instala (ou atualiza) e inicia o serviço. No Windows, precisa de
     /// administrador; no Mac, rode sem sudo.
-    Install,
+    Install {
+        /// O nome deste computador, como o técnico vê (padrão: o do sistema).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Mostra ou muda o nome deste computador, como o técnico vê. Com o
+    /// serviço do Windows, precisa de administrador.
+    Name {
+        /// O nome novo.
+        name: Option<String>,
+        /// Volta ao nome do sistema.
+        #[arg(long, conflicts_with = "name")]
+        reset: bool,
+    },
     /// Para e remove o serviço. No Windows, precisa de administrador.
     Uninstall {
         /// Apaga também a identidade deste computador (o ID deixa de valer).
@@ -355,8 +369,9 @@ fn downloads() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join("Downloads"))
 }
 
+/// This computer's name, as this user gave it (or the system's).
 fn device_name() -> String {
-    gethostname::gethostname().to_string_lossy().into_owned()
+    name::of_user()
 }
 
 /// Name of this executable as the user runs it (`HextRemote.exe`, `hext`…).

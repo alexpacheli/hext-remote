@@ -73,7 +73,7 @@ use zeroize::Zeroizing;
 use crate::agent::{AgentHub, Indicator, Stream};
 use crate::signaling::Ask;
 use crate::ui_link::UiHub;
-use crate::{APP_VERSION, DEFAULT_RELAY, DEFAULT_SERVER, device_name};
+use crate::{APP_VERSION, DEFAULT_RELAY, DEFAULT_SERVER};
 
 const SERVICE: &str = "HextRemote";
 /// Where the policy that lets services send Ctrl+Alt+Del lives.
@@ -239,9 +239,12 @@ fn prepare_machine_dir() -> Result<PathBuf> {
     Ok(data)
 }
 
-pub fn install() -> Result<()> {
+pub fn install(name: Option<String>) -> Result<()> {
     require_admin()?;
     let data = prepare_machine_dir()?;
+    if let Some(name) = name {
+        crate::name::write(&data, Some(&name))?;
+    }
 
     // The program, where the service runs it from (an update replaces it).
     let installed = exists();
@@ -439,6 +442,10 @@ pub fn status() -> Result<()> {
             return Ok(());
         }
     }
+    println!(
+        "Nome deste computador: {}",
+        crate::name::described(&machine_dir()?)
+    );
     match std::fs::read_to_string(id_file()?) {
         Ok(id) => println!("ID deste computador: {}", id.trim()),
         Err(_) => println!("ID: ainda não (ou rode como administrador para ler)"),
@@ -450,6 +457,32 @@ pub fn status() -> Result<()> {
         }
         Err(_) => println!("Acesso não assistido: rode como administrador para ver"),
     }
+    Ok(())
+}
+
+/// Shows or changes the name the service gives this computer. With the
+/// service, it holds for the whole computer: an administrator's to change.
+/// The service restarts to take it (a session on ends).
+pub fn name(change: super::NameChange) -> Result<()> {
+    if !exists() {
+        return super::user_name(change);
+    }
+    if matches!(change, super::NameChange::Show) {
+        println!(
+            "Nome deste computador: {}",
+            crate::name::described(&machine_dir()?)
+        );
+        return Ok(());
+    }
+    require_admin()?;
+    let dir = prepare_machine_dir()?;
+    let changed = super::apply_name(&dir, change)?;
+    if changed && sc(&["query", SERVICE]).is_ok_and(|state| state.contains("RUNNING")) {
+        stop();
+        sc(&["start", SERVICE])?;
+        println!("Serviço reiniciado com o nome novo.");
+    }
+    println!("Nome deste computador: {}", crate::name::described(&dir));
     Ok(())
 }
 
@@ -745,7 +778,7 @@ async fn serve() -> Result<()> {
     info!("serviço iniciado (v{APP_VERSION})");
     let key =
         Arc::new(load_or_create(&FileKeyStore::machine(machine_dir()?.join("device.key")))?.0);
-    let name = device_name();
+    let name = crate::name::in_dir(&machine_dir()?);
     // Registered before the relay sees this computer (it serves only
     // registered ones); the ID goes to `service status`.
     match tokio::time::timeout(

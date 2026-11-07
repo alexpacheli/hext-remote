@@ -98,21 +98,70 @@ pub fn remember_id(id: &str) {
     let _ = id;
 }
 
+/// What `service name` was asked.
+pub enum NameChange {
+    Show,
+    Set(String),
+    /// Back to the system's name.
+    Reset,
+}
+
+/// Writes `change` in `dir`; whether anything changed.
+fn apply_name(dir: &std::path::Path, change: NameChange) -> Result<bool> {
+    match change {
+        NameChange::Show => Ok(false),
+        NameChange::Set(name) => crate::name::write(dir, Some(&name)).map(|()| true),
+        NameChange::Reset => crate::name::write(dir, None).map(|()| true),
+    }
+}
+
+/// The name of the app opened by hand (and of the viewer): the user's.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn user_name(change: NameChange) -> Result<()> {
+    let dir = hext_crypto::config_dir()?;
+    let changed = apply_name(&dir, change)?;
+    println!("Nome deste computador: {}", crate::name::described(&dir));
+    if changed {
+        println!("Vale a partir da próxima vez que o Hext Remote abrir.");
+    }
+    Ok(())
+}
+
 pub fn command(action: ServiceAction) -> Result<()> {
+    let action = match action {
+        ServiceAction::Name { name, reset } => {
+            let change = match name {
+                Some(name) => NameChange::Set(crate::name::clean(&name)?),
+                None if reset => NameChange::Reset,
+                None => NameChange::Show,
+            };
+            #[cfg(windows)]
+            return windows::name(change);
+            #[cfg(target_os = "macos")]
+            return macos::name(change);
+            #[cfg(not(any(windows, target_os = "macos")))]
+            return user_name(change);
+        }
+        ServiceAction::Install { name: Some(name) } => ServiceAction::Install {
+            name: Some(crate::name::clean(&name)?),
+        },
+        action => action,
+    };
     #[cfg(windows)]
     {
         match action {
-            ServiceAction::Install => windows::install(),
+            ServiceAction::Install { name } => windows::install(name),
             ServiceAction::Uninstall { purge } => windows::uninstall(purge),
             ServiceAction::Status => windows::status(),
             ServiceAction::Password { off } => windows::password(off),
             ServiceAction::Run => windows::run(),
+            ServiceAction::Name { .. } => unreachable!("answered above"),
         }
     }
     #[cfg(target_os = "macos")]
     {
         match action {
-            ServiceAction::Install => macos::install(),
+            ServiceAction::Install { name } => macos::install(name),
             ServiceAction::Uninstall { purge } => macos::uninstall(purge),
             ServiceAction::Status => macos::status(),
             ServiceAction::Password { .. } => anyhow::bail!(
@@ -120,6 +169,7 @@ pub fn command(action: ServiceAction) -> Result<()> {
                  depois de reiniciar ou de uma queda de rede não pede)"
             ),
             ServiceAction::Run => anyhow::bail!("no Mac, quem inicia o Hext Remote é o login"),
+            ServiceAction::Name { .. } => unreachable!("answered above"),
         }
     }
     #[cfg(not(any(windows, target_os = "macos")))]
