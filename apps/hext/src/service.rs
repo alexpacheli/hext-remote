@@ -1,13 +1,22 @@
-//! The installed host (F4, milestone 1): a Windows service, online with the
-//! computer's own ID from boot, and an agent in the user's session (see
-//! [`crate::agent`]). macOS comes later (milestone 9).
+//! The installed host. On Windows (F4, milestone 1): a service, online with
+//! the computer's own ID from boot, and an agent in the user's session (see
+//! [`crate::agent`]). On macOS (milestone 9): a LaunchAgent that opens the
+//! app at login, with no window.
+
+use std::sync::Arc;
 
 use anyhow::Result;
+use hext_session::ResumeTokens;
+use hext_session::host::Restart;
 
 use crate::ServiceAction;
 
 #[cfg(windows)]
 mod banner;
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+mod kept;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(windows)]
 mod windows;
 
@@ -15,7 +24,6 @@ mod windows;
 pub use banner::Banner;
 
 /// Above this size a log starts over (the previous one kept as `.old`).
-#[cfg_attr(not(windows), allow(dead_code))]
 const MAX_LOG: u64 = 4 << 20;
 
 /// The log file of the service or an agent (`name`), in the computer's
@@ -43,17 +51,51 @@ fn log_in(dir: &std::path::Path, name: &str) -> Option<std::fs::File> {
         .ok()
 }
 
-/// Whether this computer has the service installed.
+/// Whether this computer has the service (on macOS, the LaunchAgent)
+/// installed.
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub fn installed() -> bool {
     #[cfg(windows)]
     {
         windows::installed()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::installed()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         false
     }
+}
+
+/// For the app's own host: what restarts this computer, with the token
+/// kept before the last restart taken back into `resumes`. Only installed on
+/// macOS: on Windows, the service restarts it, and the portable app cannot
+/// come back by itself.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub fn own_restart(resumes: &ResumeTokens) -> Option<Arc<dyn Restart>> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::own_restart(resumes)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = resumes;
+        None
+    }
+}
+
+/// Notes this computer's ID for `service status`, where the app's own host
+/// is the installed one (macOS).
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub fn remember_id(id: &str) {
+    #[cfg(target_os = "macos")]
+    if macos::installed() {
+        macos::remember_id(id);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = id;
 }
 
 pub fn command(action: ServiceAction) -> Result<()> {
@@ -67,10 +109,23 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ServiceAction::Run => windows::run(),
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        match action {
+            ServiceAction::Install => macos::install(),
+            ServiceAction::Uninstall { purge } => macos::uninstall(purge),
+            ServiceAction::Status => macos::status(),
+            ServiceAction::Password { .. } => anyhow::bail!(
+                "no Mac, o acesso não assistido ainda não existe: cada acesso pede aceite (a volta \
+                 depois de reiniciar ou de uma queda de rede não pede)"
+            ),
+            ServiceAction::Run => anyhow::bail!("no Mac, quem inicia o Hext Remote é o login"),
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = action;
-        anyhow::bail!("o serviço por enquanto só existe no Windows")
+        anyhow::bail!("o serviço por enquanto só existe no Windows e no macOS")
     }
 }
 

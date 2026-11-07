@@ -103,8 +103,8 @@ enum Command {
     /// Testa se os codificadores da GPU mudam a taxa com o vídeo rodando
     /// (diagnóstico, Windows).
     EncoderRates,
-    /// Instala o Hext Remote como serviço do Windows: online com o ID deste
-    /// computador desde o boot, antes de alguém entrar.
+    /// Instala o Hext Remote: no Windows, como serviço, online com o ID deste
+    /// computador desde o boot; no Mac, para abrir sozinho a cada login.
     Service {
         #[command(subcommand)]
         action: ServiceAction,
@@ -115,19 +115,21 @@ enum Command {
         #[arg(long)]
         pipe: String,
     },
-    /// (Interno) A interface na sessão do usuário, iniciada pelo serviço.
+    /// (Interno) A interface na sessão do usuário, iniciada pelo serviço
+    /// (Windows) ou pelo login (macOS, sem --pipe).
     #[command(hide = true)]
     Ui {
         #[arg(long)]
-        pipe: String,
+        pipe: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 enum ServiceAction {
-    /// Instala (ou atualiza) e inicia o serviço. Precisa de administrador.
+    /// Instala (ou atualiza) e inicia o serviço. No Windows, precisa de
+    /// administrador; no Mac, rode sem sudo.
     Install,
-    /// Para e remove o serviço. Precisa de administrador.
+    /// Para e remove o serviço. No Windows, precisa de administrador.
     Uninstall {
         /// Apaga também a identidade deste computador (o ID deixa de valer).
         #[arg(long)]
@@ -304,9 +306,12 @@ fn main() -> Result<()> {
         Some(Command::Service { action }) => service::command(action),
         Some(Command::Agent { pipe }) => service::agent(&pipe),
         #[cfg(windows)]
-        Some(Command::Ui { pipe }) => ui::run(ui::Link::Service(pipe)),
-        #[cfg(not(windows))]
-        Some(Command::Ui { .. }) => anyhow::bail!("a interface do serviço só existe no Windows"),
+        Some(Command::Ui { pipe: Some(pipe) }) => ui::run(ui::Link::Service(pipe)),
+        #[cfg(target_os = "macos")]
+        Some(Command::Ui { pipe: None }) => ui::run(ui::Link::Login),
+        Some(Command::Ui { .. }) => {
+            anyhow::bail!("comando interno: o Hext Remote abre sem comando")
+        }
     }
 }
 

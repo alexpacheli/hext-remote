@@ -172,7 +172,8 @@ pub async fn run(args: HostArgs) -> Result<()> {
 pub async fn portable(hub: UiHub) -> Result<()> {
     let key = Arc::new(crate::device_key(None)?);
     let name = device_name();
-    if crate::service::installed() {
+    // (On macOS, installed is this same app, opened at login.)
+    if cfg!(windows) && crate::service::installed() {
         hub.set_notice(
             "O serviço do Hext Remote está instalado: este app tem outro ID, só dele.".to_owned(),
         );
@@ -208,6 +209,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
 
     let session_codes = SessionCodes::default();
     let resumes = ResumeTokens::default();
+    let restart = crate::service::own_restart(&resumes);
     let config = Arc::new(HostConfig {
         peer: PeerInfo::local(APP_VERSION, name.clone()),
         access_code: None,
@@ -220,7 +222,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
         presence: Some(Arc::new(hub.clone())),
         unattended: None,
         resumes: resumes.clone(),
-        restart: None,
+        restart,
         files: Some(Arc::new(OwnFiles(crate::downloads()))),
     });
     let slot = Arc::new(Semaphore::new(1));

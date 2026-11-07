@@ -5,7 +5,9 @@
 //! to expose to a user's session with the system's rights. So the service
 //! starts this in the user's session ([`Link::Service`]) and only trades
 //! messages with it (see [`crate::ui_link`]). Portable, the host runs in
-//! this same process ([`Link::Portable`]), with the same messages.
+//! this same process ([`Link::Portable`]), with the same messages. Installed
+//! on macOS, it is that same host, started at login with no window
+//! ([`Link::Login`]).
 //!
 //! Windows are made when needed: this stays running in every session of
 //! an installed computer, and an idle webview is not cheap.
@@ -14,7 +16,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -59,6 +61,9 @@ pub enum Link {
     /// The service, through this pipe.
     #[cfg(windows)]
     Service(String),
+    /// This process, started at login (macOS, installed).
+    #[cfg(target_os = "macos")]
+    Login,
 }
 
 /// A request waiting for the user.
@@ -108,8 +113,12 @@ struct View {
 struct Shared {
     view: Mutex<View>,
     to_host: mpsc::UnboundedSender<FromUi>,
-    /// The sessions are the service's, not this process's.
-    managed: bool,
+    /// This keeps running with no window: the sessions are the service's,
+    /// or this is the installed app of a Mac. (On a Mac, an app opened by
+    /// hand becomes it when the one from the login finds it running.)
+    managed: AtomicBool,
+    /// This computer can restart at a viewer's request.
+    can_restart: bool,
     /// The conversations, by the label of their window.
     chats: Mutex<HashMap<String, Chat>>,
     /// Where each viewer running takes its messages, by that same label.
@@ -121,6 +130,10 @@ impl Shared {
     fn send(&self, msg: FromUi) {
         let _ = self.to_host.send(msg);
     }
+}
+
+fn managed(app: &AppHandle) -> bool {
+    app.state::<Shared>().managed.load(Ordering::Relaxed)
 }
 
 fn changed(app: &AppHandle) {
@@ -182,7 +195,7 @@ fn open_home(app: &AppHandle) {
             }
             // Portable, this window is the only way in: an app nobody can
             // see must not stay online.
-            None if !app.state::<Shared>().managed && app.webview_windows().is_empty() => {
+            None if !managed(&app) && app.webview_windows().is_empty() => {
                 #[cfg(windows)]
                 show_error("A janela do Hext Remote não abriu. O WebView2 está instalado?");
                 app.exit(1);
@@ -329,7 +342,15 @@ fn received(app: &AppHandle, msg: ToUi) {
     let mut view = shared.view.lock().expect("lock");
     match msg {
         ToUi::Id(id) => view.id = Some(id),
-        ToUi::Notice(notice) => view.notice = Some(notice),
+        ToUi::Notice(notice) => {
+            view.notice = Some(notice);
+            // Started at login with no window: something to be seen (a
+            // permission missing, say).
+            #[cfg(target_os = "macos")]
+            if app.get_webview_window("main").is_none() {
+                open_home(app);
+            }
+        }
         ToUi::Ask {
             ask,
             name,
@@ -341,7 +362,7 @@ fn received(app: &AppHandle, msg: ToUi) {
                 name,
                 id,
                 seconds,
-                can_restart: app.state::<Shared>().managed,
+                can_restart: shared.can_restart,
             });
             open_ask(app);
         }
@@ -459,19 +480,9 @@ fn connect_to_host(app: AppHandle, link: Link, outgoing: mpsc::UnboundedReceiver
         };
         runtime.block_on(async move {
             match link {
-                Link::Portable => {
-                    let hub = UiHub::default();
-                    let (ours, theirs) = tokio::io::duplex(1 << 16);
-                    let attached = hub.clone();
-                    tokio::spawn(async move { attached.attach(theirs).await });
-                    tokio::spawn(async move {
-                        if let Err(e) = crate::host::portable(hub.clone()).await {
-                            warn!("{e:#}");
-                            hub.set_notice(format!("Não foi possível receber conexões: {e:#}"));
-                        }
-                    });
-                    talk(&app, ours, outgoing).await;
-                }
+                Link::Portable => own_host(&app, outgoing).await,
+                #[cfg(target_os = "macos")]
+                Link::Login => own_host(&app, outgoing).await,
                 #[cfg(windows)]
                 Link::Service(pipe) => {
                     match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
@@ -485,6 +496,21 @@ fn connect_to_host(app: AppHandle, link: Link, outgoing: mpsc::UnboundedReceiver
             }
         });
     });
+}
+
+/// The host in this process.
+async fn own_host(app: &AppHandle, outgoing: mpsc::UnboundedReceiver<FromUi>) {
+    let hub = UiHub::default();
+    let (ours, theirs) = tokio::io::duplex(1 << 16);
+    let attached = hub.clone();
+    tokio::spawn(async move { attached.attach(theirs).await });
+    tokio::spawn(async move {
+        if let Err(e) = crate::host::portable(hub.clone()).await {
+            warn!("{e:#}");
+            hub.set_notice(format!("Não foi possível receber conexões: {e:#}"));
+        }
+    });
+    talk(app, ours, outgoing).await;
 }
 
 #[tauri::command]
@@ -845,10 +871,18 @@ fn drop_own_console() {
 pub fn run(link: Link) -> Result<()> {
     #[cfg(windows)]
     drop_own_console();
+    // Started with no window; stays running with none; restarts the computer.
     #[cfg(windows)]
-    let managed = matches!(link, Link::Service(_));
-    #[cfg(not(windows))]
-    let managed = false;
+    let (hidden, stays, can_restart) = {
+        let service = matches!(link, Link::Service(_));
+        (service, service, service)
+    };
+    #[cfg(target_os = "macos")]
+    let (hidden, stays, can_restart) = {
+        let installed = crate::service::installed();
+        let login = matches!(link, Link::Login);
+        (login, login || installed, installed)
+    };
     let (to_host, outgoing) = mpsc::unbounded_channel();
 
     let app = tauri::Builder::default()
@@ -859,6 +893,9 @@ pub fn run(link: Link) -> Result<()> {
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().any(|arg| arg == "ui") {
                 open_home(app);
+            } else if cfg!(target_os = "macos") {
+                // The login's: this one takes its place, and stays.
+                app.state::<Shared>().managed.store(true, Ordering::Relaxed);
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -868,7 +905,8 @@ pub fn run(link: Link) -> Result<()> {
                 ..View::default()
             }),
             to_host,
-            managed,
+            managed: AtomicBool::new(stays),
+            can_restart,
             chats: Mutex::default(),
             viewers: Mutex::default(),
             next_viewer: AtomicU64::new(1),
@@ -901,7 +939,7 @@ pub fn run(link: Link) -> Result<()> {
                 }
                 // Portable, the last window takes the host with it: not in
                 // the middle of a request or a session.
-                "main" if !managed && (wanted(app, "ask") || wanted(app, "bar")) => {
+                "main" if !managed(app) && (wanted(app, "ask") || wanted(app, "bar")) => {
                     api.prevent_close();
                     let _ = window.minimize();
                 }
@@ -910,7 +948,12 @@ pub fn run(link: Link) -> Result<()> {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
-            if !managed {
+            // In the background, like the system's own: no Dock icon.
+            #[cfg(target_os = "macos")]
+            if hidden {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+            if !hidden {
                 open_home(&handle);
             }
             connect_to_host(handle, link, outgoing);
@@ -923,7 +966,10 @@ pub fn run(link: Link) -> Result<()> {
         // request; the portable one is done.
         RunEvent::ExitRequested {
             code: None, api, ..
-        } if managed => api.prevent_exit(),
+        } if managed(app) => api.prevent_exit(),
+        // The Dock icon of an app with no window.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => open_home(app),
         // (Here and not on the window: only by now can the label be reused.)
         RunEvent::WindowEvent {
             label,

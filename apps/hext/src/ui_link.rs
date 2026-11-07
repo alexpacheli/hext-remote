@@ -397,6 +397,7 @@ impl Ask for UiAsk {
     }
 
     fn show_id(&mut self, id: DeviceId) {
+        crate::service::remember_id(&id.to_string());
         self.0.set_id(id);
     }
 }
