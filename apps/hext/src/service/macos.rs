@@ -183,12 +183,21 @@ pub fn install() -> Result<()> {
 
     println!("Instalado: o Hext Remote abre sozinho a cada login, sem janela.");
     println!("Programa: {}", exe.display());
+    let mut id = None;
     for _ in 0..30 {
-        if let Ok(id) = std::fs::read_to_string(id_file()?) {
-            println!("ID deste computador: {}", id.trim());
+        if let Ok(text) = std::fs::read_to_string(id_file()?) {
+            id = Some(text);
             break;
         }
         std::thread::sleep(Duration::from_secs(1));
+    }
+    match id {
+        Some(id) => println!("ID deste computador: {}", id.trim()),
+        None => println!(
+            "Ainda sem ID. Se o Hext Remote já estava aberto, ele continua no lugar do instalado até o 
+             próximo login. Veja {}",
+            dir.join("ui.log").display()
+        ),
     }
     println!(
         "Na primeira vez, o macOS pede as permissões de Gravação de Tela e Acessibilidade para o \
@@ -297,8 +306,17 @@ impl Restart for UserRestart {
                     }
                     return Err(format!("osascript: {done} {}", err.trim()));
                 }
-                // Waiting on the screen for the user to allow it.
-                Ok(None) if asked.elapsed() >= RESTART_ASKED => return Ok(()),
+                // Waiting on the screen for the user to allow it: a no
+                // there must not leave the way back open.
+                Ok(None) if asked.elapsed() >= RESTART_ASKED => {
+                    let dir = self.0.clone();
+                    std::thread::spawn(move || {
+                        if !child.wait().is_ok_and(|done| done.success()) {
+                            super::kept::revoke(&dir);
+                        }
+                    });
+                    return Ok(());
+                }
                 Ok(None) => std::thread::sleep(Duration::from_millis(200)),
                 Err(e) => {
                     self.revoke();

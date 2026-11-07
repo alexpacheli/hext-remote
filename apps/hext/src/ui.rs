@@ -480,9 +480,9 @@ fn connect_to_host(app: AppHandle, link: Link, outgoing: mpsc::UnboundedReceiver
         };
         runtime.block_on(async move {
             match link {
-                Link::Portable => own_host(&app, outgoing).await,
+                Link::Portable => own_host(&app, outgoing, false).await,
                 #[cfg(target_os = "macos")]
-                Link::Login => own_host(&app, outgoing).await,
+                Link::Login => own_host(&app, outgoing, true).await,
                 #[cfg(windows)]
                 Link::Service(pipe) => {
                     match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe) {
@@ -498,15 +498,21 @@ fn connect_to_host(app: AppHandle, link: Link, outgoing: mpsc::UnboundedReceiver
     });
 }
 
-/// The host in this process.
-async fn own_host(app: &AppHandle, outgoing: mpsc::UnboundedReceiver<FromUi>) {
+/// The host in this process. Started at login (`login`), a host that fails
+/// takes the app with it, for the system to start it again: nobody may be
+/// there to.
+async fn own_host(app: &AppHandle, outgoing: mpsc::UnboundedReceiver<FromUi>, login: bool) {
     let hub = UiHub::default();
     let (ours, theirs) = tokio::io::duplex(1 << 16);
     let attached = hub.clone();
     tokio::spawn(async move { attached.attach(theirs).await });
+    let failed = app.clone();
     tokio::spawn(async move {
         if let Err(e) = crate::host::portable(hub.clone()).await {
             warn!("{e:#}");
+            if login {
+                failed.exit(1);
+            }
             hub.set_notice(format!("Não foi possível receber conexões: {e:#}"));
         }
     });
