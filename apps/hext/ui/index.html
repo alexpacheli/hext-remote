@@ -13,6 +13,22 @@
       <section>
         <h2>Seu ID</h2>
         <p class="id" id="own-id">Conectando…</p>
+        <p class="name-line" id="name-line" hidden>
+          <span id="own-name"></span>
+          <button type="button" class="link" id="rename">Alterar</button>
+        </p>
+        <form id="rename-form" class="rename" hidden>
+          <input
+            id="new-name"
+            maxlength="64"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Nome deste computador (vazio: o do sistema)"
+            aria-label="Nome deste computador"
+          />
+          <button type="submit" class="primary">Salvar</button>
+          <button type="button" id="rename-cancel">Cancelar</button>
+        </form>
         <p class="hint">Passe este número para quem vai acessar este computador.</p>
         <p class="notice" id="notice" hidden></p>
       </section>

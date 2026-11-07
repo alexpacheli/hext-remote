@@ -14,6 +14,25 @@ const ACCEPT_DELAY_MS = 1000;
 const pages = {
   home: {
     start() {
+      const editing = (on) => {
+        $("rename-form").hidden = !on;
+        $("name-line").hidden = on || !this.name;
+        if (on) {
+          $("new-name").value = this.name ?? "";
+          $("new-name").focus();
+        }
+      };
+      $("rename").addEventListener("click", () => editing(true));
+      $("rename-cancel").addEventListener("click", () => editing(false));
+      $("rename-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          await invoke("rename", { name: $("new-name").value });
+          editing(false);
+        } catch (message) {
+          showStatus(String(message), true);
+        }
+      });
       $("connect").addEventListener("submit", async (event) => {
         event.preventDefault();
         try {
@@ -30,6 +49,9 @@ const pages = {
     },
     show(view) {
       $("own-id").textContent = view.id ?? "Conectando…";
+      this.name = view.name;
+      $("own-name").textContent = view.name ? `Nome: ${view.name}` : "";
+      $("name-line").hidden = !view.name || !$("rename-form").hidden;
       const notice = $("notice");
       notice.hidden = !view.notice;
       notice.textContent = view.notice ?? "";

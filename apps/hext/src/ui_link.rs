@@ -64,6 +64,8 @@ pub fn chat_of_viewer_line(line: &str) -> Option<ChatText> {
 pub enum ToUi {
     /// This computer's ID.
     Id(String),
+    /// This computer's name, as viewers see it.
+    Name(String),
     /// Something the user should know (a permission missing, for example).
     Notice(String),
     /// Someone asks for access; the answer is [`FromUi::Answer`].
@@ -106,6 +108,10 @@ pub enum FromUi {
     SendFile(PathBuf),
     /// The user wrote to the viewer.
     Chat(ChatText),
+    /// The user gave this computer another name (empty: back to the
+    /// system's). Taken only where the name is this user's, by the app's
+    /// own host: the service's is an administrator's to change.
+    Rename(String),
 }
 
 /// The session going on, as shown on the indicator.
@@ -136,6 +142,10 @@ struct State {
     to_session: Option<mpsc::UnboundedReceiver<PathBuf>>,
     /// Where what the user writes goes, during a session.
     chat_out: Option<mpsc::UnboundedSender<ChatText>>,
+    /// This computer's name, as viewers see it.
+    name: Option<String>,
+    /// Where [`FromUi::Rename`] writes; `None`: not taken here.
+    name_dir: Option<PathBuf>,
     /// The other end of `chat_out`, until the session takes it.
     chat_to_session: Option<mpsc::UnboundedReceiver<ChatText>>,
     /// The request on screen, waiting for its answer.
@@ -167,6 +177,9 @@ impl UiHub {
             // What the new interface must show.
             if let Some(id) = &state.id {
                 let _ = tx.send(ToUi::Id(id.clone()));
+            }
+            if let Some(name) = &state.name {
+                let _ = tx.send(ToUi::Name(name.clone()));
             }
             if let Some(notice) = &state.notice {
                 let _ = tx.send(ToUi::Notice(notice.clone()));
@@ -226,6 +239,29 @@ impl UiHub {
                     let _ = chat_out.send(text);
                 }
             }
+            FromUi::Rename(typed) => {
+                let Some(dir) = state.name_dir.clone() else {
+                    return;
+                };
+                let typed = typed.trim();
+                let renamed = if typed.is_empty() {
+                    crate::name::write(&dir, None).map(|()| crate::name::hostname())
+                } else {
+                    crate::name::clean(typed)
+                        .and_then(|name| crate::name::write(&dir, Some(&name)).map(|()| name))
+                };
+                match renamed {
+                    Ok(name) => {
+                        state.name = Some(name.clone());
+                        state.send(ToUi::Name(name));
+                    }
+                    Err(e) => {
+                        let notice = format!("Não foi possível mudar o nome: {e:#}");
+                        state.notice = Some(notice.clone());
+                        state.send(ToUi::Notice(notice));
+                    }
+                }
+            }
         }
     }
 
@@ -246,6 +282,15 @@ impl UiHub {
         let id = id.to_string();
         state.id = Some(id.clone());
         state.send(ToUi::Id(id));
+    }
+
+    /// This computer's name, and where the user may change it (`None`: not
+    /// here).
+    pub fn set_name(&self, name: String, name_dir: Option<PathBuf>) {
+        let mut state = self.0.lock().expect("lock");
+        state.name = Some(name.clone());
+        state.name_dir = name_dir;
+        state.send(ToUi::Name(name));
     }
 
     pub fn set_notice(&self, notice: String) {
@@ -326,6 +371,11 @@ impl Drop for Answer {
 }
 
 impl Presence for UiHub {
+    fn device_name(&self) -> Option<String> {
+        let state = self.0.lock().expect("lock");
+        state.name_dir.as_ref().and(state.name.clone())
+    }
+
     fn started(&self, session: &ActiveSession) -> Arc<Notify> {
         let end = Arc::new(Notify::new());
         let view = SessionView {

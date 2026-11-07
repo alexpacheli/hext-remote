@@ -96,6 +96,8 @@ enum ViewerState {
 #[derive(Debug, Clone, Default, Serialize)]
 struct View {
     id: Option<String>,
+    /// This computer's name, as viewers see it.
+    name: Option<String>,
     notice: Option<String>,
     ask: Option<AskView>,
     session: Option<SessionView>,
@@ -342,6 +344,7 @@ fn received(app: &AppHandle, msg: ToUi) {
     let mut view = shared.view.lock().expect("lock");
     match msg {
         ToUi::Id(id) => view.id = Some(id),
+        ToUi::Name(name) => view.name = Some(name),
         ToUi::Notice(notice) => {
             view.notice = Some(notice);
             // Started at login with no window: something to be seen (a
@@ -517,6 +520,81 @@ async fn own_host(app: &AppHandle, outgoing: mpsc::UnboundedReceiver<FromUi>, lo
         }
     });
     talk(app, ours, outgoing).await;
+}
+
+/// Gives this computer another name (empty: back to the system's). The
+/// service's takes an administrator: Windows asks for one.
+#[tauri::command]
+fn rename(shared: State<'_, Shared>, name: String) -> Result<(), String> {
+    let typed = name.trim().to_owned();
+    if !typed.is_empty() {
+        crate::name::clean(&typed).map_err(|e| e.to_string())?;
+    }
+    #[cfg(windows)]
+    if shared.managed.load(Ordering::Relaxed) {
+        return rename_service(&typed);
+    }
+    shared.send(FromUi::Rename(typed));
+    Ok(())
+}
+
+/// Runs `service name` as an administrator (Windows asks). The service
+/// restarts with the name, and this interface with it.
+#[cfg(windows)]
+#[allow(unsafe_code)] // Win32 call
+fn rename_service(name: &str) -> Result<(), String> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    use windows::core::{HSTRING, w};
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let args = if name.is_empty() {
+        "service name --reset".to_owned()
+    } else {
+        format!("service name {}", quote_arg(name))
+    };
+    let done = unsafe {
+        ShellExecuteW(
+            None,
+            w!("runas"),
+            &HSTRING::from(exe.as_os_str()),
+            &HSTRING::from(args),
+            None,
+            SW_HIDE,
+        )
+    };
+    // (Above 32: it started. Otherwise, most often, the user said no.)
+    if done.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err("O nome não mudou: é preciso permitir como administrador.".to_owned())
+    }
+}
+
+/// `text` as one argument of a Windows command line.
+#[cfg(any(windows, test))]
+fn quote_arg(text: &str) -> String {
+    // Backslashes count only before a quote: doubled there, and one more
+    // escapes the quote itself.
+    let mut out = String::from("\"");
+    let mut slashes = 0;
+    for c in text.chars() {
+        match c {
+            '\\' => slashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat_n('\\', slashes * 2 + 1));
+                out.push('"');
+                slashes = 0;
+            }
+            _ => {
+                out.extend(std::iter::repeat_n('\\', slashes));
+                out.push(c);
+                slashes = 0;
+            }
+        }
+    }
+    out.extend(std::iter::repeat_n('\\', slashes * 2));
+    out.push('"');
+    out
 }
 
 #[tauri::command]
@@ -926,6 +1004,7 @@ pub fn run(link: Link) -> Result<()> {
             chat_view,
             chat_send,
             open_host_chat,
+            rename,
             connect,
             forget
         ])
@@ -993,4 +1072,18 @@ pub fn run(link: Link) -> Result<()> {
         _ => {}
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quote_arg;
+
+    #[test]
+    fn a_name_goes_as_one_windows_argument() {
+        assert_eq!(quote_arg("Sala 2"), r#""Sala 2""#);
+        assert_eq!(quote_arg(r#"a"b"#), r#""a\"b""#);
+        assert_eq!(quote_arg(r"a\b"), r#""a\b""#);
+        assert_eq!(quote_arg(r#"a\"b"#), r#""a\\\"b""#);
+        assert_eq!(quote_arg(r"fim\"), r#""fim\\""#);
+    }
 }
