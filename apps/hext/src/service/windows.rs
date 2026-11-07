@@ -811,6 +811,8 @@ async fn serve() -> Result<()> {
         warn!("Ctrl+Alt+Del remoto: {e:#}");
     }
     let ui = UiHub::default();
+    // (Changed with `service name`, as an administrator.)
+    ui.set_name(name.clone(), None);
     let ending = ui.clone();
     let hub = AgentHub::new(
         || {

@@ -131,6 +131,11 @@ pub trait Presence: Send + Sync {
     fn chat_out(&self) -> Option<mpsc::UnboundedReceiver<ChatText>> {
         None
     }
+    /// This computer's name now, where its user can change it while the
+    /// host runs; `None`: the one in [`HostConfig::peer`].
+    fn device_name(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The session on the indicator, until dropped.
@@ -518,7 +523,11 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     let viewer = hext_net::remote_key(&conn);
     let mut grant: Option<crate::Grant> = None;
     let mut resumed = false;
-    let handshake = hext_net::host_handshake(&conn, config.peer.clone(), |hello: &Hello| {
+    let mut peer = config.peer.clone();
+    if let Some(name) = config.presence.as_ref().and_then(|p| p.device_name()) {
+        peer.device_name = name;
+    }
+    let handshake = hext_net::host_handshake(&conn, peer, |hello: &Hello| {
         let code = config.access_code.as_deref();
         if code.is_some_and(|code| codes_match(code, &hello.access_code)) {
             return Ok(Admission::Allow(Permissions::CONTROL));

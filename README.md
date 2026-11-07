@@ -117,9 +117,10 @@ Instalado, o computador fica online com o **ID da máquina** desde o boot, sem n
 2. **No Mac**: `./HextRemote view <ID>`.
 3. **No Windows**, aparece uma janela perguntando se aceita. Clique em **Sim**.
 
-Para dar um nome ao computador, que é o que o técnico vê na sessão e na lista de computadores, use
+Para dar um nome ao computador, que é o que o técnico vê na sessão e na lista de computadores, clique em
+**Alterar** ao lado do nome, na tela inicial (vazio volta ao nome do sistema). Pelo terminal:
 `service install --name "Recepção"` ou, depois, `service name "Recepção"` (`--reset` volta ao nome do sistema).
-No Windows, mudar o nome reinicia o serviço.
+No Windows, com o serviço, o Windows pede permissão de administrador e o serviço reinicia.
 
 `service status` mostra o estado e o ID; `service uninstall` remove o serviço (`--purge` apaga também a
 identidade, e o ID deixa de valer). Os logs ficam em `C:\ProgramData\HextRemote` (`service.log` e

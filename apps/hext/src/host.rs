@@ -172,6 +172,8 @@ pub async fn run(args: HostArgs) -> Result<()> {
 pub async fn portable(hub: UiHub) -> Result<()> {
     let key = Arc::new(crate::device_key(None)?);
     let name = device_name();
+    // The user's name for this computer, theirs to change here.
+    hub.set_name(name.clone(), hext_crypto::config_dir().ok());
     // (On macOS, installed is this same app, opened at login.)
     if cfg!(windows) && crate::service::installed() {
         hub.set_notice(
