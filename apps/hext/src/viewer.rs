@@ -40,8 +40,8 @@ const PIXELS_PER_NOTCH: f64 = 50.0;
 /// How long the button stays up after entering full screen, so the way out
 /// is seen once.
 const BUTTON_HINT: Duration = Duration::from_secs(4);
-/// How close to the top of the window the mouse must go to call the button.
-const BUTTON_EDGE: f64 = 2.0;
+/// The gap between the handle and the buttons, in logical pixels.
+const BUTTON_GAP: f64 = 8.0;
 /// How long the buttons stay after the mouse leaves them: one passing by
 /// does not make them blink.
 const BUTTON_LINGER: Duration = Duration::from_millis(800);
@@ -468,7 +468,10 @@ impl Viewer {
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
         let scale = window.scale_factor();
+        // Laid out from the right edge (each part goes left of the last),
+        // then moved beside the handle.
         let mut rect = button_rect((size.width, size.height), scale);
+        rect.x = size.width as f32 - rect.width;
         let Displays { count, current } = self.displays;
         // (As many as the shortcut reaches, whatever the host says.)
         let buttons = count.min(9).into();
@@ -476,15 +479,22 @@ impl Viewer {
         let left = bar.map_or(rect.x, |bar| bar.rect.x);
         let mut chat = chat_button_rect(left, rect, scale).filter(|_| self.chat_link);
         let mut left = chat.map_or(left, |chat| chat.x);
-        // The row, centered under the handle.
-        let shift = ((rect.x + rect.width - left) / 2.0 - rect.width / 2.0).floor();
-        rect.x += shift;
-        left += shift;
+        // The row, beside the handle, halfway down like it.
+        let handle = handle_rect((size.width, size.height), scale);
+        let dx = (handle.x + handle.width + (BUTTON_GAP * scale) as f32 - left).floor();
+        let dy = ((size.height as f32 - rect.height) / 2.0 - rect.y)
+            .max(0.0)
+            .floor();
+        rect.x += dx;
+        rect.y += dy;
+        left += dx;
         if let Some(bar) = &mut bar {
-            bar.rect.x += shift;
+            bar.rect.x += dx;
+            bar.rect.y += dy;
         }
         if let Some(chat) = &mut chat {
-            chat.x += shift;
+            chat.x += dx;
+            chat.y += dy;
         }
         // The buttons call for each other: all up, all down.
         let called = VideoRect {
@@ -492,7 +502,6 @@ impl Viewer {
             width: rect.x + rect.width - left,
             ..rect
         };
-        let handle = handle_rect((size.width, size.height), scale);
         let near = self
             .cursor
             .is_some_and(|(x, y)| button_called(called, handle, self.button.is_some(), x, y));
@@ -1180,17 +1189,13 @@ fn aimed_at_the_picture(event: &InputEvent) -> bool {
 }
 
 /// Whether the mouse at (`x`, `y`) calls for the buttons (their row at
-/// `rect`): it comes up from the handle, always in sight, or from the very
-/// top of the window above the row, and stays while the mouse is around. A
-/// mouse merely passing over the row's place does not bring it, or what is
-/// under it on the host could never be clicked.
+/// `rect`): it comes up from the handle, always in sight, and stays while
+/// the mouse is around the row or the handle. A mouse merely passing over
+/// the row's place does not bring it, or what is under it on the host could
+/// never be clicked.
 fn button_called(rect: VideoRect, handle: VideoRect, shown: bool, x: f64, y: f64) -> bool {
-    if shown {
-        rect.contains(x, y, rect.height)
-    } else {
-        handle.contains(x, y, handle.height)
-            || (y <= BUTTON_EDGE && rect.contains(x, f64::from(rect.y), rect.height))
-    }
+    let on_handle = handle.contains(x, y, handle.width);
+    on_handle || (shown && rect.contains(x, y, rect.height))
 }
 
 /// The unattended password, if asked for: from the terminal, unseen, or from
@@ -1390,13 +1395,6 @@ fn decoder(choice: CodecChoice) -> DecoderPreference {
 mod tests {
     use super::*;
 
-    const RECT: VideoRect = VideoRect {
-        x: 472.0,
-        y: 6.0,
-        width: 56.0,
-        height: 28.0,
-    };
-
     #[test]
     fn a_shortcut_keeps_its_repeats_and_release() {
         let mut held = Some(KeyCode::Enter);
@@ -1441,28 +1439,48 @@ mod tests {
         assert!(!aimed_at_the_picture(&InputEvent::ReleaseAll));
     }
 
+    /// On the left edge, halfway down a window 800 high; the row beside it.
     const HANDLE: VideoRect = VideoRect {
-        x: 468.0,
-        y: 2.0,
-        width: 64.0,
-        height: 8.0,
+        x: 2.0,
+        y: 368.0,
+        width: 8.0,
+        height: 64.0,
+    };
+    const ROW: VideoRect = VideoRect {
+        x: 18.0,
+        y: 386.0,
+        width: 152.0,
+        height: 28.0,
     };
 
     #[test]
-    fn the_buttons_come_from_the_handle_or_the_top_edge() {
-        assert!(button_called(RECT, HANDLE, false, 500.0, 0.0));
+    fn the_buttons_come_from_the_handle_only() {
         assert!(
-            button_called(RECT, HANDLE, false, 470.0, 12.0),
+            button_called(ROW, HANDLE, false, 0.0, 400.0),
+            "the very edge"
+        );
+        assert!(
+            button_called(ROW, HANDLE, false, 6.0, 370.0),
             "on the handle"
         );
-        assert!(!button_called(RECT, HANDLE, false, 500.0, 25.0));
-        assert!(!button_called(RECT, HANDLE, false, 100.0, 0.0));
+        assert!(
+            !button_called(ROW, HANDLE, false, 60.0, 400.0),
+            "where the row would be"
+        );
+        assert!(
+            !button_called(ROW, HANDLE, false, 0.0, 100.0),
+            "elsewhere on the edge"
+        );
     }
 
     #[test]
     fn the_buttons_stay_while_the_mouse_is_around() {
-        assert!(button_called(RECT, HANDLE, true, 500.0, 20.0));
-        assert!(button_called(RECT, HANDLE, true, 500.0, 60.0));
-        assert!(!button_called(RECT, HANDLE, true, 500.0, 90.0));
+        assert!(button_called(ROW, HANDLE, true, 60.0, 400.0));
+        assert!(button_called(ROW, HANDLE, true, 190.0, 430.0));
+        assert!(
+            button_called(ROW, HANDLE, true, 4.0, 360.0),
+            "back on the handle"
+        );
+        assert!(!button_called(ROW, HANDLE, true, 300.0, 400.0));
     }
 }

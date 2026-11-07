@@ -21,11 +21,12 @@ const BUTTON_TOP: f64 = 6.0;
 const BAR_CELL: f64 = 32.0;
 const BAR_GAP: f64 = 8.0;
 /// The handle that stands for the buttons while they are folded: a thin
-/// strip at the top center, in logical pixels. Its width is eight times its
-/// height (the shader draws it so).
-const HANDLE_WIDTH: f64 = 64.0;
-const HANDLE_HEIGHT: f64 = 8.0;
-const HANDLE_TOP: f64 = 2.0;
+/// upright strip on the left edge, halfway down, in logical pixels. Its
+/// height is eight times its width (the shader draws it so). The top edge
+/// is the host's: its session bar folds there, anywhere along it.
+const HANDLE_WIDTH: f64 = 8.0;
+const HANDLE_HEIGHT: f64 = 64.0;
+const HANDLE_LEFT: f64 = 2.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -77,13 +78,13 @@ pub fn button_rect(window: (u32, u32), scale: f64) -> VideoRect {
     }
 }
 
-/// Where the handle goes, at the top center of a window of `window`
-/// physical pixels and that display scale.
+/// Where the handle goes, on the left edge of a window of `window` physical
+/// pixels and that display scale, halfway down.
 pub fn handle_rect(window: (u32, u32), scale: f64) -> VideoRect {
     let (width, height) = (HANDLE_WIDTH * scale, HANDLE_HEIGHT * scale);
     VideoRect {
-        x: ((f64::from(window.0) - width) / 2.0).floor() as f32,
-        y: (HANDLE_TOP * scale).floor() as f32,
+        x: (HANDLE_LEFT * scale).floor() as f32,
+        y: ((f64::from(window.1) - height) / 2.0).max(0.0).floor() as f32,
         width: width as f32,
         height: height as f32,
     }
@@ -645,10 +646,10 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_sits_at_the_top_center_above_the_button() {
+    fn the_handle_sits_on_the_left_edge_halfway_down() {
         let h = handle_rect((1000, 800), 2.0);
-        assert_eq!((h.x, h.y, h.width, h.height), (436.0, 4.0, 128.0, 16.0));
-        assert_eq!(h.width, h.height * 8.0, "the shader draws it so");
+        assert_eq!((h.x, h.y, h.width, h.height), (4.0, 336.0, 16.0, 128.0));
+        assert_eq!(h.height, h.width * 8.0, "the shader draws it so");
     }
 
     #[test]

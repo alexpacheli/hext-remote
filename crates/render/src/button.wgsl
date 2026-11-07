@@ -72,14 +72,15 @@ fn fs_chat(in: VsOut) -> @location(0) vec4<f32> {
     return paint(p, min(bubble, tail));
 }
 
-// The handle of the folded buttons: a dark capsule with a light rim, seen on
-// any picture. Eight times as wide as tall (HANDLE_WIDTH / HANDLE_HEIGHT).
+// The handle of the folded buttons: an upright dark capsule with a light
+// rim, seen on any picture. Eight times as tall as wide (HANDLE_HEIGHT /
+// HANDLE_WIDTH); in units of half its width.
 @fragment
 fn fs_handle(in: VsOut) -> @location(0) vec4<f32> {
-    let half_width = 8.0;
-    let q = vec2<f32>(in.p.x / 2.0 * half_width, in.p.y);
-    let d = length(max(abs(q) - vec2<f32>(half_width - 1.0, 0.0), vec2<f32>(0.0))) - 1.0;
-    let edge = fwidth(in.p.y);
+    let half_height = 8.0;
+    let q = vec2<f32>(in.p.x / 2.0, in.p.y * half_height);
+    let d = length(max(abs(q) - vec2<f32>(0.0, half_height - 1.0), vec2<f32>(0.0))) - 1.0;
+    let edge = fwidth(q.x);
     let inside = 1.0 - smoothstep(-edge, edge, d);
     let rim = 1.0 - smoothstep(-edge, edge, abs(d + 0.3) - 0.3);
     let color = mix(vec3<f32>(0.12), vec3<f32>(0.9), rim);
