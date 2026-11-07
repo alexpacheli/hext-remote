@@ -11,8 +11,8 @@ use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use hext_crypto::PublicKey;
 use hext_signal::{
-    ClientMsg, DeviceId, MAX_ADDR_LEN, MAX_ADDRS, MAX_NAME_LEN, NONCE_LEN, PROTOCOL, Rejection,
-    ServerMsg, auth_message,
+    ClientMsg, DeviceId, MAX_ADDR_LEN, MAX_ADDRS, MAX_NAME_LEN, MAX_PRESENCE, NONCE_LEN, PROTOCOL,
+    Rejection, ServerMsg, auth_message,
 };
 use ring::rand::{SecureRandom, SystemRandom};
 use tokio::sync::{mpsc, oneshot};
@@ -64,6 +64,10 @@ const ENTERED_FOR: Duration = Duration::from_secs(7 * 24 * 3600);
 /// How long a host has to say how a request it let through went: longer
 /// than the viewer has to use its code (`SESSION_CODE_LIFETIME`, 2 minutes).
 const ATTEMPT_WINDOW: Duration = Duration::from_secs(5 * 60);
+/// Presence questions per device (the app asks every 30 s while its list is
+/// on screen): past this, they go unanswered.
+const PRESENCE_PER_DEVICE: usize = 6;
+const PRESENCE_WINDOW: Duration = Duration::from_secs(60);
 
 /// Who is online, which requests are waiting, and the rate limits.
 pub struct State {
@@ -81,6 +85,7 @@ pub struct State {
     logins_by_ip: RateLimiter<IpAddr>,
     new_devices_by_ip: RateLimiter<IpAddr>,
     requests_to_host: RateLimiter<DeviceId>,
+    presence_by_device: RateLimiter<DeviceId>,
     /// (host, viewer): a stranger's requests to one host.
     stranger_requests: RateLimiter<(DeviceId, DeviceId)>,
     /// Hosts closed to devices they do not trust, until when.
@@ -141,6 +146,7 @@ impl State {
             new_devices_by_ip: RateLimiter::new(NEW_DEVICES_PER_IP, NEW_DEVICE_WINDOW),
             requests_to_host: RateLimiter::new(HOST_REQUESTS, HOST_WINDOW),
             stranger_requests: RateLimiter::new(STRANGER_REQUESTS, HOST_WINDOW),
+            presence_by_device: RateLimiter::new(PRESENCE_PER_DEVICE, PRESENCE_WINDOW),
             locked_hosts: Mutex::default(),
             open_attempts: Mutex::default(),
         }
@@ -202,6 +208,7 @@ impl State {
         self.new_devices_by_ip.prune(now);
         self.requests_to_host.prune(now);
         self.stranger_requests.prune(now);
+        self.presence_by_device.prune(now);
         self.locked_hosts
             .lock()
             .expect("lock")
@@ -252,6 +259,43 @@ impl State {
         warn!("{to} recebeu pedidos demais: fechado por {HOST_LOCKOUT:?} para desconhecidos");
         self.audit(viewer, to, "host_locked");
         false
+    }
+
+    /// Which of `ids` are online for `viewer`: hosts online that accepted it
+    /// within [`TRUSTED_FOR`], or that it got into with the password within
+    /// that. Any other ID looks offline, as it does to a request: IDs cannot
+    /// be probed.
+    async fn presence(&self, viewer: DeviceId, ids: Vec<DeviceId>) -> Vec<DeviceId> {
+        let mut online: Vec<DeviceId> = {
+            let hosts = self.hosts.lock().expect("lock");
+            ids.into_iter()
+                .take(MAX_PRESENCE)
+                .filter(|id| *id != viewer && hosts.contains_key(id))
+                .collect()
+        };
+        online.sort_unstable_by_key(|id| id.get());
+        online.dedup();
+        if online.is_empty() {
+            return online;
+        }
+        let secs = TRUSTED_FOR.as_secs() as i64;
+        let known = self
+            .db(move |db| {
+                let mut known = Vec::new();
+                for id in online {
+                    if db.accepted_within(id, viewer, secs)?
+                        || db.entered_within(id, viewer, secs)?
+                    {
+                        known.push(id);
+                    }
+                }
+                Ok(known)
+            })
+            .await;
+        known.unwrap_or_else(|e| {
+            warn!("banco de dados: {e}");
+            Vec::new()
+        })
     }
 
     /// Removes and returns the waiting requests that match.
@@ -416,6 +460,7 @@ pub async fn handle(socket: WebSocket, state: &State, ip: IpAddr) {
     let welcome = ServerMsg::Welcome {
         id,
         takes_attempts: true,
+        takes_presence: true,
     };
     if send(&mut sink, &welcome).await {
         let mut ping = tokio::time::interval(PING_INTERVAL);
@@ -582,6 +627,14 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
         ClientMsg::Attempt { viewer, entered } => {
             attempt(state, me.id, viewer, entered).await;
             None
+        }
+        ClientMsg::Presence { ids } => {
+            if !state.presence_by_device.allow(&me.id, Instant::now()) {
+                debug!("{}: perguntas de presença demais", me.id);
+                return None;
+            }
+            let online = state.presence(me.id, ids).await;
+            Some(ServerMsg::Presence { online })
         }
     }
 }

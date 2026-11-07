@@ -153,7 +153,9 @@ No técnico, preencha a senha na tela inicial ou use `view <ID> --password-stdin
 (SPAKE2) e, depois de 5 erros, o computador espera 1, 5 e 15 minutos. Durante a sessão, a barra mostra
 quem está conectado, também na tela de login e com o computador bloqueado, e cada acesso fica registrado
 em `C:\ProgramData\HextRemote\audit.log`. A tela inicial guarda o nome e o ID dos computadores acessados,
-nunca a senha.
+nunca a senha. Uma bolinha ao lado de cada um mostra se ele está online (verde) ou não (cinza), com o
+serviço instalado ou com o app aberto à mão. Ela só aparece para os computadores que aceitaram você, ou em
+que você entrou com a senha, nos últimos 90 dias.
 
 Na janela do visualizador, **Ctrl+Alt+Enter** entra e sai da tela cheia, com a imagem ocupando a tela
 inteira sem distorcer. Na borda esquerda da janela, no meio da altura, fica sempre uma faixa fina: passar o mouse

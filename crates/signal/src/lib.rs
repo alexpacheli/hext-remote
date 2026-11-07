@@ -44,6 +44,9 @@ pub const MAX_NAME_LEN: usize = 64;
 pub const MAX_ADDRS: usize = 32;
 pub const MAX_ADDR_LEN: usize = 256;
 
+/// Most IDs one [`ClientMsg::Presence`] asks about (the rest go unanswered).
+pub const MAX_PRESENCE: usize = 50;
+
 /// Server to app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -61,6 +64,10 @@ pub enum ServerMsg {
         /// on it).
         #[serde(default)]
         takes_attempts: bool,
+        /// It answers [`ClientMsg::Presence`] (older servers end the
+        /// connection on it).
+        #[serde(default)]
+        takes_presence: bool,
     },
     /// (To a host) a device wants to connect. Answer with
     /// [`ClientMsg::Accept`] or [`ClientMsg::Reject`] for `request`.
@@ -92,6 +99,11 @@ pub enum ServerMsg {
     /// (To a host) a request it was asked about is over (the viewer left
     /// or it timed out): stop asking the user.
     Cancelled { request: u64 },
+    /// The answer to [`ClientMsg::Presence`]: which of those IDs are online.
+    /// Only computers that accepted this device, or that it got into with
+    /// the password, lately: any other ID is never online, so IDs cannot be
+    /// probed.
+    Presence { online: Vec<DeviceId> },
     /// Something went wrong; the server closes the connection.
     Error { message: String },
 }
@@ -145,6 +157,9 @@ pub enum ClientMsg {
     /// wrong. Only the host knows, and it speaks only for itself: the server
     /// limits `viewer`'s requests to this host by it.
     Attempt { viewer: DeviceId, entered: bool },
+    /// Which of these computers are online? (Answered with
+    /// [`ServerMsg::Presence`], by servers that take it.)
+    Presence { ids: Vec<DeviceId> },
 }
 
 /// Why a connection request failed.
@@ -237,7 +252,8 @@ mod tests {
             serde_json::from_str::<ServerMsg>(&old).unwrap(),
             ServerMsg::Welcome {
                 id,
-                takes_attempts: false
+                takes_attempts: false,
+                takes_presence: false,
             }
         );
     }
@@ -253,6 +269,7 @@ mod tests {
         let welcome = ServerMsg::Welcome {
             id,
             takes_attempts: true,
+            takes_presence: true,
         };
         assert_eq!(
             serde_json::from_str::<Older>(&welcome.to_json()).unwrap(),
@@ -291,6 +308,7 @@ mod tests {
                 viewer: id,
                 entered: true,
             },
+            ClientMsg::Presence { ids: vec![id] },
         ];
         for msg in msgs {
             let json = msg.to_json();
@@ -304,6 +322,11 @@ mod tests {
         assert_eq!(
             json,
             r#"{"type":"rejected","request":7,"reason":"too_many_requests"}"#
+        );
+        let presence = ServerMsg::Presence { online: vec![id] };
+        assert_eq!(
+            presence.to_json(),
+            format!(r#"{{"type":"presence","online":[{}]}}"#, id.get())
         );
         let challenge = ServerMsg::Challenge {
             protocol: PROTOCOL,

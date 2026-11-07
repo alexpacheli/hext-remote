@@ -412,6 +412,20 @@ input[type="password"] {
   cursor: pointer;
 }
 
+.recent .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  vertical-align: middle;
+}
+
+.recent .dot.online {
+  background: #22a559;
+}
+
 .recent .pick:hover {
   text-decoration: underline;
 }
