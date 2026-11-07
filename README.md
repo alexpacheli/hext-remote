@@ -163,9 +163,9 @@ o foco. O chat funciona nas conexões abertas pela tela inicial do app, e as men
 
 Instalado, o Mac abre o Hext Remote sozinho a cada login, sem janela, com o mesmo ID do app (F4, marco 9).
 
-1. **No Mac**, no Terminal, **sem sudo**: `./HextRemote service install`. Ele copia o app para
-   `~/Library/Application Support/HextRemote`, inicia e mostra o ID.
-2. Na primeira vez, o macOS pede **Gravação de Tela** e **Acessibilidade** para o **HextRemote**. Libere as
+1. **No Mac**, no Terminal, **sem sudo**: `./HextRemote service install`. Ele monta o app em
+   `~/Library/Application Support/HextRemote/HextRemote.app`, inicia e mostra o ID.
+2. Na primeira vez, o macOS pede **Gravação de Tela** e **Acessibilidade** para o **Hext Remote**. Libere as
    duas em **Ajustes do Sistema → Privacidade e Segurança** e rode `service install` de novo, para ele reabrir
    com a Gravação de Tela.
 3. **No técnico**, conecte pelo ID. No Mac, aparece a janela de aceite, agora com **Reiniciar**.

@@ -44,10 +44,79 @@ fn data_dir() -> Result<PathBuf> {
     Ok(hext_crypto::config_dir()?)
 }
 
-/// Where the installed program lives: a place of its own, so the copy the
-/// user downloaded can go, and the system's permissions stay with one path.
+/// The installed app: a place of its own, so the copy the user downloaded
+/// can go. A bundle with its identifier, signed here: the system's privacy
+/// settings do not hold for a bare program started at login.
+fn bundle() -> Result<PathBuf> {
+    Ok(data_dir()?.join("HextRemote.app"))
+}
+
+/// The program inside [`bundle`].
 fn program() -> Result<PathBuf> {
-    Ok(data_dir()?.join("HextRemote"))
+    Ok(bundle()?.join("Contents/MacOS/HextRemote"))
+}
+
+/// The bundle's `Info.plist`. No Dock icon: it runs in the background, and
+/// its windows come and go.
+fn info_plist() -> String {
+    let version = crate::APP_VERSION;
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>{LABEL}</string>
+	<key>CFBundleExecutable</key>
+	<string>HextRemote</string>
+	<key>CFBundleName</key>
+	<string>Hext Remote</string>
+	<key>CFBundleDisplayName</key>
+	<string>Hext Remote</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>{version}</string>
+	<key>CFBundleVersion</key>
+	<string>{version}</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
+"#
+    )
+}
+
+/// Puts `new` in the bundle, and signs the bundle (ad hoc, with its
+/// identifier) for the privacy settings to know it.
+fn place_bundle(new: &Path) -> Result<()> {
+    let app = bundle()?;
+    let exe = program()?;
+    if let Some(dir) = exe.parent() {
+        std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
+    }
+    let info = app.join("Contents/Info.plist");
+    std::fs::write(&info, info_plist()).with_context(|| info.display().to_string())?;
+    replace_exe(new, &exe)?;
+    let signed = Command::new("/usr/bin/codesign")
+        .args(["--force", "--sign", "-", "--identifier", LABEL])
+        .arg(&app)
+        .output()
+        .context("codesign")?;
+    if !signed.status.success() {
+        bail!(
+            "codesign: {}",
+            String::from_utf8_lossy(&signed.stderr).trim()
+        );
+    }
+    // Downloaded, it would ask on each login whether to open it.
+    let _ = Command::new("/usr/bin/xattr")
+        .args(["-dr", "com.apple.quarantine"])
+        .arg(&app)
+        .output();
+    Ok(())
 }
 
 /// Where the ID is written for `service status`.
@@ -93,6 +162,8 @@ fn plist(exe: &Path) -> String {
 		<string>{exe}</string>
 		<string>ui</string>
 	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<string>{LABEL}</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
@@ -124,11 +195,6 @@ fn replace_exe(new: &Path, exe: &Path) -> Result<()> {
     let _ = std::fs::remove_file(&next);
     std::fs::copy(new, &next).with_context(|| format!("copiar para {}", next.display()))?;
     std::fs::rename(&next, exe).with_context(|| format!("mover para {}", exe.display()))?;
-    // Downloaded, it would ask on each login whether to open it.
-    let _ = Command::new("/usr/bin/xattr")
-        .args(["-d", "com.apple.quarantine"])
-        .arg(exe)
-        .output();
     Ok(())
 }
 
@@ -156,7 +222,12 @@ pub fn install() -> Result<()> {
     let exe = program()?;
     let current = std::env::current_exe()?;
     if !same_file(&current, &exe) {
-        replace_exe(&current, &exe)?;
+        place_bundle(&current)?;
+    }
+    // The bare program of the first test builds of this milestone.
+    let old = data_dir()?.join("HextRemote");
+    if old.is_file() {
+        let _ = std::fs::remove_file(old);
     }
 
     let file = plist_file()?;
@@ -182,7 +253,7 @@ pub fn install() -> Result<()> {
     loaded?;
 
     println!("Instalado: o Hext Remote abre sozinho a cada login, sem janela.");
-    println!("Programa: {}", exe.display());
+    println!("App: {}", bundle()?.display());
     let mut id = None;
     for _ in 0..30 {
         if let Ok(text) = std::fs::read_to_string(id_file()?) {
@@ -194,15 +265,15 @@ pub fn install() -> Result<()> {
     match id {
         Some(id) => println!("ID deste computador: {}", id.trim()),
         None => println!(
-            "Ainda sem ID. Se o Hext Remote já estava aberto, ele continua no lugar do instalado até o 
+            "Ainda sem ID. Se o Hext Remote já estava aberto, ele continua no lugar do instalado até o \
              próximo login. Veja {}",
             dir.join("ui.log").display()
         ),
     }
     println!(
         "Na primeira vez, o macOS pede as permissões de Gravação de Tela e Acessibilidade para o \
-         HextRemote (não para o Terminal). Depois de dar a de Gravação de Tela, rode \
-         `service install` de novo para ele reabrir com ela."
+         Hext Remote (não para o Terminal). Depois de liberar as duas, rode `service install` de \
+         novo para ele reabrir com elas."
     );
     Ok(())
 }
@@ -216,7 +287,7 @@ pub fn uninstall(purge: bool) -> Result<()> {
     } else {
         println!("O Hext Remote não está instalado.");
     }
-    let _ = std::fs::remove_file(program()?);
+    let _ = std::fs::remove_dir_all(bundle()?);
     let dir = data_dir()?;
     super::kept::revoke(&dir);
     let _ = std::fs::remove_file(id_file()?);
