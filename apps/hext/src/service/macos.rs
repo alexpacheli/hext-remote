@@ -338,7 +338,10 @@ pub fn name(change: super::NameChange) -> Result<()> {
     if changed {
         if installed() && launchctl(&["kickstart", "-k", &format!("{}/{LABEL}", domain())]).is_ok()
         {
-            println!("O Hext Remote reabriu com o nome novo.");
+            println!(
+                "O Hext Remote instalado reabriu com o nome novo. Se um aberto à mão estiver no lugar \
+                 dele, feche e abra esse de novo."
+            );
         } else {
             println!("Vale a partir da próxima vez que o Hext Remote abrir.");
         }

@@ -23,12 +23,15 @@ pub fn hostname() -> String {
 /// A name as typed, made fit to show: no control or direction marks, no
 /// spaces around it.
 pub fn clean(typed: &str) -> Result<String> {
-    let shown = crate::signaling::shown_name(typed.trim());
-    let name = shown.trim();
+    let kept: String = typed
+        .chars()
+        .filter(|&c| crate::signaling::shows(c))
+        .collect();
+    let name = kept.trim();
     if name.is_empty() {
         bail!("o nome está vazio");
     }
-    if typed.trim().chars().count() > MAX {
+    if name.chars().count() > MAX {
         bail!("o nome passa de {MAX} caracteres");
     }
     Ok(name.to_owned())
@@ -100,6 +103,9 @@ mod tests {
         assert!(clean(" \u{200F} ").is_err());
         assert!(clean(&"x".repeat(MAX + 1)).is_err());
         assert_eq!(clean(&"ç".repeat(MAX)).unwrap().chars().count(), MAX);
+        // A mark pasted in does not count.
+        let marked = format!("\u{200F}{}", "x".repeat(MAX));
+        assert_eq!(clean(&marked).unwrap().len(), MAX);
     }
 
     #[test]

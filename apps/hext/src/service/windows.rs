@@ -478,9 +478,9 @@ pub fn name(change: super::NameChange) -> Result<()> {
     let dir = prepare_machine_dir()?;
     let changed = super::apply_name(&dir, change)?;
     if changed && sc(&["query", SERVICE]).is_ok_and(|state| state.contains("RUNNING")) {
+        println!("Reiniciando o serviço com o nome novo (uma sessão em andamento cai)...");
         stop();
         sc(&["start", SERVICE])?;
-        println!("Serviço reiniciado com o nome novo.");
     }
     println!("Nome deste computador: {}", crate::name::described(&dir));
     Ok(())

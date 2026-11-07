@@ -39,13 +39,14 @@ const MAX_NAME: usize = 64;
 /// A name as the other side sent it, made safe to show: nothing that moves
 /// a terminal's cursor or reverses text around the name.
 pub fn shown_name(name: &str) -> String {
-    name.chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-        })
-        .take(MAX_NAME)
-        .collect()
+    name.chars().filter(|&c| shows(c)).take(MAX_NAME).collect()
+}
+
+/// Whether `c` stays in a name shown: not a control character, nor a mark
+/// that reverses the text.
+pub fn shows(c: char) -> bool {
+    !c.is_control()
+        && !matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Asks the host's user whether a device may connect.
