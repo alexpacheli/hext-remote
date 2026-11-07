@@ -17,7 +17,9 @@ use hext_input::keymap::{self, CommandKey};
 use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::Os;
 use hext_proto::{ChatText, Displays, Hello, InputEvent, MouseButton, PeerInfo, RejectReason};
-use hext_render::{ButtonAction, DisplayBar, Renderer, VideoRect, button_rect, chat_button_rect};
+use hext_render::{
+    ButtonAction, DisplayBar, Renderer, VideoRect, button_rect, chat_button_rect, handle_rect,
+};
 use hext_session::client::{self, ClientHandle};
 use hext_session::files::{Confirm, OwnFiles, Stage, Transfer, size_text};
 use hext_session::{NETWORK_GRACE, ResumeToken, SessionError};
@@ -38,8 +40,11 @@ const PIXELS_PER_NOTCH: f64 = 50.0;
 /// How long the button stays up after entering full screen, so the way out
 /// is seen once.
 const BUTTON_HINT: Duration = Duration::from_secs(4);
-/// How close to the top of the window the mouse must go to call the button.
-const BUTTON_EDGE: f64 = 2.0;
+/// The gap between the handle and the buttons, in logical pixels.
+const BUTTON_GAP: f64 = 8.0;
+/// How long the buttons stay after the mouse leaves them: one passing by
+/// does not make them blink.
+const BUTTON_LINGER: Duration = Duration::from_millis(800);
 /// How long the second Ctrl+Alt+R has to come.
 const RESTART_CONFIRM: Duration = Duration::from_secs(5);
 /// How long the title waits for the host's answer about restarting.
@@ -197,6 +202,8 @@ pub fn run(args: ViewArgs) -> Result<()> {
         button: None,
         button_hint: None,
         button_pressed: false,
+        button_near: false,
+        handle: None,
         displays: Displays::default(),
         display_bar: None,
         switching: None,
@@ -251,6 +258,10 @@ struct Viewer {
     button_hint: Option<Instant>,
     /// The button took a press: its release is not for the host either.
     button_pressed: bool,
+    /// The mouse was on the buttons (or on the handle) the last time.
+    button_near: bool,
+    /// The handle on screen: it stands for the buttons while they are folded.
+    handle: Option<VideoRect>,
     /// The host's displays, as last told (kept while coming back).
     displays: Displays,
     /// The numbered buttons on screen, next to the full screen one.
@@ -451,20 +462,41 @@ impl Viewer {
         self.update_button();
     }
 
-    /// Shows the button while the mouse calls for it or the hint lasts.
+    /// Shows the buttons while the mouse is on them or on the handle, or the
+    /// hint lasts. Folded, the handle stands for them, always in sight.
     fn update_button(&mut self) {
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
         let scale = window.scale_factor();
-        let rect = button_rect((size.width, size.height), scale);
+        // Laid out from the right edge (each part goes left of the last),
+        // then moved beside the handle.
+        let mut rect = button_rect((size.width, size.height), scale);
+        rect.x = size.width as f32 - rect.width;
         let Displays { count, current } = self.displays;
         // (As many as the shortcut reaches, whatever the host says.)
         let buttons = count.min(9).into();
-        let bar = DisplayBar::new(rect, buttons, current.into(), scale).filter(|_| count > 1);
+        let mut bar = DisplayBar::new(rect, buttons, current.into(), scale).filter(|_| count > 1);
         let left = bar.map_or(rect.x, |bar| bar.rect.x);
-        let chat = chat_button_rect(left, rect, scale).filter(|_| self.chat_link);
+        let mut chat = chat_button_rect(left, rect, scale).filter(|_| self.chat_link);
+        let mut left = chat.map_or(left, |chat| chat.x);
+        // The row, beside the handle, halfway down like it.
+        let handle = handle_rect((size.width, size.height), scale);
+        let dx = (handle.x + handle.width + (BUTTON_GAP * scale) as f32 - left).floor();
+        let dy = ((size.height as f32 - rect.height) / 2.0 - rect.y)
+            .max(0.0)
+            .floor();
+        rect.x += dx;
+        rect.y += dy;
+        left += dx;
+        if let Some(bar) = &mut bar {
+            bar.rect.x += dx;
+            bar.rect.y += dy;
+        }
+        if let Some(chat) = &mut chat {
+            chat.x += dx;
+            chat.y += dy;
+        }
         // The buttons call for each other: all up, all down.
-        let left = chat.map_or(left, |chat| chat.x);
         let called = VideoRect {
             x: left,
             width: rect.x + rect.width - left,
@@ -472,7 +504,10 @@ impl Viewer {
         };
         let near = self
             .cursor
-            .is_some_and(|(x, y)| button_called(called, self.button.is_some(), x, y));
+            .is_some_and(|(x, y)| button_called(called, handle, self.button.is_some(), x, y));
+        if std::mem::replace(&mut self.button_near, near) && !near && self.button_hint.is_none() {
+            self.button_hint = Some(Instant::now() + BUTTON_LINGER);
+        }
         let action = if window.fullscreen().is_some() {
             ButtonAction::Leave
         } else {
@@ -482,14 +517,21 @@ impl Viewer {
         let button = shown.then_some((action, rect));
         let bar = bar.filter(|_| shown);
         let chat = chat.filter(|_| shown);
-        if self.button != button || self.display_bar != bar || self.chat_button != chat {
+        let handle = (!shown).then_some(handle);
+        if self.button != button
+            || self.display_bar != bar
+            || self.chat_button != chat
+            || self.handle != handle
+        {
             self.button = button;
             self.display_bar = bar;
             self.chat_button = chat;
+            self.handle = handle;
             if let Some(renderer) = &mut self.renderer {
                 renderer.set_button(button);
                 renderer.set_display_bar(bar);
                 renderer.set_chat_button(chat);
+                renderer.set_handle(handle);
             }
             self.draw(false);
         }
@@ -1146,16 +1188,14 @@ fn aimed_at_the_picture(event: &InputEvent) -> bool {
     )
 }
 
-/// Whether the mouse at (`x`, `y`) calls for the button at `rect`: it comes up
-/// at the very top of the window, and stays while the mouse is around. A mouse
-/// merely passing there does not bring it, or what is under it on the host
-/// could never be clicked.
-fn button_called(rect: VideoRect, shown: bool, x: f64, y: f64) -> bool {
-    if shown {
-        rect.contains(x, y, rect.height)
-    } else {
-        y <= BUTTON_EDGE && rect.contains(x, f64::from(rect.y), rect.height)
-    }
+/// Whether the mouse at (`x`, `y`) calls for the buttons (their row at
+/// `rect`): it comes up from the handle, always in sight, and stays while
+/// the mouse is around the row or the handle. A mouse merely passing over
+/// the row's place does not bring it, or what is under it on the host could
+/// never be clicked.
+fn button_called(rect: VideoRect, handle: VideoRect, shown: bool, x: f64, y: f64) -> bool {
+    let on_handle = handle.contains(x, y, handle.width);
+    on_handle || (shown && rect.contains(x, y, rect.height))
 }
 
 /// The unattended password, if asked for: from the terminal, unseen, or from
@@ -1355,13 +1395,6 @@ fn decoder(choice: CodecChoice) -> DecoderPreference {
 mod tests {
     use super::*;
 
-    const RECT: VideoRect = VideoRect {
-        x: 472.0,
-        y: 6.0,
-        width: 56.0,
-        height: 28.0,
-    };
-
     #[test]
     fn a_shortcut_keeps_its_repeats_and_release() {
         let mut held = Some(KeyCode::Enter);
@@ -1406,17 +1439,48 @@ mod tests {
         assert!(!aimed_at_the_picture(&InputEvent::ReleaseAll));
     }
 
+    /// On the left edge, halfway down a window 800 high; the row beside it.
+    const HANDLE: VideoRect = VideoRect {
+        x: 2.0,
+        y: 368.0,
+        width: 8.0,
+        height: 64.0,
+    };
+    const ROW: VideoRect = VideoRect {
+        x: 18.0,
+        y: 386.0,
+        width: 152.0,
+        height: 28.0,
+    };
+
     #[test]
-    fn the_button_comes_from_the_top_edge_only() {
-        assert!(button_called(RECT, false, 500.0, 0.0));
-        assert!(!button_called(RECT, false, 500.0, 20.0));
-        assert!(!button_called(RECT, false, 100.0, 0.0));
+    fn the_buttons_come_from_the_handle_only() {
+        assert!(
+            button_called(ROW, HANDLE, false, 0.0, 400.0),
+            "the very edge"
+        );
+        assert!(
+            button_called(ROW, HANDLE, false, 6.0, 370.0),
+            "on the handle"
+        );
+        assert!(
+            !button_called(ROW, HANDLE, false, 60.0, 400.0),
+            "where the row would be"
+        );
+        assert!(
+            !button_called(ROW, HANDLE, false, 0.0, 100.0),
+            "elsewhere on the edge"
+        );
     }
 
     #[test]
-    fn the_button_stays_while_the_mouse_is_around() {
-        assert!(button_called(RECT, true, 500.0, 20.0));
-        assert!(button_called(RECT, true, 500.0, 60.0));
-        assert!(!button_called(RECT, true, 500.0, 90.0));
+    fn the_buttons_stay_while_the_mouse_is_around() {
+        assert!(button_called(ROW, HANDLE, true, 60.0, 400.0));
+        assert!(button_called(ROW, HANDLE, true, 190.0, 430.0));
+        assert!(
+            button_called(ROW, HANDLE, true, 4.0, 360.0),
+            "back on the handle"
+        );
+        assert!(!button_called(ROW, HANDLE, true, 300.0, 400.0));
     }
 }

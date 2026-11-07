@@ -20,6 +20,13 @@ const BUTTON_TOP: f64 = 6.0;
 /// button, in logical pixels.
 const BAR_CELL: f64 = 32.0;
 const BAR_GAP: f64 = 8.0;
+/// The handle that stands for the buttons while they are folded: a thin
+/// upright strip on the left edge, halfway down, in logical pixels. Its
+/// height is eight times its width (the shader draws it so). The top edge
+/// is the host's: its session bar folds there, anywhere along it.
+const HANDLE_WIDTH: f64 = 8.0;
+const HANDLE_HEIGHT: f64 = 64.0;
+const HANDLE_LEFT: f64 = 2.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -66,6 +73,18 @@ pub fn button_rect(window: (u32, u32), scale: f64) -> VideoRect {
     VideoRect {
         x: ((f64::from(window.0) - width) / 2.0).floor() as f32,
         y: (BUTTON_TOP * scale).floor() as f32,
+        width: width as f32,
+        height: height as f32,
+    }
+}
+
+/// Where the handle goes, on the left edge of a window of `window` physical
+/// pixels and that display scale, halfway down.
+pub fn handle_rect(window: (u32, u32), scale: f64) -> VideoRect {
+    let (width, height) = (HANDLE_WIDTH * scale, HANDLE_HEIGHT * scale);
+    VideoRect {
+        x: (HANDLE_LEFT * scale).floor() as f32,
+        y: ((f64::from(window.1) - height) / 2.0).max(0.0).floor() as f32,
         width: width as f32,
         height: height as f32,
     }
@@ -212,6 +231,9 @@ pub struct Renderer {
     chat_pipeline: wgpu::RenderPipeline,
     /// The chat button on screen, if any.
     chat_button: Option<VideoRect>,
+    handle_pipeline: wgpu::RenderPipeline,
+    /// The handle on screen, if any.
+    handle: Option<VideoRect>,
 }
 
 impl Renderer {
@@ -336,6 +358,7 @@ impl Renderer {
         let button_leave = button_pipeline("fs_leave");
         let bar_pipeline = button_pipeline("fs_bar");
         let chat_pipeline = button_pipeline("fs_chat");
+        let handle_pipeline = button_pipeline("fs_handle");
         let bar_displays = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("display bar"),
             size: 8,
@@ -376,6 +399,8 @@ impl Renderer {
             bar: None,
             chat_pipeline,
             chat_button: None,
+            handle_pipeline,
+            handle: None,
         })
     }
 
@@ -407,6 +432,11 @@ impl Renderer {
     /// Shows the chat button, or hides it, from the next render.
     pub fn set_chat_button(&mut self, rect: Option<VideoRect>) {
         self.chat_button = rect;
+    }
+
+    /// Shows the handle, or hides it, from the next render.
+    pub fn set_handle(&mut self, rect: Option<VideoRect>) {
+        self.handle = rect;
     }
 
     /// Where the current video sits in the window, once a frame was uploaded.
@@ -510,6 +540,15 @@ impl Renderer {
                 pass.set_pipeline(&self.chat_pipeline);
                 pass.draw(0..3, 0..1);
             }
+            if let Some(rect) = self.handle
+                && rect.x >= 0.0
+                && rect.x + rect.width <= width
+                && rect.y + rect.height <= height
+            {
+                pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
+                pass.set_pipeline(&self.handle_pipeline);
+                pass.draw(0..3, 0..1);
+            }
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(texture);
@@ -604,6 +643,13 @@ mod tests {
         assert!(r.contains(500.0, 40.0, 0.0));
         assert!(!r.contains(500.0, 80.0, 0.0));
         assert!(r.contains(500.0, 80.0, 56.0));
+    }
+
+    #[test]
+    fn the_handle_sits_on_the_left_edge_halfway_down() {
+        let h = handle_rect((1000, 800), 2.0);
+        assert_eq!((h.x, h.y, h.width, h.height), (4.0, 336.0, 16.0, 128.0));
+        assert_eq!(h.height, h.width * 8.0, "the shader draws it so");
     }
 
     #[test]
