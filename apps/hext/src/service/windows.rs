@@ -27,7 +27,7 @@ use hext_session::files::{FileAccess, Transfer};
 use hext_session::host::{
     ActiveSession, BoxFuture, HostConfig, Presence, Restart, UnattendedAccess, UnattendedPassword,
 };
-use hext_session::{Grant, KeptResume, Lockout, RESTART_LIFETIME, ResumeTokens, SessionCodes};
+use hext_session::{KeptResume, Lockout, ResumeTokens, SessionCodes};
 use hext_signal::DeviceId;
 use ring::rand::{SecureRandom, SystemRandom};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
@@ -485,39 +485,7 @@ pub fn password(off: bool) -> Result<()> {
 
 /// A line in the audit log, for the owner of the computer.
 fn audit(entry: &str) {
-    use std::io::Write;
-    info!("auditoria: {entry}");
-    let Some(mut log) = super::log_file("audit") else {
-        warn!("auditoria: o arquivo não abriu");
-        return;
-    };
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    if let Err(e) = writeln!(log, "{} {entry}", utc(seconds)) {
-        warn!("auditoria: {e}");
-    }
-}
-
-/// `seconds` since 1970 as a UTC date and time.
-fn utc(seconds: u64) -> String {
-    let (days, time) = (seconds / 86_400, seconds % 86_400);
-    // From days to a civil date: years of 400 years' cycles, March first.
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year}-{month:02}-{day:02} {:02}:{:02}:{:02}Z",
-        time / 3600,
-        time / 60 % 60,
-        time % 60
-    )
+    super::kept::audit_to(super::log_file("audit"), entry);
 }
 
 /// The password as the service sees it.
@@ -537,62 +505,11 @@ impl UnattendedPassword for MachinePassword {
     }
 }
 
-/// What is kept of a token for after a restart. Only its hash: the file lets
-/// nobody in, and the folder is closed anyway.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct KeptFile {
-    hash: [u8; 32],
-    viewer: [u8; 32],
-    permissions: Permissions,
-    name: String,
-    id: String,
-    needs_password: bool,
-    /// Seconds since 1970 (nothing else counts across a restart).
-    until: u64,
-}
-
-fn kept_file() -> Result<PathBuf> {
-    Ok(machine_dir()?.join("resume.json"))
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// Takes back the token kept before a restart, if it is still good.
 fn restore_resume(resumes: &ResumeTokens) {
-    let Ok(path) = kept_file() else { return };
-    let Ok(text) = std::fs::read(&path) else {
-        return;
-    };
-    // Good for one boot, however this goes.
-    let _ = std::fs::remove_file(&path);
-    let kept: KeptFile = match serde_json::from_slice(&text) {
-        Ok(kept) => kept,
-        Err(e) => {
-            warn!("{}: {e}", path.display());
-            return;
-        }
-    };
-    let left = kept.until.saturating_sub(unix_now());
-    if left == 0 {
-        return;
+    if let Ok(dir) = machine_dir() {
+        super::kept::restore(&dir, resumes);
     }
-    resumes.restore(
-        KeptResume {
-            hash: kept.hash,
-            viewer: hext_crypto::PublicKey::from_bytes(kept.viewer),
-            grant: Grant {
-                permissions: kept.permissions,
-                name: kept.name,
-                id: kept.id,
-                needs_password: kept.needs_password,
-            },
-        },
-        Duration::from_secs(left),
-    );
 }
 
 /// Restarts this computer, with the token waiting on the other side.
@@ -600,18 +517,8 @@ struct MachineRestart;
 
 impl Restart for MachineRestart {
     fn restart(&self, kept: &KeptResume, who: &str) -> std::result::Result<(), String> {
-        let file = KeptFile {
-            hash: kept.hash,
-            viewer: *kept.viewer.as_bytes(),
-            permissions: kept.grant.permissions,
-            name: kept.grant.name.clone(),
-            id: kept.grant.id.clone(),
-            needs_password: kept.grant.needs_password,
-            until: unix_now() + RESTART_LIFETIME.as_secs(),
-        };
-        let path = kept_file().map_err(|e| e.to_string())?;
-        let text = serde_json::to_vec(&file).map_err(|e| e.to_string())?;
-        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let dir = machine_dir().map_err(|e| e.to_string())?;
+        super::kept::keep(&dir, kept)?;
         audit(&format!("reinício pedido: {who}"));
         // From the system's own folder: nothing on PATH gets to run as SYSTEM.
         let root = std::env::var_os("SystemRoot").ok_or("SystemRoot não definido")?;
@@ -627,8 +534,8 @@ impl Restart for MachineRestart {
     }
 
     fn revoke(&self) {
-        if let Ok(path) = kept_file() {
-            let _ = std::fs::remove_file(path);
+        if let Ok(dir) = machine_dir() {
+            super::kept::revoke(&dir);
         }
     }
 }
@@ -1368,13 +1275,6 @@ mod tests {
     use std::process::Stdio;
 
     use super::*;
-
-    #[test]
-    fn dates_in_the_audit_are_utc() {
-        assert_eq!(utc(0), "1970-01-01 00:00:00Z");
-        assert_eq!(utc(951_782_400), "2000-02-29 00:00:00Z");
-        assert_eq!(utc(1_793_794_661), "2026-11-04 12:17:41Z");
-    }
 
     #[test]
     fn an_update_gets_past_a_program_still_running() {

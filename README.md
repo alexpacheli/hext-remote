@@ -159,6 +159,24 @@ Para conversar durante a sessão, o técnico usa o botão com um balão ou **Ctr
 computador usa o botão **Chat** da barra de sessão. A janela abre sozinha quando chega uma mensagem, sem tirar
 o foco. O chat funciona nas conexões abertas pela tela inicial do app, e as mensagens não ficam salvas.
 
+## Testar: Hext Remote instalado no Mac
+
+Instalado, o Mac abre o Hext Remote sozinho a cada login, sem janela, com o mesmo ID do app (F4, marco 9).
+
+1. **No Mac**, no Terminal, **sem sudo**: `./HextRemote service install`. Ele monta o app em
+   `~/Library/Application Support/HextRemote/HextRemote.app`, inicia e mostra o ID.
+2. Na primeira vez, o macOS pede **Gravação de Tela** e **Acessibilidade** para o **Hext Remote**. Libere as
+   duas em **Ajustes do Sistema → Privacidade e Segurança** e rode `service install` de novo, para ele reabrir
+   com a Gravação de Tela.
+3. **No técnico**, conecte pelo ID. No Mac, aparece a janela de aceite, agora com **Reiniciar**.
+
+Com a permissão de reiniciar, **Ctrl+Alt+R** duas vezes reinicia o Mac. Os apps recebem o pedido para fechar, e
+um app com algo sem salvar pode segurar o reinício. O técnico volta sozinho quando alguém entrar no Mac, se for
+em até 10 minutos. No Mac ainda não há senha de acesso não assistido: cada acesso novo pede aceite.
+
+`service status` mostra o estado e o ID. `service uninstall` tira do login (`--purge` apaga também a chave, e o
+ID muda). O log fica em `~/Library/Application Support/HextRemote/ui.log`.
+
 ## Testar: controlar o Mac a partir do Windows
 
 1. **No Mac**, no Terminal: `./HextRemote host`.
