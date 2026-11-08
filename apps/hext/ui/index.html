@@ -75,6 +75,85 @@
         <ul class="sessions" id="technicians"></ul>
       </section>
 
+      <section id="account-section">
+        <h2>Conta</h2>
+        <!-- Each panel is one step; only one shows at a time. -->
+        <div class="account-panel" id="account-out">
+          <p class="hint">
+            Opcional. Com uma conta, você vai entrar nos seus computadores sem precisar de aceite.
+          </p>
+          <button type="button" class="primary" id="account-open-login">Entrar</button>
+          <button type="button" id="account-open-register">Criar conta</button>
+        </div>
+        <form class="account-panel" id="account-login" hidden>
+          <input id="login-email" class="wide" inputmode="email" spellcheck="false" autocomplete="username" placeholder="E-mail" aria-label="E-mail" />
+          <input id="login-password" class="wide" type="password" autocomplete="current-password" placeholder="Senha" aria-label="Senha" />
+          <input id="login-second" class="wide" inputmode="numeric" autocomplete="one-time-code" placeholder="Código do app autenticador (ou de recuperação)" aria-label="Código da verificação em duas etapas" hidden />
+          <button type="submit" class="primary">Entrar</button>
+          <button type="button" class="cancel">Cancelar</button>
+          <button type="button" class="link" id="account-open-forgot">Esqueci a senha</button>
+        </form>
+        <form class="account-panel" id="account-register" hidden>
+          <input id="register-email" class="wide" inputmode="email" spellcheck="false" autocomplete="username" placeholder="E-mail" aria-label="E-mail" />
+          <input id="register-password" class="wide" type="password" autocomplete="new-password" placeholder="Senha (pelo menos 10 caracteres)" aria-label="Senha" />
+          <input id="register-again" class="wide" type="password" autocomplete="new-password" placeholder="A mesma senha de novo" aria-label="Repita a senha" />
+          <button type="submit" class="primary">Criar conta</button>
+          <button type="button" class="cancel">Cancelar</button>
+        </form>
+        <form class="account-panel" id="account-verify" hidden>
+          <p class="hint wide">Mandamos um código de 6 dígitos para <strong id="verify-email"></strong>.</p>
+          <input id="verify-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Código" aria-label="Código do e-mail" />
+          <button type="submit" class="primary">Confirmar</button>
+          <input id="verify-password" class="wide" type="password" autocomplete="new-password" placeholder="A senha que você escolheu" aria-label="Senha" hidden />
+          <button type="button" class="cancel">Cancelar</button>
+        </form>
+        <form class="account-panel" id="account-forgot" hidden>
+          <input id="forgot-email" class="wide" inputmode="email" spellcheck="false" autocomplete="username" placeholder="E-mail da conta" aria-label="E-mail" />
+          <button type="submit" class="primary">Mandar código</button>
+          <button type="button" class="cancel">Cancelar</button>
+        </form>
+        <form class="account-panel" id="account-reset" hidden>
+          <p class="hint wide">Se houver uma conta com esse e-mail, chegou um código nele.</p>
+          <input id="reset-code" class="wide" inputmode="numeric" autocomplete="one-time-code" placeholder="Código" aria-label="Código do e-mail" />
+          <input id="reset-password" class="wide" type="password" autocomplete="new-password" placeholder="Senha nova" aria-label="Senha nova" />
+          <button type="submit" class="primary">Trocar a senha</button>
+          <button type="button" class="cancel">Cancelar</button>
+        </form>
+        <div class="account-panel" id="account-in" hidden>
+          <p class="name-line"><span id="account-email"></span></p>
+          <p class="hint" id="account-totp"></p>
+          <button type="button" class="primary" id="account-open-totp">Ligar a verificação em duas etapas</button>
+          <button type="button" id="account-open-change">Trocar a senha</button>
+          <button type="button" class="link" id="account-logout">Sair da conta</button>
+        </div>
+        <form class="account-panel" id="account-totp-setup" hidden>
+          <p class="hint wide">
+            Leia o código com o app autenticador (Google Authenticator, Authy, 1Password…) ou digite a
+            chave nele. Depois escreva o código de 6 dígitos que o app mostra.
+          </p>
+          <div class="qr wide" id="totp-qr"></div>
+          <p class="secret wide" id="totp-secret"></p>
+          <input id="totp-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Código do app" aria-label="Código do app autenticador" />
+          <button type="submit" class="primary">Ligar</button>
+          <button type="button" class="cancel">Cancelar</button>
+        </form>
+        <div class="account-panel" id="account-recovery" hidden>
+          <p class="hint">
+            Guarde estes códigos num lugar seguro. Cada um entra uma vez no lugar do app autenticador,
+            se você perder o celular. Eles não aparecem de novo.
+          </p>
+          <ul class="codes" id="recovery-codes"></ul>
+          <button type="button" class="primary" id="account-recovery-done">Guardei os códigos</button>
+        </div>
+        <form class="account-panel" id="account-change" hidden>
+          <input id="change-old" class="wide" type="password" autocomplete="current-password" placeholder="Senha atual" aria-label="Senha atual" />
+          <input id="change-new" class="wide" type="password" autocomplete="new-password" placeholder="Senha nova" aria-label="Senha nova" />
+          <button type="submit" class="primary">Trocar</button>
+          <button type="button" class="cancel">Cancelar</button>
+        </form>
+        <p class="status" id="account-status" role="status"></p>
+      </section>
+
       <section id="recent-section" hidden>
         <h2>Computadores acessados</h2>
         <ul class="recent" id="recent"></ul>
