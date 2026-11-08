@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -35,6 +35,7 @@ use winit::keyboard::{KeyCode, ModifiersKeyState, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 use zeroize::Zeroizing;
 
+use crate::loop_watch::timed;
 use crate::ui_link::ToViewer;
 use crate::{APP_VERSION, CmdKey, CodecChoice, CtrlKey, ViewArgs, device_name, parse_addr};
 
@@ -66,7 +67,7 @@ const IDLE_STAY: Duration = Duration::from_secs(60);
 
 /// News of one session, for the window loop.
 enum SessionEvent {
-    Frame,
+    Frame(Instant),
     SessionEnded,
     /// The attempt to come back ended.
     Back(Box<Result<ClientHandle>>),
@@ -181,8 +182,37 @@ struct Back {
     tell: Tell,
 }
 
-/// The newest picture, and the host's display it shows.
-type Latest = Arc<Mutex<Option<(YuvFrame, u8)>>>;
+/// Where the decoder leaves pictures for the window.
+type Latest = Arc<Pictures>;
+
+/// The newest picture, and the host's display it shows; older ones are
+/// dropped unseen. The window hears of it once until it takes it: on
+/// Windows, each word to the window is a message ahead of the mouse in its
+/// queue, and one per frame, faster than the window draws them (a burst
+/// after the network stalls, a GPU waiting for the screen), held clicks and
+/// drags for as long as the queue took to drain: a window that would not
+/// move or maximize.
+#[derive(Default)]
+struct Pictures {
+    newest: Mutex<Option<(YuvFrame, u8)>>,
+    /// The window was told of a picture it has not taken yet.
+    told: AtomicBool,
+}
+
+impl Pictures {
+    /// Leaves `frame`; whether the window must hear of it.
+    fn put(&self, frame: YuvFrame, display: u8) -> bool {
+        *self.newest.lock().expect("lock") = Some((frame, display));
+        !self.told.swap(true, Ordering::AcqRel)
+    }
+
+    /// The newest picture, if one came since the last time.
+    fn take(&self) -> Option<(YuvFrame, u8)> {
+        // Before taking: a picture left meanwhile is told again.
+        self.told.store(false, Ordering::Release);
+        self.newest.lock().expect("lock").take()
+    }
+}
 
 /// How a session's window ends.
 enum Ending {
@@ -228,7 +258,9 @@ pub fn run(args: ViewArgs) -> Result<()> {
         failure: None,
     };
     viewers.open(args.session, target, password);
-    event_loop.run_app(&mut viewers)?;
+    let ran = event_loop.run_app(&mut viewers);
+    finish_ui_out();
+    ran?;
     match viewers.failure.take() {
         Some(e) => Err(e),
         None => Ok(()),
@@ -365,6 +397,7 @@ impl Viewers {
             chat_link: self.ui,
             chat_button: None,
             last_title: Instant::now(),
+            redraw_asked: None,
         };
         // The newest window is the one in use.
         self.focused.store(n, Ordering::Relaxed);
@@ -538,6 +571,8 @@ struct Viewer {
     /// The chat button on screen.
     chat_button: Option<VideoRect>,
     last_title: Instant,
+    /// Since when a picture waits for the window to paint.
+    redraw_asked: Option<Instant>,
 }
 
 impl Viewer {
@@ -688,27 +723,18 @@ impl Viewer {
     }
 
     /// Uploads the newest decoded frame, if any, and redraws.
-    ///
-    /// With `only_if_new`, does nothing when no new frame arrived: several
-    /// frame events can find a single frame, and presenting the same picture
-    /// again could block on vsync and back up the event queue.
-    fn draw(&mut self, only_if_new: bool) {
+    fn draw(&mut self) {
         // Check the renderer first: taking the frame before the window exists
         // would discard it, and a still host screen sends no replacement.
         let Some(renderer) = &mut self.renderer else {
             return;
         };
-        let frame = self.latest.lock().expect("lock").take();
         let mut arrived = false;
-        match frame {
-            Some((frame, display)) => {
-                renderer.upload(&frame);
-                arrived = self.picture.replace(display) != Some(display);
-            }
-            None if only_if_new => return,
-            None => {}
+        if let Some((frame, display)) = self.latest.take() {
+            timed("upload", || renderer.upload(&frame));
+            arrived = self.picture.replace(display) != Some(display);
         }
-        if let Err(e) = renderer.render() {
+        if let Err(e) = timed("render", || renderer.render()) {
             warn!("render: {e}");
         }
         if arrived {
@@ -796,7 +822,7 @@ impl Viewer {
                 renderer.set_chat_button(chat);
                 renderer.set_handle(handle);
             }
-            self.draw(false);
+            self.draw();
         }
     }
 
@@ -828,6 +854,10 @@ impl Viewer {
             return;
         }
         self.last_title = Instant::now();
+        timed("título", || self.set_title());
+    }
+
+    fn set_title(&self) {
         let Some(window) = &self.window else { return };
         if let Some(waiting) = self.coming_back {
             window.set_title(&format!("Hext Remote — {waiting}"));
@@ -913,6 +943,8 @@ impl Viewer {
                 return None;
             }
         }
+        // A picture told before the window was there waits for this.
+        window.request_redraw();
         let id = window.id();
         self.window = Some(window);
         Some(id)
@@ -920,8 +952,16 @@ impl Viewer {
 
     fn on_event(&mut self, event: SessionEvent) {
         match event {
-            // Draw right away instead of waiting for a redraw request: lower latency.
-            SessionEvent::Frame => self.draw(true),
+            // Drawn when the window paints: on Windows, after the mouse and
+            // the keyboard, which a picture never holds back. (With nothing
+            // waiting, at once.)
+            SessionEvent::Frame(sent) => {
+                crate::loop_watch::note("fila (quadro)", sent.elapsed());
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                    self.redraw_asked.get_or_insert_with(Instant::now);
+                }
+            }
             SessionEvent::SessionEnded => {
                 let ending = self.session.as_ref().and_then(ClientHandle::comes_back);
                 match (ending, self.back.clone(), self.endpoint.clone()) {
@@ -993,9 +1033,14 @@ impl Viewer {
                     renderer.resize(size.width, size.height);
                 }
                 self.update_button();
-                self.draw(false);
+                self.draw();
             }
-            WindowEvent::RedrawRequested => self.draw(false),
+            WindowEvent::RedrawRequested => {
+                if let Some(asked) = self.redraw_asked.take() {
+                    crate::loop_watch::note("pintura (quadro)", asked.elapsed());
+                }
+                self.draw();
+            }
             WindowEvent::DroppedFile(path) => self.send_file(path),
             WindowEvent::Focused(false) => {
                 self.local_key = None;
@@ -1195,6 +1240,34 @@ impl Viewer {
 
 impl ApplicationHandler<UserEvent> for Viewers {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        timed("resumed", || self.on_resumed(event_loop));
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        timed(user_event_name(&event), || {
+            self.on_user_event(event_loop, event);
+        });
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        timed(window_event_name(&event), || {
+            self.on_window_event(event_loop, id, event);
+        });
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        timed("about_to_wait", || self.on_about_to_wait(event_loop));
+    }
+
+    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+        self.on_exiting(event_loop);
+    }
+}
+
+/// The loop's calls, each timed by [`timed`]: while one runs, no window of
+/// this viewer moves or repaints.
+impl Viewers {
+    fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.resumed = true;
         let waiting: Vec<u64> = self
             .sessions
@@ -1207,7 +1280,7 @@ impl ApplicationHandler<UserEvent> for Viewers {
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn on_user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Session(n, SessionEvent::Locked) => {
                 if self.ui {
@@ -1234,7 +1307,7 @@ impl ApplicationHandler<UserEvent> for Viewers {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn on_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let Some(&n) = self.windows.get(&id) else {
             return;
         };
@@ -1244,7 +1317,7 @@ impl ApplicationHandler<UserEvent> for Viewers {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn on_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.idle_since.is_some() {
             self.exit_if_done(event_loop);
         }
@@ -1261,7 +1334,7 @@ impl ApplicationHandler<UserEvent> for Viewers {
         });
     }
 
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+    fn on_exiting(&mut self, _event_loop: &ActiveEventLoop) {
         for (_, mut viewer) in self.sessions.drain() {
             if let Some(session) = viewer.session.take() {
                 self.closing.push(self.runtime.spawn(async move {
@@ -1285,11 +1358,44 @@ impl ApplicationHandler<UserEvent> for Viewers {
     }
 }
 
+/// What a user event is, for [`timed`].
+fn user_event_name(event: &UserEvent) -> &'static str {
+    match event {
+        UserEvent::Session(_, SessionEvent::Frame(_)) => "quadro",
+        UserEvent::Session(_, SessionEvent::SessionEnded) => "sessão encerrada",
+        UserEvent::Session(_, SessionEvent::Back(_)) => "volta",
+        UserEvent::Session(_, SessionEvent::Displays) => "monitores",
+        UserEvent::Session(_, SessionEvent::ChatOut(_)) => "chat",
+        UserEvent::Session(_, SessionEvent::Transfer(_)) => "arquivo",
+        UserEvent::Session(_, SessionEvent::AskFile { .. }) => "pergunta de arquivo",
+        UserEvent::Session(_, SessionEvent::Locked) => "tela bloqueada",
+        UserEvent::Opened(..) => "sessão aberta",
+        UserEvent::Ui(_) => "pedido da interface",
+        UserEvent::UiGone => "interface fechada",
+    }
+}
+
+/// What a window event is, for [`timed`].
+fn window_event_name(event: &WindowEvent) -> &'static str {
+    match event {
+        WindowEvent::Resized(_) => "Resized",
+        WindowEvent::Moved(_) => "Moved",
+        WindowEvent::RedrawRequested => "RedrawRequested",
+        WindowEvent::CursorMoved { .. } => "CursorMoved",
+        WindowEvent::MouseInput { .. } => "MouseInput",
+        WindowEvent::KeyboardInput { .. } => "KeyboardInput",
+        WindowEvent::Focused(_) => "Focused",
+        WindowEvent::ScaleFactorChanged { .. } => "ScaleFactorChanged",
+        _ => "outro evento da janela",
+    }
+}
+
 /// Hands decoded frames to the window.
 fn show_frames(latest: Latest, tell: Tell) -> impl FnMut(client::DecodedFrame) + Send + 'static {
     move |frame| {
-        *latest.lock().expect("lock") = Some((frame.yuv, frame.display));
-        tell.send(SessionEvent::Frame);
+        if latest.put(frame.yuv, frame.display) {
+            tell.send(SessionEvent::Frame(Instant::now()));
+        }
     }
 }
 
@@ -1326,8 +1432,47 @@ fn hear_chat(session: &mut ClientHandle, n: u64) -> impl Future<Output = ()> + S
 /// it right there.)
 fn tell_ui(n: u64, line: &str) {
     let line = crate::ui_link::session_line(n, line);
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{line}").and_then(|()| out.flush());
+    let mut out = UI_OUT.lock().expect("lock");
+    let (lines, _) = out.get_or_insert_with(start_ui_out);
+    let _ = lines.send(line);
+}
+
+/// The lines for the interface, and the thread writing them. The window's
+/// thread never writes them itself: a pipe the interface is slow to read
+/// would hold every window there.
+/// (The second says when all is written.)
+type UiOut = (
+    std::sync::mpsc::Sender<String>,
+    std::sync::mpsc::Receiver<()>,
+);
+
+static UI_OUT: Mutex<Option<UiOut>> = Mutex::new(None);
+
+/// How long leaving waits for the last lines: an interface that stopped
+/// reading must not keep this process alive.
+const UI_OUT_WAIT: Duration = Duration::from_secs(2);
+
+fn start_ui_out() -> UiOut {
+    let (lines, queued) = std::sync::mpsc::channel::<String>();
+    let (written, done) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = std::io::stdout();
+        for line in queued {
+            let _ = writeln!(out, "{line}").and_then(|()| out.flush());
+        }
+        let _ = written.send(());
+    });
+    (lines, done)
+}
+
+/// Waits a little for the lines still on their way to the interface (how
+/// the last sessions ended), before leaving.
+fn finish_ui_out() {
+    let out = UI_OUT.lock().expect("lock").take();
+    if let Some((lines, done)) = out {
+        drop(lines);
+        let _ = done.recv_timeout(UI_OUT_WAIT);
+    }
 }
 
 /// Takes what the interface asks for (another computer, what the person
@@ -1816,6 +1961,43 @@ fn decoder(choice: CodecChoice) -> DecoderPreference {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn picture(width: u32) -> YuvFrame {
+        YuvFrame {
+            width,
+            height: 2,
+            y: vec![0; 4],
+            u: vec![0; 1],
+            v: vec![0; 1],
+        }
+    }
+
+    #[test]
+    fn a_burst_of_pictures_wakes_the_window_once() {
+        let pictures = Pictures::default();
+        // Only the first of many is told; the window finds the newest.
+        assert!(pictures.put(picture(1), 0));
+        for width in 2..=100 {
+            assert!(!pictures.put(picture(width), 1));
+        }
+        let (newest, display) = pictures.take().unwrap();
+        assert_eq!((newest.width, display), (100, 1));
+        assert!(pictures.take().is_none());
+        // Taken, the next is told again.
+        assert!(pictures.put(picture(101), 1));
+    }
+
+    #[test]
+    fn a_picture_left_while_drawing_is_told_again() {
+        let pictures = Pictures::default();
+        assert!(pictures.put(picture(1), 0));
+        // The window, told, takes nothing yet (no window), then takes it.
+        assert!(!pictures.put(picture(2), 0));
+        assert_eq!(pictures.take().unwrap().0.width, 2);
+        // Left right after the take: a new word for the window.
+        assert!(pictures.put(picture(3), 0));
+        assert!(!pictures.put(picture(4), 0));
+    }
 
     #[test]
     fn a_shortcut_keeps_its_repeats_and_release() {

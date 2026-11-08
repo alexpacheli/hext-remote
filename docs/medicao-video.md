@@ -51,6 +51,7 @@ Sem `RUST_LOG`, só os segundos com problema vão para o log (no serviço, em `C
 | `envio: …` | host | por segundo: quadros, taxa, tempo enviando, tempo preso, perda real do QUIC, cwnd, RTT |
 | `caminho: …` | host | endereço do caminho em uso, ao começar e a cada troca |
 | `captura: …` | host | por segundo: imagens novas, codificadas, seguradas e espera pela rede |
+| `janela presa por X ms em …` | visualizador | a janela parou de responder X ms ali (veja [janela-travada.md](janela-travada.md)) |
 
 Para achar a causa de uma queda de fps num segundo:
 

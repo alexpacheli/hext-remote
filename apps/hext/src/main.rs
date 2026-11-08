@@ -14,6 +14,7 @@ mod bench;
 #[cfg(any(windows, target_os = "macos"))]
 mod chat;
 mod host;
+mod loop_watch;
 mod name;
 #[cfg_attr(not(windows), allow(dead_code))] // the service is where it binds
 mod owners;
