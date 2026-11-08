@@ -92,6 +92,12 @@ pub enum AccountCall {
     /// one logged in), as [`AccountReply::HostChains`]. Only for listing:
     /// the computer decides who comes in.
     ChainShared,
+    /// For a computer (no account login): entries of its audit, for the
+    /// Atividade screen of the accounts that list it. At most
+    /// [`MAX_EVENTS`] a call, each up to [`MAX_EVENT_LEN`] characters.
+    HostEvents { events: Vec<String> },
+    /// The latest entries of the account's computers, the latest first.
+    Activity,
 }
 
 /// A device asking to join the chain.
@@ -110,6 +116,20 @@ pub struct AccountView {
     pub email: String,
     /// 2FA is on.
     pub totp: bool,
+}
+
+/// Entries a computer sends at once, and how long each may be.
+pub const MAX_EVENTS: usize = 20;
+pub const MAX_EVENT_LEN: usize = 300;
+
+/// An entry of a computer's audit, as the server keeps it for the account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityEvent {
+    /// When the server got it (Unix time).
+    pub at: u64,
+    /// The computer that sent it.
+    pub computer: crate::DeviceId,
+    pub text: String,
 }
 
 /// The server's answer to an [`AccountCall`].
@@ -147,6 +167,10 @@ pub enum AccountReply {
     /// The chains of [`AccountCall::ChainHost`].
     HostChains {
         chains: Vec<Vec<Entry>>,
+    },
+    /// The entries of [`AccountCall::Activity`].
+    Activity {
+        events: Vec<ActivityEvent>,
     },
     Error {
         error: AccountError,
@@ -206,6 +230,8 @@ impl std::fmt::Debug for AccountCall {
             Self::ChainPending => "ChainPending",
             Self::ChainHost { .. } => "ChainHost",
             Self::ChainShared => "ChainShared",
+            Self::HostEvents { .. } => "HostEvents",
+            Self::Activity => "Activity",
         })
     }
 }

@@ -1048,6 +1048,14 @@ async fn share_add(
         .await
 }
 
+/// The accesses to the account's computers (marco 7).
+#[tauri::command]
+async fn account_activity(
+    shared: State<'_, Shared>,
+) -> Result<Vec<crate::account::ActivityItem>, String> {
+    the_account(&shared)?.activity().await
+}
+
 /// Takes a computer back from another account.
 #[tauri::command]
 async fn share_remove(shared: State<'_, Shared>, host: String, with: String) -> Result<(), String> {
@@ -1484,6 +1492,7 @@ pub fn run(link: Link) -> Result<()> {
             account_unbind,
             share_add,
             share_remove,
+            account_activity,
             computer_remove
         ])
         .on_window_event(move |window, event| {

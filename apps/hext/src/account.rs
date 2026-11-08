@@ -66,6 +66,16 @@ pub struct ShareItem {
     pub until: Option<u64>,
 }
 
+/// An access to one of the account's computers, as its audit said it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ActivityItem {
+    pub at: u64,
+    /// The computer's ID, and its name in the account's list.
+    pub computer: String,
+    pub name: String,
+    pub text: String,
+}
+
 /// A computer of another account, shared with this one.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SharedItem {
@@ -305,6 +315,42 @@ impl Account {
         })
         .await
         .map(drop)
+    }
+
+    /// The accesses to the account's computers, the latest first, named as
+    /// the list names them.
+    pub async fn activity(&self) -> Result<Vec<ActivityItem>, String> {
+        let mut link = self.link();
+        let found = self.chain(&mut link).await;
+        let reply = link.call(AccountCall::Activity).await;
+        link.close().await;
+        let names: std::collections::HashMap<_, _> = found
+            .ok()
+            .flatten()
+            .map(|(_, chain)| {
+                chain
+                    .computers()
+                    .iter()
+                    .map(|c| (c.id, c.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let events = match reply? {
+            AccountReply::Activity { events } => events,
+            other => return Err(answer_error(&other)),
+        };
+        Ok(events
+            .into_iter()
+            .map(|e| ActivityItem {
+                at: e.at,
+                computer: e.computer.to_string(),
+                name: names
+                    .get(&e.computer)
+                    .cloned()
+                    .unwrap_or_else(|| e.computer.to_string()),
+                text: e.text,
+            })
+            .collect())
     }
 
     /// Takes back computer `host` from the account with list `with`.
@@ -572,6 +618,7 @@ impl Link<'_> {
                 | AccountCall::ChainJoin { .. }
                 | AccountCall::ChainPending
                 | AccountCall::ChainShared
+                | AccountCall::Activity
                 | AccountCall::TotpSetup
                 | AccountCall::TotpEnable { .. }
                 | AccountCall::ChangePassword { .. }
@@ -1261,6 +1308,52 @@ mod tests {
         owners.refresh().await.unwrap();
         assert!(!owners.still(&their_key));
         assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![]);
+        drop(host);
+    }
+
+    #[tokio::test]
+    async fn the_accounts_computers_report_their_accesses() {
+        use crate::owners::{Owners, parse_id};
+        use hext_signal::{Client, Role};
+        let (mut world, first) = World::new().await;
+        first.create_chain().await.unwrap();
+        let host_key = Arc::new(DeviceKey::generate().unwrap());
+        let host = Client::connect(&world.server, &host_key, "Escritório", "t", Role::Host)
+            .await
+            .unwrap();
+        let dir = world.computer().file.parent().unwrap().to_owned();
+        std::fs::create_dir_all(&dir).unwrap();
+        let owners = Owners::new(
+            dir.join("owners.json"),
+            host_key.clone(),
+            world.server.clone(),
+        );
+        // Not on the list: what it sends is not kept.
+        owners.send_events(&["antes".into()]).await.unwrap();
+        assert!(first.activity().await.unwrap().is_empty());
+
+        first
+            .add_computer(
+                &host_key.public_key().to_string(),
+                &host.id().to_string(),
+                "Escritório",
+            )
+            .await
+            .unwrap();
+        owners
+            .bind(parse_id(&first.devices(None).await.unwrap().chain).unwrap())
+            .await
+            .unwrap();
+        let entries: Vec<String> = (0..25).map(|n| format!("entrada {n}")).collect();
+        owners.send_events(&entries).await.unwrap();
+        let activity = first.activity().await.unwrap();
+        assert_eq!(activity.len(), 25, "in chunks");
+        assert_eq!(activity[0].name, "Escritório");
+        assert_eq!(activity[0].computer, host.id().to_string());
+        assert!(activity.iter().any(|a| a.text == "entrada 24"));
+        // Another account sees none of it.
+        let other = other_account(&mut world, "outro@example.com").await;
+        assert!(other.activity().await.unwrap().is_empty());
         drop(host);
     }
 

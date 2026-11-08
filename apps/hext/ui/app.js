@@ -456,6 +456,27 @@ function startAccount() {
       showStatus(String(message), true);
     }
   });
+  on("activity-load", async () => {
+    try {
+      const events = await invoke("account_activity");
+      const rows = events.map((event) => {
+        const label = document.createElement("span");
+        label.className = "who wrap";
+        label.textContent = `${new Date(event.at * 1000).toLocaleString()} · ${event.name}: ${event.text}`;
+        const item = document.createElement("li");
+        item.append(label);
+        return item;
+      });
+      if (rows.length === 0) {
+        const item = document.createElement("li");
+        item.textContent = "Nenhum acesso registrado ainda.";
+        rows.push(item);
+      }
+      $("activity-list").replaceChildren(...rows);
+    } catch (message) {
+      accountStatus(String(message), true);
+    }
+  });
   on("computer-bind", async () => {
     if (!shownChain) return;
     if (
@@ -664,6 +685,7 @@ async function loadDevices() {
   $("chain-id").textContent = `ID da lista: ${devices.chain}`;
   $("computer-bind").hidden = !member || !devices.listed || !devices.bindable;
   $("computers-title").hidden = devices.computers.length === 0;
+  $("activity").hidden = !member;
   $("shared-title").hidden = devices.shared.length === 0;
   $("shared-list").replaceChildren(
     ...devices.shared.map((computer) => {
