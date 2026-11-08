@@ -11,9 +11,43 @@ const $ = (id) => document.getElementById(id);
  * or clicking must not be answered by accident. */
 const ACCEPT_DELAY_MS = 1000;
 
+/** A 9-digit ID in groups of three, as people read it out. */
+function formatId(id) {
+  return /^\d{9}$/.test(id) ? id.replace(/(\d{3})(?=\d)/g, "$1 ") : id;
+}
+
+/** The sidebar: one tab shows at a time. */
+function startTabs() {
+  for (const button of document.querySelectorAll(".nav")) {
+    button.addEventListener("click", () => {
+      for (const other of document.querySelectorAll(".nav")) {
+        other.classList.toggle("active", other === button);
+      }
+      for (const tab of document.querySelectorAll(".tab")) {
+        tab.hidden = tab.id !== `tab-${button.dataset.tab}`;
+      }
+    });
+  }
+}
+
 const pages = {
   home: {
     start() {
+      startTabs();
+      $("copy-id").addEventListener("click", async () => {
+        if (!this.id) return;
+        try {
+          await navigator.clipboard.writeText(this.id);
+          $("copy-id").classList.add("done");
+          $("copy-id").title = "Copiado";
+          setTimeout(() => {
+            $("copy-id").classList.remove("done");
+            $("copy-id").title = "Copiar o ID";
+          }, 1500);
+        } catch {
+          // (No clipboard: the ID can still be selected and copied.)
+        }
+      });
       const editing = (on) => {
         $("rename-form").hidden = !on;
         $("name-line").hidden = on || !this.name;
@@ -56,9 +90,13 @@ const pages = {
       });
     },
     show(view) {
-      $("own-id").textContent = view.id ?? "Conectando…";
+      this.id = view.id;
+      $("own-id").textContent = view.id ? formatId(view.id) : "Conectando…";
+      $("copy-id").hidden = !view.id;
+      $("me-dot").classList.toggle("online", !!view.id);
+      $("me-state").textContent = view.id ? "Online" : "Conectando…";
       this.name = view.name;
-      $("own-name").textContent = view.name ? `Nome: ${view.name}` : "";
+      $("own-name").textContent = view.name ? view.name : "";
       $("name-line").hidden = !view.name || !$("rename-form").hidden;
       const notice = $("notice");
       notice.hidden = !view.notice;
@@ -79,6 +117,9 @@ const pages = {
       showTechnicians(view.technicians);
       $("owners-section").hidden = !view.owners;
       $("owners-text").textContent = view.owners || "";
+      $("security-empty").hidden = !!view.owners || view.technicians.length > 0;
+      $("home-empty").hidden =
+        view.viewers.length > 0 || view.computers.length > 0 || view.recent.length > 0;
       if (view.viewer_failure) {
         showStatus(view.viewer_failure, true);
       } else {
@@ -301,19 +342,7 @@ function showRecent(computers, online) {
   $("recent-section").hidden = computers.length === 0;
   $("recent").replaceChildren(
     ...computers.map(({ id, name }) => {
-      const pick = document.createElement("button");
-      pick.type = "button";
-      pick.className = "pick";
-      pick.textContent = name ? `${name} (${id})` : id;
-      pick.title = pick.textContent;
-      if (online) {
-        const on = online.includes(id);
-        const dot = document.createElement("span");
-        dot.className = on ? "dot online" : "dot";
-        dot.title = on ? "Online" : "Offline";
-        pick.title = `${pick.textContent}: ${dot.title}`;
-        pick.prepend(dot);
-      }
+      const pick = tile(id, name, online);
       pick.addEventListener("click", () => {
         $("target").value = id;
         $("password").focus();
@@ -913,18 +942,8 @@ function showComputers(computers, online) {
   $("computers-section").hidden = computers.length === 0;
   $("computers").replaceChildren(
     ...computers.map(({ id, name }) => {
-      const pick = document.createElement("button");
-      pick.type = "button";
-      pick.className = "pick";
-      pick.textContent = name ? `${name} (${id})` : id;
-      pick.title = `Conectar a ${pick.textContent}`;
-      if (online) {
-        const on = online.includes(id);
-        const dot = document.createElement("span");
-        dot.className = on ? "dot online" : "dot";
-        dot.title = on ? "Online" : "Offline";
-        pick.prepend(dot);
-      }
+      const pick = tile(id, name, online);
+      pick.title = `Conectar a ${pick.title}`;
       pick.addEventListener("click", async () => {
         try {
           await invoke("connect", { id, password: null, remember: false });
@@ -937,6 +956,38 @@ function showComputers(computers, online) {
       return item;
     }),
   );
+}
+
+/** A computer as a tile: its name, its ID and whether it is online
+ * (`online`: the IDs online; null: not known, and no dot). */
+function tile(id, name, online) {
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "tile";
+  const screen = document.createElement("span");
+  screen.className = "screen";
+  // Our own markup (an icon), not text from anyone.
+  screen.innerHTML =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+  const text = document.createElement("span");
+  text.className = "text";
+  const title = document.createElement("span");
+  title.className = "title";
+  title.textContent = name || formatId(id);
+  const sub = document.createElement("span");
+  sub.className = "sub";
+  sub.textContent = name ? formatId(id) : "Sem nome";
+  text.append(title, sub);
+  pick.append(screen, text);
+  pick.title = name ? `${name} (${id})` : id;
+  if (online) {
+    const on = online.includes(id);
+    const dot = document.createElement("span");
+    dot.className = on ? "dot online" : "dot";
+    screen.append(dot);
+    pick.title += on ? ": online" : ": offline";
+  }
+  return pick;
 }
 
 function showStatus(text, error = false) {
