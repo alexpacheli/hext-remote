@@ -304,7 +304,7 @@ Esta é uma decisão de projeto, não só uma configuração:
 
 | Serviço | Função | Tecnologia |
 |---|---|---|
-| `hext-server` | API HTTPS (contas, dispositivos, IDs) e sinalização WSS | Rust (`axum` + `tokio`) |
+| `hext-server` | Sinalização WSS (IDs, presença, contas) e o porteiro do relay | Rust (`axum` + `tokio`) |
 | STUN | Descoberta do IP público | embutido no `hext-server` |
 | `hext-relay` | Repasse UDP e TCP/443 de bytes cifrados, pareados por token de sessão | Rust, binário separado para escalar por região |
 | Banco | Contas, dispositivos, auditoria | PostgreSQL |

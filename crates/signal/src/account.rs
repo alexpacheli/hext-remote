@@ -1,0 +1,185 @@
+//! Accounts (F5): calls an app makes on its signaling connection, and the
+//! server's replies. The connection is already the device's own (it signed
+//! the challenge), so a login holds only for the device that made it: a
+//! token copied to another device is worth nothing.
+
+use serde::{Deserialize, Serialize};
+
+/// Shortest and longest password taken.
+pub const MIN_PASSWORD: usize = 10;
+pub const MAX_PASSWORD: usize = 128;
+/// Longest e-mail address taken.
+pub const MAX_EMAIL: usize = 254;
+
+/// What an app asks about accounts. (No `Debug`: passwords.)
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "call", rename_all = "snake_case")]
+pub enum AccountCall {
+    /// A new account; a code goes to `email` to confirm it. The answer is
+    /// [`AccountReply::Ok`] whether or not the address already has one, so
+    /// accounts cannot be probed.
+    Register { email: String, password: String },
+    /// The code sent to confirm `email`, and the password: the one set is
+    /// this, given with the code, so whoever registered the address before
+    /// its owner does not choose it.
+    Verify {
+        email: String,
+        code: String,
+        password: String,
+    },
+    /// Logs this device in. `second`: the 2FA code, or a recovery code, when
+    /// the account has 2FA (without it, the answer is
+    /// [`AccountReply::NeedsSecondFactor`]).
+    Login {
+        email: String,
+        password: String,
+        #[serde(default)]
+        second: Option<String>,
+    },
+    /// Back on a new connection, with the token of an earlier login of this
+    /// same device.
+    Resume { token: String },
+    /// Logs this device out.
+    Logout,
+    /// The account this device is logged in to.
+    Me,
+    /// Starts turning on 2FA: a new secret for the authenticator app.
+    TotpSetup,
+    /// Finishes it with a code from the app; the answer is the recovery
+    /// codes, shown once.
+    TotpEnable { code: String },
+    /// Forgot the password: a code goes to `email` (answered the same either
+    /// way).
+    ForgotPassword { email: String },
+    /// A new password, with the code sent by [`AccountCall::ForgotPassword`].
+    /// Every device is logged out.
+    ResetPassword {
+        email: String,
+        code: String,
+        password: String,
+    },
+    /// A new password, knowing the old one. The other devices are logged
+    /// out.
+    ChangePassword { old: String, new: String },
+}
+
+/// The account as its owner sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountView {
+    pub email: String,
+    /// 2FA is on.
+    pub totp: bool,
+}
+
+/// The server's answer to an [`AccountCall`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reply", rename_all = "snake_case")]
+pub enum AccountReply {
+    Ok,
+    /// Logged in: keep `token` to [`AccountCall::Resume`] later (it is good
+    /// only for this device).
+    LoggedIn {
+        token: String,
+        account: AccountView,
+    },
+    /// The password was right; the 2FA code (or a recovery code) is next.
+    NeedsSecondFactor,
+    Account(AccountView),
+    /// For the authenticator app: the secret (base 32) and the same as a
+    /// link (for a QR code).
+    Totp {
+        secret: String,
+        uri: String,
+    },
+    /// Each good once; shown only now.
+    RecoveryCodes {
+        codes: Vec<String>,
+    },
+    Error {
+        error: AccountError,
+    },
+}
+
+/// Why an [`AccountCall`] failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountError {
+    /// Not an e-mail address we take.
+    InvalidEmail,
+    /// Too short or too long (see [`MIN_PASSWORD`]).
+    WeakPassword,
+    /// The e-mail or the password is wrong (which one is not said).
+    WrongCredentials,
+    /// The e-mail address is not confirmed yet.
+    NotVerified,
+    /// The code is wrong, used or expired.
+    WrongCode,
+    /// Too many attempts: wait a while.
+    TooManyAttempts,
+    /// This device is not logged in.
+    NotLoggedIn,
+    /// 2FA is already on.
+    AlreadyEnabled,
+    /// [`AccountCall::TotpEnable`] without [`AccountCall::TotpSetup`] first.
+    NoSetup,
+    /// Something went wrong on the server.
+    ServerError,
+}
+
+/// Which call, without what it carries (passwords, codes).
+impl std::fmt::Debug for AccountCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Register { .. } => "Register",
+            Self::Verify { .. } => "Verify",
+            Self::Login { .. } => "Login",
+            Self::Resume { .. } => "Resume",
+            Self::Logout => "Logout",
+            Self::Me => "Me",
+            Self::TotpSetup => "TotpSetup",
+            Self::TotpEnable { .. } => "TotpEnable",
+            Self::ForgotPassword { .. } => "ForgotPassword",
+            Self::ResetPassword { .. } => "ResetPassword",
+            Self::ChangePassword { .. } => "ChangePassword",
+        })
+    }
+}
+
+impl AccountReply {
+    pub fn error(error: AccountError) -> Self {
+        Self::Error { error }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calls_and_replies_go_as_tagged_json() {
+        let call = AccountCall::Login {
+            email: "a@b.com".into(),
+            password: "segredo segredo".into(),
+            second: None,
+        };
+        let json = serde_json::to_string(&call).unwrap();
+        assert!(json.contains(r#""call":"login""#), "{json}");
+        assert!(serde_json::from_str::<AccountCall>(&json).unwrap() == call);
+        // `second` may be left out.
+        let short = r#"{"call":"login","email":"a@b.com","password":"x"}"#;
+        assert!(matches!(
+            serde_json::from_str::<AccountCall>(short).unwrap(),
+            AccountCall::Login { second: None, .. }
+        ));
+        let reply = AccountReply::error(AccountError::TooManyAttempts);
+        let json = serde_json::to_string(&reply).unwrap();
+        assert_eq!(json, r#"{"reply":"error","error":"too_many_attempts"}"#);
+        assert_eq!(serde_json::from_str::<AccountReply>(&json).unwrap(), reply);
+        let me = AccountReply::Account(AccountView {
+            email: "a@b.com".into(),
+            totp: true,
+        });
+        let json = serde_json::to_string(&me).unwrap();
+        assert_eq!(serde_json::from_str::<AccountReply>(&json).unwrap(), me);
+    }
+}

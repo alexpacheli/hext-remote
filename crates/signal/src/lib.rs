@@ -8,6 +8,7 @@
 //! requests between devices that are online. Messages are JSON text frames,
 //! tagged by `"type"`.
 
+pub mod account;
 mod client;
 mod id;
 mod known_hosts;
@@ -15,6 +16,7 @@ mod known_hosts;
 use hext_crypto::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 
+pub use account::{AccountCall, AccountError, AccountReply, AccountView};
 pub use client::{Access, Client, ClientError, Role};
 pub use id::{DeviceId, ParseDeviceIdError};
 pub use known_hosts::{Check, KnownHosts};
@@ -68,6 +70,10 @@ pub enum ServerMsg {
         /// connection on it).
         #[serde(default)]
         takes_presence: bool,
+        /// It answers [`ClientMsg::Account`] (older servers end the
+        /// connection on it).
+        #[serde(default)]
+        takes_accounts: bool,
     },
     /// (To a host) a device wants to connect. Answer with
     /// [`ClientMsg::Accept`] or [`ClientMsg::Reject`] for `request`.
@@ -108,6 +114,8 @@ pub enum ServerMsg {
     /// the password, lately: any other ID is never online, so IDs cannot be
     /// probed.
     Presence { online: Vec<DeviceId> },
+    /// The answer to [`ClientMsg::Account`] `request`.
+    Account { request: u64, reply: AccountReply },
     /// Something went wrong; the server closes the connection.
     Error { message: String },
 }
@@ -168,6 +176,9 @@ pub enum ClientMsg {
     /// Which of these computers are online? (Answered with
     /// [`ServerMsg::Presence`], by servers that take it.)
     Presence { ids: Vec<DeviceId> },
+    /// About accounts (by servers that take it); `request` is chosen by the
+    /// app and comes back in [`ServerMsg::Account`].
+    Account { request: u64, call: AccountCall },
 }
 
 /// Why a connection request failed.
@@ -262,6 +273,7 @@ mod tests {
                 id,
                 takes_attempts: false,
                 takes_presence: false,
+                takes_accounts: false,
             }
         );
     }
@@ -278,6 +290,7 @@ mod tests {
             id,
             takes_attempts: true,
             takes_presence: true,
+            takes_accounts: true,
         };
         assert_eq!(
             serde_json::from_str::<Older>(&welcome.to_json()).unwrap(),

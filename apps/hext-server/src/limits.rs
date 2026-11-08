@@ -32,6 +32,23 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
         true
     }
 
+    /// Whether `key` used up its events (without recording one).
+    pub fn full(&self, key: &K, now: Instant) -> bool {
+        let mut hits = self.hits.lock().expect("lock");
+        hits.get_mut(key).is_some_and(|times| {
+            self.forget_old(times, now);
+            times.len() >= self.max
+        })
+    }
+
+    /// Records an event for `key`, within the limit or not.
+    pub fn record(&self, key: &K, now: Instant) {
+        let mut hits = self.hits.lock().expect("lock");
+        let times = hits.entry(key.clone()).or_default();
+        self.forget_old(times, now);
+        times.push_back(now);
+    }
+
     /// Drops keys with no recent events (call now and then: memory).
     pub fn prune(&self, now: Instant) {
         let mut hits = self.hits.lock().expect("lock");

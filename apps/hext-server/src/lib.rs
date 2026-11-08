@@ -7,6 +7,7 @@
 //! reach it at `wss://…`. It also tells our `iroh-relay` which devices may
 //! use it (`/v1/relay-access`): only registered ones.
 
+pub mod accounts;
 pub mod db;
 mod limits;
 pub mod signal;

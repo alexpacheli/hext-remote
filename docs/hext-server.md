@@ -15,7 +15,8 @@ App                                   Servidor
  │─── hello {chave, assinatura, nome,   │   assinatura Ed25519 de "hext-signal-auth-v1\0" + nonce
  │           host ou técnico} ─────────►│
  │◄── welcome {id, aceita attempt,      │   ID atribuído no primeiro login, o mesmo para sempre
- │            aceita presence} ─────────│
+ │       aceita presence, aceita        │
+ │       account} ──────────────────────│
 
 Técnico                  Servidor                   Host
  │── connect {1, id} ──────►│                          │
@@ -61,7 +62,36 @@ Técnico                  Servidor                   Host
   entrou com a senha, nos últimos 90 dias (as tabelas `accepted` e `entered`). Qualquer outro ID aparece
   sempre offline, como num pedido, para não dar para sondar IDs. Até 6 perguntas por minuto por computador:
   as seguintes ficam sem resposta. Um servidor antigo não diz `aceita presence`, e o app não pergunta.
+- **Contas (F5):** ver [Contas](#contas), abaixo.
 - **Conexão viva:** o servidor manda ping a cada 20 s e desconecta quem fica 60 s em silêncio.
+
+## Contas
+
+A conta é opcional (F5, [plano](F5.md)). As chamadas vão no mesmo WebSocket, já autenticado pela chave do
+computador: `account {request, call}` e a resposta `account {request, reply}`. Os tipos ficam em
+`crates/signal/src/account.rs` (`AccountCall`, `AccountReply`), e o servidor em
+`apps/hext-server/src/accounts.rs`. Um servidor antigo não diz `aceita account`, e o app não pergunta.
+
+| Chamada | O que faz |
+|---|---|
+| `register {email, password}` | Cria a conta e manda um código de 6 dígitos para o e-mail. Responde `ok` mesmo se o e-mail já tem conta (aí o dono recebe um aviso, e a senha não muda) |
+| `verify {email, code, password}` | Confirma o e-mail e define a senha (a de quem tem o código, não a de quem cadastrou primeiro). Sem isso, o login responde `not_verified` |
+| `login {email, password, second?}` | Entra **neste computador**. Com 2FA, sem `second` responde `needs_second_factor`. `second` é o código do app autenticador ou um código de recuperação |
+| `resume {token}` | Numa conexão nova, volta ao login anterior. O token só vale para o computador que fez o login, e cada computador tem um login só |
+| `logout`, `me` | Sai neste computador; mostra a conta (e-mail e se tem 2FA) |
+| `totp_setup`, `totp_enable {code}` | Liga o 2FA: o segredo e o link `otpauth://` (para o QR), depois o primeiro código, que devolve os 10 códigos de recuperação |
+| `forgot_password {email}`, `reset_password {email, code, password}` | Troca a senha por um código no e-mail. Sai de todos os computadores |
+| `change_password {old, new}` | Troca a senha sabendo a antiga. Sai dos outros computadores |
+
+- **Guardado:** a senha como hash Argon2id; códigos, tokens e códigos de recuperação como SHA-256 (são
+  aleatórios e longos). Tabelas `accounts`, `account_codes`, `recovery_codes` e `account_sessions`.
+- **Códigos:** o do e-mail vale 30 minutos e 5 tentativas; o TOTP (RFC 6238, 30 s, 6 dígitos) aceita um
+  passo de diferença no relógio e cada código vale uma vez; os de recuperação valem uma vez cada.
+- **Tentativas:** 10 erros por e-mail e 30 por IP em 15 minutos (`too_many_attempts`). Um acerto não conta,
+  e cada e-mail enviado conta. Um e-mail desconhecido leva o mesmo tempo e a mesma resposta que uma senha
+  errada.
+- **E-mail:** por enquanto vai só para o log do servidor (com um aviso ao iniciar), até a decisão 3 do
+  plano (domínio e serviço de envio).
 
 ## Rodar
 

@@ -9,7 +9,10 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
-use crate::{ClientMsg, DeviceId, PROTOCOL, Rejection, SIGNAL_PATH, ServerMsg, auth_message};
+use crate::{
+    AccountCall, AccountReply, ClientMsg, DeviceId, PROTOCOL, Rejection, SIGNAL_PATH, ServerMsg,
+    auth_message,
+};
 
 /// How long logging in may take.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -40,6 +43,8 @@ type Result<T, E = ClientError> = std::result::Result<T, E>;
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(90);
 /// Longest wait for the server to say who is online.
 const PRESENCE_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long an account call may take (a password hash takes a moment).
+const ACCOUNT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A logged-in connection to the server.
 pub struct Client {
@@ -47,6 +52,8 @@ pub struct Client {
     id: DeviceId,
     takes_attempts: bool,
     takes_presence: bool,
+    /// The server answers [`ClientMsg::Account`].
+    takes_accounts: bool,
     next_request: u64,
 }
 
@@ -95,6 +102,7 @@ impl Client {
                 id: DeviceId::new(DeviceId::MIN).expect("a valid ID"),
                 takes_attempts: false,
                 takes_presence: false,
+                takes_accounts: false,
                 next_request: 1,
             };
             let nonce = match client.recv().await? {
@@ -123,10 +131,12 @@ impl Client {
                     id,
                     takes_attempts,
                     takes_presence,
+                    takes_accounts,
                 } => {
                     client.id = id;
                     client.takes_attempts = takes_attempts;
                     client.takes_presence = takes_presence;
+                    client.takes_accounts = takes_accounts;
                 }
                 other => return Err(unexpected(&other)),
             }
@@ -198,6 +208,11 @@ impl Client {
         self.takes_presence
     }
 
+    /// Whether the server answers [`ClientMsg::Account`].
+    pub fn takes_accounts(&self) -> bool {
+        self.takes_accounts
+    }
+
     /// Which of `ids` are online, of those the server tells this device
     /// about (see [`ServerMsg::Presence`]). Only on servers that take it.
     pub async fn presence(&mut self, ids: &[DeviceId]) -> Result<Vec<DeviceId>> {
@@ -211,6 +226,27 @@ impl Client {
             }
         };
         tokio::time::timeout(PRESENCE_TIMEOUT, answer)
+            .await
+            .map_err(|_| ClientError::Timeout)?
+    }
+
+    /// Makes an account call and waits for its answer (other messages that
+    /// come meanwhile are dropped). Only on servers that take it
+    /// ([`Client::takes_accounts`]).
+    pub async fn account(&mut self, call: AccountCall) -> Result<AccountReply> {
+        let request = self.next_request;
+        self.next_request += 1;
+        self.send(&ClientMsg::Account { request, call }).await?;
+        let answer = async {
+            loop {
+                if let ServerMsg::Account { request: r, reply } = self.recv().await?
+                    && r == request
+                {
+                    return Ok(reply);
+                }
+            }
+        };
+        tokio::time::timeout(ACCOUNT_TIMEOUT, answer)
             .await
             .map_err(|_| ClientError::Timeout)?
     }
