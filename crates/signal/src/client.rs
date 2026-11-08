@@ -290,8 +290,8 @@ fn unexpected(msg: &ServerMsg) -> ClientError {
 }
 
 /// TLS with the usual public CAs, on the same crypto (ring) as the rest
-/// (built once: the app reconnects often).
-fn tls_config() -> Arc<rustls::ClientConfig> {
+/// (built once: the app reconnects often). Also for the app's downloads.
+pub fn tls_config() -> Arc<rustls::ClientConfig> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     CONFIG.get_or_init(build_tls_config).clone()
 }

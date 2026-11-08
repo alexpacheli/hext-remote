@@ -18,7 +18,7 @@ use hext_crypto::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 
 pub use account::{AccountCall, AccountError, AccountReply, AccountView, Join};
-pub use client::{Access, Client, ClientError, Role};
+pub use client::{Access, Client, ClientError, Role, tls_config};
 pub use id::{DeviceId, ParseDeviceIdError};
 pub use known_hosts::{Check, KnownHosts};
 
