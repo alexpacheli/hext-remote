@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Windows installer (F6). Built by the release pipeline with WiX 5:
+
+    wix build installer/windows/HextRemote.wxs -arch x64 -d Version=0.6.0 \
+      -d Exe=dist/HextRemote.exe -d Icon=apps/hext/icons/icon.ico -o HextRemote.msi
+
+  It puts HextRemote.exe in Program Files with a Start menu entry, and runs
+  `service install` (which copies the program to the computer's folder and
+  starts the service). A newer version replaces the older one (MajorUpgrade),
+  and `service install` updates the service. Removing it runs
+  `service uninstall`; the computer's identity (its ID) stays, for a
+  reinstall to keep it.
+
+  Silent install, for many computers: msiexec /i HextRemote.msi /qn
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Hext Remote"
+    Manufacturer="Hext"
+    Version="$(var.Version)"
+    UpgradeCode="6C8A13D3-3804-4702-8BB5-0A21B972FAC2"
+    Scope="perMachine"
+    Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="Uma versão mais nova do Hext Remote já está instalada." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="HextRemote.ico" SourceFile="$(var.Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="HextRemote.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/alexpacheli/remote-control" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Hext Remote">
+        <Component Id="Program">
+          <File Id="HextRemoteExe" Source="$(var.Exe)" Name="HextRemote.exe" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenu">
+        <Shortcut
+          Id="StartMenuShortcut"
+          Name="Hext Remote"
+          Target="[INSTALLFOLDER]HextRemote.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue
+          Root="HKLM"
+          Key="Software\Hext\Remote"
+          Name="StartMenu"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="Program" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+
+    <!-- As the system (deferred, not impersonated): the service needs it. -->
+    <CustomAction
+      Id="ServiceInstall"
+      FileRef="HextRemoteExe"
+      ExeCommand="service install"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="ServiceUninstall"
+      FileRef="HextRemoteExe"
+      ExeCommand="service uninstall"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="ServiceInstall" After="InstallFiles" Condition="NOT REMOVE" />
+      <!-- Not when a newer version replaces this one: its install updates the service. -->
+      <Custom
+        Action="ServiceUninstall"
+        Before="RemoveFiles"
+        Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

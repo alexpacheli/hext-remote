@@ -1,0 +1,240 @@
+name: Release
+
+# The installers (F6). A tag `v*` (e.g. v0.6.0) builds everything and opens a
+# draft release on GitHub with the files; "Run workflow" by hand builds them
+# only as artifacts, to test.
+#
+# Signing and notarization use the repository's secrets, when they are there
+# (without them, the files come out unsigned, as today):
+#   Windows: WINDOWS_CERTIFICATE (the .pfx in base64), WINDOWS_CERTIFICATE_PASSWORD
+#   macOS:   APPLE_CERTIFICATE (the Developer ID .p12 in base64), APPLE_CERTIFICATE_PASSWORD,
+#            APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_APP_PASSWORD, APPLE_TEAM_ID
+#   Update:  UPDATE_SIGNING_KEY (marco 2), with the public half in the variable HEXT_UPDATE_KEY
+
+on:
+  push:
+    tags: ["v*"]
+  # The installers changed: built and tested, not published.
+  pull_request:
+    paths: ["installer/**", ".github/workflows/release.yml", "apps/hext/Cargo.toml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  HEXT_UPDATE_KEY: ${{ vars.HEXT_UPDATE_KEY }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Version
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::a tag ${GITHUB_REF_NAME} não bate com a versão $version do Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Build
+        shell: bash
+        run: |
+          cargo build --release --locked -p hext --target x86_64-pc-windows-msvc
+          mkdir dist
+          cp target/x86_64-pc-windows-msvc/release/hext.exe dist/HextRemote.exe
+
+      - name: Certificate
+        if: env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
+
+      - name: Sign the program
+        if: env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          & $env:SIGNTOOL sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            /f "$env:RUNNER_TEMP\cert.pfx" /p $env:WINDOWS_CERTIFICATE_PASSWORD dist\HextRemote.exe
+
+      - name: Installer (.msi)
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix build installer\windows\HextRemote.wxs -arch x64 `
+            -d Version=$env:VERSION -d Exe=dist\HextRemote.exe -d Icon=apps\hext\icons\icon.ico `
+            -o "dist\HextRemote-$env:VERSION-x64.msi"
+
+      - name: Sign the installer
+        if: env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          & $env:SIGNTOOL sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            /f "$env:RUNNER_TEMP\cert.pfx" /p $env:WINDOWS_CERTIFICATE_PASSWORD "dist\HextRemote-$env:VERSION-x64.msi"
+
+      # Installs, checks the service, removes: what a user does.
+      - name: Install test
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path "dist\HextRemote-$env:VERSION-x64.msi").Path
+          $p = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /l*v install.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 60; exit $p.ExitCode }
+          & "C:\Program Files\Hext Remote\HextRemote.exe" --version
+          sc.exe query HextRemote
+          $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn /l*v uninstall.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content uninstall.log -Tail 60; exit $p.ExitCode }
+          if (Test-Path "C:\Program Files\Hext Remote\HextRemote.exe") { throw "ficou instalado" }
+
+      - name: Portable
+        shell: bash
+        run: cp dist/HextRemote.exe "dist/HextRemote-$VERSION-portable.exe" && rm dist/HextRemote.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build (universal)
+        run: |
+          cargo build --release --locked -p hext --target aarch64-apple-darwin
+          cargo build --release --locked -p hext --target x86_64-apple-darwin
+          mkdir dist
+          lipo -create -output dist/HextRemote \
+            target/aarch64-apple-darwin/release/hext \
+            target/x86_64-apple-darwin/release/hext
+
+      - name: Certificate
+        if: env.APPLE_CERTIFICATE != ''
+        run: |
+          keychain="$RUNNER_TEMP/build.keychain"
+          password="$(openssl rand -hex 16)"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}" >> "$GITHUB_ENV"
+
+      - name: App and disk image
+        run: |
+          installer/macos/bundle.sh dist/HextRemote "$VERSION" dist
+          rm -rf dist/HextRemote "dist/Hext Remote.app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/
+          if-no-files-found: error
+
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Build
+        run: |
+          cargo build --release --locked -p hext --target x86_64-unknown-linux-gnu
+          mkdir dist
+
+      - name: Packages (.deb, .rpm)
+        run: |
+          cargo install cargo-deb --locked
+          cargo install cargo-generate-rpm --locked
+          cargo deb -p hext --target x86_64-unknown-linux-gnu --no-build --output dist/
+          cargo generate-rpm -p apps/hext --target x86_64-unknown-linux-gnu --output dist/
+
+      - name: AppImage
+        run: |
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          sudo mv appimagetool /usr/local/bin/appimagetool-bin
+          printf '#!/bin/sh\nexec /usr/local/bin/appimagetool-bin --appimage-extract-and-run "$@"\n' | sudo tee /usr/local/bin/appimagetool
+          sudo chmod +x /usr/local/bin/appimagetool
+          installer/linux/appimage.sh target/x86_64-unknown-linux-gnu/release/hext "$VERSION" dist
+
+      # Each package installs, runs and is removed, as on a user's machine.
+      - name: Install test (.deb, Ubuntu)
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          hext-remote --version
+          sudo apt-get remove -y hext-remote
+      - name: Install test (.rpm, Fedora)
+        run: |
+          docker run --rm -v "$PWD/dist:/dist" fedora:41 \
+            sh -c 'dnf install -y /dist/*.rpm && hext-remote --version && dnf remove -y hext-remote'
+      - name: Install test (AppImage)
+        run: |
+          chmod +x dist/*.AppImage
+          dist/HextRemote-$VERSION-x86_64.AppImage --appimage-extract-and-run --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [version, windows, macos, linux]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Draft release
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --generate-notes \
+            --title "Hext Remote $VERSION"

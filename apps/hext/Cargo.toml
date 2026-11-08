@@ -65,3 +65,27 @@ tauri-build = { version = "2", features = [] }
 
 [lints]
 workspace = true
+
+# The Linux packages (F6): cargo deb / cargo generate-rpm, in the release
+# pipeline. The program is the command line until F7.
+[package.metadata.deb]
+name = "hext-remote"
+maintainer = "Hext Remote <suporte@hext.com.br>"
+copyright = "Hext"
+extended-description = "Acesso remoto: no Linux, a linha de comando (host e visualizador) até a F7."
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/hext", "usr/bin/hext-remote", "755"],
+    ["../../installer/linux/hext-remote.desktop", "usr/share/applications/", "644"],
+    ["icons/icon.png", "usr/share/icons/hicolor/512x512/apps/hext-remote.png", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "hext-remote"
+summary = "Hext Remote: acesso remoto"
+assets = [
+    { source = "target/release/hext", dest = "/usr/bin/hext-remote", mode = "755" },
+    { source = "../../installer/linux/hext-remote.desktop", dest = "/usr/share/applications/hext-remote.desktop", mode = "644" },
+    { source = "icons/icon.png", dest = "/usr/share/icons/hicolor/512x512/apps/hext-remote.png", mode = "644" },
+]
