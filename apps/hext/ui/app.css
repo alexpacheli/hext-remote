@@ -192,6 +192,16 @@ button.link {
   letter-spacing: 0.05em;
 }
 
+.secret.big {
+  font-size: 20px;
+  user-select: text;
+}
+
+.devices h3 {
+  margin: 12px 0 4px;
+  font-size: 14px;
+}
+
 .codes {
   display: grid;
   grid-template-columns: repeat(2, max-content);

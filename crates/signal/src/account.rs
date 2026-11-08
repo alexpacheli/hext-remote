@@ -3,7 +3,10 @@
 //! the challenge), so a login holds only for the device that made it: a
 //! token copied to another device is worth nothing.
 
+use hext_crypto::PublicKey;
 use serde::{Deserialize, Serialize};
+
+use crate::chain::Entry;
 
 /// Shortest and longest password taken.
 pub const MIN_PASSWORD: usize = 10;
@@ -61,6 +64,32 @@ pub enum AccountCall {
     /// A new password, knowing the old one. The other devices are logged
     /// out.
     ChangePassword { old: String, new: String },
+    /// The account's chain ([`crate::chain`]); empty if it has none yet.
+    ChainGet,
+    /// One more entry at the end of the chain. The first ([`crate::chain::Op::Create`])
+    /// takes 2FA on, and this device signing it.
+    ChainAppend { entry: Entry },
+    /// This device asks to join the chain, with the proof made with the code
+    /// shown on a device already in it ([`crate::chain::join_proof`]).
+    ChainJoin {
+        #[serde(with = "crate::hex_key")]
+        device: PublicKey,
+        name: String,
+        #[serde(with = "crate::hex_array")]
+        proof: [u8; 32],
+    },
+    /// The devices asking to join (for the one showing the code).
+    ChainPending,
+}
+
+/// A device asking to join the chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Join {
+    #[serde(with = "crate::hex_key")]
+    pub device: PublicKey,
+    pub name: String,
+    #[serde(with = "crate::hex_array")]
+    pub proof: [u8; 32],
 }
 
 /// The account as its owner sees it.
@@ -95,6 +124,14 @@ pub enum AccountReply {
     RecoveryCodes {
         codes: Vec<String>,
     },
+    /// The chain's entries, from the first (none: no chain yet).
+    Chain {
+        entries: Vec<Entry>,
+    },
+    /// Devices asking to join.
+    Joins {
+        joins: Vec<Join>,
+    },
     Error {
         error: AccountError,
     },
@@ -124,6 +161,12 @@ pub enum AccountError {
     NoSetup,
     /// Something went wrong on the server.
     ServerError,
+    /// The chain changed meanwhile: get it again ([`AccountCall::ChainGet`]).
+    ChainConflict,
+    /// That entry does not belong at the end of the chain.
+    ChainInvalid,
+    /// Computers in the account take 2FA on first.
+    NeedsTotp,
 }
 
 /// Which call, without what it carries (passwords, codes).
@@ -141,6 +184,10 @@ impl std::fmt::Debug for AccountCall {
             Self::ForgotPassword { .. } => "ForgotPassword",
             Self::ResetPassword { .. } => "ResetPassword",
             Self::ChangePassword { .. } => "ChangePassword",
+            Self::ChainGet => "ChainGet",
+            Self::ChainAppend { .. } => "ChainAppend",
+            Self::ChainJoin { .. } => "ChainJoin",
+            Self::ChainPending => "ChainPending",
         })
     }
 }

@@ -99,6 +99,8 @@ pub struct State {
     /// Account calls that guess a password or a code.
     pub(crate) account_guesses_by_ip: RateLimiter<IpAddr>,
     pub(crate) account_guesses_by_email: RateLimiter<String>,
+    /// Devices asking to join an account's chain.
+    pub(crate) joins: accounts::Joins,
 }
 
 /// A device logged in as a host (it takes requests).
@@ -170,6 +172,7 @@ impl State {
                 accounts::GUESSES_PER_EMAIL,
                 accounts::GUESS_WINDOW,
             ),
+            joins: accounts::Joins::default(),
         }
     }
 
@@ -232,6 +235,7 @@ impl State {
         self.presence_by_device.prune(now);
         self.account_guesses_by_ip.prune(now);
         self.account_guesses_by_email.prune(now);
+        self.joins.prune(now);
         self.locked_hosts
             .lock()
             .expect("lock")
@@ -667,6 +671,7 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
         ClientMsg::Account { request, call } => {
             let caller = accounts::Caller {
                 device: me.id,
+                key: me.key,
                 ip: me.ip,
                 login: &mut me.account,
             };

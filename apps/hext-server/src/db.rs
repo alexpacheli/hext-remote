@@ -27,6 +27,12 @@ impl Db {
         Self::init(Connection::open_in_memory()?)
     }
 
+    /// Runs `sql` as it is: for tests that play a dishonest server.
+    #[doc(hidden)]
+    pub fn tamper(&self, sql: &str) -> rusqlite::Result<()> {
+        self.conn().execute_batch(sql)
+    }
+
     fn init(conn: Connection) -> rusqlite::Result<Self> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;

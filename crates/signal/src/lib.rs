@@ -9,6 +9,7 @@
 //! tagged by `"type"`.
 
 pub mod account;
+pub mod chain;
 mod client;
 mod id;
 mod known_hosts;
@@ -16,7 +17,7 @@ mod known_hosts;
 use hext_crypto::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 
-pub use account::{AccountCall, AccountError, AccountReply, AccountView};
+pub use account::{AccountCall, AccountError, AccountReply, AccountView, Join};
 pub use client::{Access, Client, ClientError, Role};
 pub use id::{DeviceId, ParseDeviceIdError};
 pub use known_hosts::{Check, KnownHosts};
@@ -215,7 +216,7 @@ impl ClientMsg {
     }
 }
 
-mod hex_array {
+pub(crate) mod hex_array {
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
 
     pub fn serialize<S: Serializer, const N: usize>(v: &[u8; N], s: S) -> Result<S::Ok, S::Error> {
@@ -225,14 +226,14 @@ mod hex_array {
     pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(
         d: D,
     ) -> Result<[u8; N], D::Error> {
-        let text = <&str>::deserialize(d)?;
+        let text = String::deserialize(d)?;
         let mut out = [0; N];
         hex::decode_to_slice(text, &mut out).map_err(D::Error::custom)?;
         Ok(out)
     }
 }
 
-mod hex_key {
+pub(crate) mod hex_key {
     use hext_crypto::PublicKey;
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
 
@@ -241,11 +242,11 @@ mod hex_key {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<PublicKey, D::Error> {
-        <&str>::deserialize(d)?.parse().map_err(D::Error::custom)
+        String::deserialize(d)?.parse().map_err(D::Error::custom)
     }
 }
 
-mod hex_sig {
+pub(crate) mod hex_sig {
     use hext_crypto::Signature;
     use serde::{Deserializer, Serializer};
 

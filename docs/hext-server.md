@@ -82,6 +82,8 @@ computador: `account {request, call}` e a resposta `account {request, reply}`. O
 | `totp_setup`, `totp_enable {code}` | Liga o 2FA: o segredo e o link `otpauth://` (para o QR), depois o primeiro código, que devolve os 10 códigos de recuperação |
 | `forgot_password {email}`, `reset_password {email, code, password}` | Troca a senha por um código no e-mail. Sai de todos os computadores |
 | `change_password {old, new}` | Troca a senha sabendo a antiga. Sai dos outros computadores |
+| `chain_get`, `chain_append {entry}` | A lista de dispositivos da conta (a cadeia assinada, abaixo) e mais uma entrada no fim. A primeira exige 2FA e é assinada pelo próprio dispositivo |
+| `chain_join {device, name, proof}`, `chain_pending` | Um dispositivo pede para entrar na lista (só por si mesmo), e o que mostra o código vê os pedidos (10 minutos, até 5) |
 
 - **Guardado:** a senha como hash Argon2id; códigos, tokens e códigos de recuperação como SHA-256 (são
   aleatórios e longos). Tabelas `accounts`, `account_codes`, `recovery_codes` e `account_sessions`.
@@ -90,6 +92,13 @@ computador: `account {request, call}` e a resposta `account {request, reply}`. O
 - **Tentativas:** 10 erros por e-mail e 30 por IP em 15 minutos (`too_many_attempts`). Um acerto não conta,
   e cada e-mail enviado conta. Um e-mail desconhecido leva o mesmo tempo e a mesma resposta que uma senha
   errada.
+- **Cadeia de dispositivos** (`crates/signal/src/chain.rs`): cada entrada é assinada por um dispositivo da
+  conta (ou pela chave de recuperação, só para pôr ou tirar dispositivos) e cita o hash da anterior. O
+  servidor guarda (`account_chain`) e confere, mas quem confia é o app e o host, que conferem tudo de novo.
+  Ele não consegue forjar uma entrada, e o app percebe se ele esconder entradas que já tinha visto
+  (`chain.json`, ao lado da conta).
+- **Entrar na lista:** o dispositivo novo prova a sua chave com um HMAC do código de 12 caracteres (cerca de
+  60 bits) que aparece no dispositivo que já está nela. O código não passa pelo servidor, e vale 10 minutos.
 - **E-mail:** por enquanto vai só para o log do servidor (com um aviso ao iniciar), até a decisão 3 do
   plano (domínio e serviço de envio).
 

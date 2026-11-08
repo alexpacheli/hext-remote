@@ -14,7 +14,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use hext_signal::account::{MAX_EMAIL, MAX_PASSWORD, MIN_PASSWORD};
-use hext_signal::{AccountCall, AccountError, AccountReply, AccountView, DeviceId};
+use hext_signal::chain::{Chain, Entry, Op};
+use hext_signal::{AccountCall, AccountError, AccountReply, AccountView, DeviceId, Join};
 use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::{Connection, OptionalExtension, params};
 use tracing::{info, warn};
@@ -76,6 +77,12 @@ pub(crate) fn init(conn: &Connection) -> rusqlite::Result<()> {
              account_id INTEGER NOT NULL,
              code_hash BLOB NOT NULL,
              PRIMARY KEY (account_id, code_hash)
+         ) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS account_chain (
+             account_id INTEGER NOT NULL,
+             seq INTEGER NOT NULL,
+             entry TEXT NOT NULL,
+             PRIMARY KEY (account_id, seq)
          ) WITHOUT ROWID;
          CREATE TABLE IF NOT EXISTS account_sessions (
              token_hash BLOB PRIMARY KEY,
@@ -352,6 +359,83 @@ impl Db {
     }
 }
 
+/// The account's chain (marco 3).
+impl Db {
+    fn chain(&self, account: i64) -> rusqlite::Result<Vec<Entry>> {
+        let conn = self.conn();
+        let mut query =
+            conn.prepare("SELECT entry FROM account_chain WHERE account_id = ?1 ORDER BY seq")?;
+        let rows = query.query_map(params![account], |row| row.get::<_, String>(0))?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let entry = serde_json::from_str(&row?).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
+            })?;
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
+
+    /// Adds `entry` as number `seq`; false if that place is taken (someone
+    /// else added one meanwhile).
+    fn append(&self, account: i64, entry: &Entry) -> rusqlite::Result<bool> {
+        let json = serde_json::to_string(entry).expect("entries serialize");
+        let added = self.conn().execute(
+            "INSERT OR IGNORE INTO account_chain (account_id, seq, entry) VALUES (?1, ?2, ?3)",
+            params![account, entry.seq as i64, json],
+        )?;
+        Ok(added == 1)
+    }
+}
+
+/// Devices asking to join one account's chain, for a while.
+#[derive(Default)]
+pub(crate) struct Joins(std::sync::Mutex<std::collections::HashMap<i64, Vec<(Join, Instant)>>>);
+
+/// How long a request to join waits, and how many one account takes.
+const JOIN_LIFETIME: Duration = Duration::from_secs(10 * 60);
+const MAX_JOINS: usize = 5;
+
+impl Joins {
+    fn add(&self, account: i64, join: Join, now: Instant) {
+        let mut all = self.0.lock().expect("lock");
+        let list = all.entry(account).or_default();
+        list.retain(|(j, at)| j.device != join.device && now - *at < JOIN_LIFETIME);
+        if list.len() >= MAX_JOINS {
+            list.remove(0);
+        }
+        list.push((join, now));
+    }
+
+    fn of(&self, account: i64, now: Instant) -> Vec<Join> {
+        let mut all = self.0.lock().expect("lock");
+        let Some(list) = all.get_mut(&account) else {
+            return Vec::new();
+        };
+        list.retain(|(_, at)| now - *at < JOIN_LIFETIME);
+        list.iter().map(|(j, _)| j.clone()).collect()
+    }
+
+    fn joined(&self, account: i64, device: &hext_crypto::PublicKey) {
+        let mut all = self.0.lock().expect("lock");
+        if let Some(list) = all.get_mut(&account) {
+            list.retain(|(j, _)| j.device != *device);
+            if list.is_empty() {
+                all.remove(&account);
+            }
+        }
+    }
+
+    /// Forgets old requests (call now and then: memory).
+    pub(crate) fn prune(&self, now: Instant) {
+        let mut all = self.0.lock().expect("lock");
+        all.retain(|_, list| {
+            list.retain(|(_, at)| now - *at < JOIN_LIFETIME);
+            !list.is_empty()
+        });
+    }
+}
+
 /// Why a call failed.
 enum Fail {
     Reply(AccountError),
@@ -376,6 +460,8 @@ type Answer = Result<AccountReply, Fail>;
 /// it is logged in to.
 pub(crate) struct Caller<'a> {
     pub device: DeviceId,
+    /// Its key (what it signs the chain with, as a technician).
+    pub key: hext_crypto::PublicKey,
     pub ip: IpAddr,
     pub login: &'a mut Option<i64>,
 }
@@ -409,7 +495,12 @@ async fn run(
     call: AccountCall,
     guessed: &mut Option<String>,
 ) -> Answer {
-    let Caller { device, ip, login } = caller;
+    let Caller {
+        device,
+        key,
+        ip,
+        login,
+    } = caller;
     match call {
         AccountCall::Register { email, password } => {
             let email = clean_email(&email).ok_or(AccountError::InvalidEmail)?;
@@ -659,6 +750,73 @@ async fn run(
             }
             info!("conta {id}: senha trocada pelo e-mail");
             Ok(AccountReply::Ok)
+        }
+        AccountCall::ChainGet => {
+            let account = logged_in(state, login, device).await?;
+            let id = account.id;
+            let entries = state.db(move |db| db.chain(id)).await?;
+            Ok(AccountReply::Chain { entries })
+        }
+        AccountCall::ChainAppend { entry } => {
+            let account = logged_in(state, login, device).await?;
+            let id = account.id;
+            let entries = state.db(move |db| db.chain(id)).await?;
+            if entry.seq != entries.len() as u64 {
+                return Err(AccountError::ChainConflict.into());
+            }
+            if entries.is_empty() {
+                // The first: this device, by itself, with 2FA on.
+                if account.totp.is_none() {
+                    return Err(AccountError::NeedsTotp.into());
+                }
+                if entry.signer != key {
+                    return Err(AccountError::ChainInvalid.into());
+                }
+            }
+            // Checked here too, so the account keeps a chain its devices
+            // take (they check it all again anyway).
+            let mut all = entries;
+            all.push(entry.clone());
+            let chain = blocking(move || Chain::verify(&all)).await;
+            let chain = chain.map_err(|_| AccountError::ChainInvalid)?;
+            let appended = {
+                let entry = entry.clone();
+                state.db(move |db| db.append(id, &entry)).await?
+            };
+            if !appended {
+                return Err(AccountError::ChainConflict.into());
+            }
+            if let Op::AddDevice { device: added, .. } = &entry.op {
+                state.joins.joined(id, added);
+            }
+            info!(
+                "conta {id}: lista de dispositivos com {} entradas",
+                chain.len
+            );
+            Ok(AccountReply::Ok)
+        }
+        AccountCall::ChainJoin {
+            device: joining,
+            name,
+            proof,
+        } => {
+            let account = logged_in(state, login, device).await?;
+            // Only for itself: the device logged in on this connection.
+            if joining != key || name.chars().count() > hext_signal::chain::MAX_NAME {
+                return Err(AccountError::ChainInvalid.into());
+            }
+            let join = Join {
+                device: joining,
+                name,
+                proof,
+            };
+            state.joins.add(account.id, join, Instant::now());
+            Ok(AccountReply::Ok)
+        }
+        AccountCall::ChainPending => {
+            let account = logged_in(state, login, device).await?;
+            let joins = state.joins.of(account.id, Instant::now());
+            Ok(AccountReply::Joins { joins })
         }
         AccountCall::ChangePassword { old, new } => {
             let account = logged_in(state, login, device).await?;
