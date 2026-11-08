@@ -96,6 +96,17 @@ pub(crate) fn init(conn: &Connection) -> rusqlite::Result<()> {
              PRIMARY KEY (account_id, device_id)
          ) WITHOUT ROWID;
          CREATE INDEX IF NOT EXISTS account_computers_by_id ON account_computers (device_id);
+         CREATE TABLE IF NOT EXISTS account_chain_ids (
+             account_id INTEGER PRIMARY KEY,
+             chain_id BLOB NOT NULL UNIQUE
+         );
+         CREATE TABLE IF NOT EXISTS account_shares (
+             account_id INTEGER NOT NULL,
+             device_id INTEGER NOT NULL,
+             with_chain BLOB NOT NULL,
+             PRIMARY KEY (account_id, device_id, with_chain)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS account_shares_by_id ON account_shares (device_id);
          CREATE TABLE IF NOT EXISTS account_sessions (
              token_hash BLOB PRIMARY KEY,
              account_id INTEGER NOT NULL,
@@ -414,7 +425,50 @@ impl Db {
                 params![account, computer.id.get()],
             )?;
         }
+        tx.execute(
+            "INSERT OR REPLACE INTO account_chain_ids (account_id, chain_id) VALUES (?1, ?2)",
+            params![account, chain.id.as_slice()],
+        )?;
+        tx.execute(
+            "DELETE FROM account_shares WHERE account_id = ?1",
+            params![account],
+        )?;
+        for share in chain.shares() {
+            let Some(computer) = chain.computer(&share.host) else {
+                continue;
+            };
+            tx.execute(
+                "INSERT OR IGNORE INTO account_shares (account_id, device_id, with_chain)
+                 VALUES (?1, ?2, ?3)",
+                params![account, computer.id.get(), share.with.as_slice()],
+            )?;
+        }
         tx.commit()
+    }
+
+    fn account_of_chain(&self, id: &[u8; 32]) -> rusqlite::Result<Option<i64>> {
+        self.conn()
+            .query_row(
+                "SELECT account_id FROM account_chain_ids WHERE chain_id = ?1",
+                params![id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// The accounts that list computer `host` (by ID), and the accounts
+    /// they share it with.
+    fn accounts_of_computer(&self, host: DeviceId) -> rusqlite::Result<Vec<i64>> {
+        let conn = self.conn();
+        let mut query = conn.prepare(
+            "SELECT account_id FROM account_computers WHERE device_id = ?1
+             UNION
+             SELECT i.account_id FROM account_shares s
+             JOIN account_chain_ids i ON i.chain_id = s.with_chain
+             WHERE s.device_id = ?1",
+        )?;
+        let rows = query.query_map(params![host.get()], |row| row.get(0))?;
+        rows.collect()
     }
 
     /// Whether `viewer` is a device of an account that has computer `host`.
@@ -806,6 +860,27 @@ async fn run(
             }
             info!("conta {id}: senha trocada pelo e-mail");
             Ok(AccountReply::Ok)
+        }
+        AccountCall::ChainHost { known } => {
+            // At most a handful; each is checked by the computer.
+            let chains = state
+                .db(move |db| {
+                    let mut accounts = db.accounts_of_computer(device)?;
+                    for id in known.iter().take(4) {
+                        if let Some(account) = db.account_of_chain(id)?
+                            && !accounts.contains(&account)
+                        {
+                            accounts.push(account);
+                        }
+                    }
+                    let mut chains = Vec::new();
+                    for account in accounts.into_iter().take(16) {
+                        chains.push(db.chain(account)?);
+                    }
+                    Ok(chains)
+                })
+                .await?;
+            Ok(AccountReply::HostChains { chains })
         }
         AccountCall::ChainGet => {
             let account = logged_in(state, login, device).await?;

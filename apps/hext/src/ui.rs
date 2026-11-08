@@ -134,6 +134,8 @@ struct View {
     host_key: Option<String>,
     /// The account's computers (marco 4), as its list says.
     computers: Vec<Computer>,
+    /// The account bound to this computer (marco 5), as said.
+    owners: Option<String>,
 }
 
 struct Shared {
@@ -440,6 +442,7 @@ fn received(app: &AppHandle, msg: ToUi) {
             }
         }
         ToUi::Technicians(list) => view.technicians = list,
+        ToUi::Owners(text) => view.owners = text,
         ToUi::Chat(text) => {
             if let Some(session) = &view.session {
                 shared
@@ -581,17 +584,27 @@ fn rename(shared: State<'_, Shared>, name: String) -> Result<(), String> {
 /// Runs `service name` as an administrator (Windows asks). The service
 /// restarts with the name, and this interface with it.
 #[cfg(windows)]
-#[allow(unsafe_code)] // Win32 call
 fn rename_service(name: &str) -> Result<(), String> {
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
-    use windows::core::{HSTRING, w};
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let args = if name.is_empty() {
         "service name --reset".to_owned()
     } else {
         format!("service name {}", quote_arg(name))
     };
+    run_elevated(
+        &args,
+        "O nome não mudou: é preciso permitir como administrador.",
+    )
+}
+
+/// Runs this program with `args` as an administrator (Windows asks);
+/// `refused` if it did not start.
+#[cfg(windows)]
+#[allow(unsafe_code)] // Win32 call
+fn run_elevated(args: &str, refused: &str) -> Result<(), String> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    use windows::core::{HSTRING, w};
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let done = unsafe {
         ShellExecuteW(
             None,
@@ -606,7 +619,7 @@ fn rename_service(name: &str) -> Result<(), String> {
     if done.0 as usize > 32 {
         Ok(())
     } else {
-        Err("O nome não mudou: é preciso permitir como administrador.".to_owned())
+        Err(refused.to_owned())
     }
 }
 
@@ -933,7 +946,10 @@ async fn account_devices(
     shared: State<'_, Shared>,
 ) -> Result<crate::account::DevicesView, String> {
     let host = shared.view.lock().expect("lock").host_key.clone();
-    let devices = the_account(&shared)?.devices(host.as_deref()).await;
+    let mut devices = the_account(&shared)?.devices(host.as_deref()).await;
+    if let Ok(devices) = devices.as_mut() {
+        devices.bindable = cfg!(windows) && shared.managed.load(Ordering::Relaxed);
+    }
     let computers = devices
         .as_ref()
         .map(|d| {
@@ -971,6 +987,36 @@ async fn computer_add(shared: State<'_, Shared>) -> Result<(), String> {
     };
     let name = name.unwrap_or_else(crate::device_name);
     the_account(&shared)?.add_computer(&key, &id, &name).await
+}
+
+/// Binds this computer to the account (marco 5): its devices come in
+/// without anyone accepting. It takes an administrator: Windows asks.
+#[tauri::command]
+fn account_bind(shared: State<'_, Shared>, chain: String) -> Result<(), String> {
+    let chain = chain.trim().to_owned();
+    crate::owners::parse_id(&chain).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    if shared.managed.load(Ordering::Relaxed) {
+        return run_elevated(
+            &format!("service account {chain}"),
+            "Nada mudou: é preciso permitir como administrador.",
+        );
+    }
+    let _ = shared;
+    Err("Só com o serviço instalado (HextRemote service install).".to_owned())
+}
+
+/// Unbinds this computer from the account: every access asks again. It
+/// takes an administrator: Windows asks.
+#[tauri::command]
+fn account_unbind() -> Result<(), String> {
+    #[cfg(windows)]
+    return run_elevated(
+        "service account --off",
+        "Nada mudou: é preciso permitir como administrador.",
+    );
+    #[cfg(not(windows))]
+    Err("Só com o serviço instalado.".to_owned())
 }
 
 /// Takes a computer out of the account's list.
@@ -1399,6 +1445,8 @@ pub fn run(link: Link) -> Result<()> {
             chain_recover,
             chain_remove,
             computer_add,
+            account_bind,
+            account_unbind,
             computer_remove
         ])
         .on_window_event(move |window, event| {

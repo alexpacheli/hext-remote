@@ -179,6 +179,8 @@ pub enum ToUi {
     Key(String),
     /// This computer's name, as viewers see it.
     Name(String),
+    /// The account bound here, as the home screen says it (`None`: none).
+    Owners(Option<String>),
     /// Something the user should know (a permission missing, for example).
     Notice(String),
     /// Someone asks for access; the answer is [`FromUi::Answer`].
@@ -277,6 +279,8 @@ struct State {
     technicians_shown: Vec<crate::technicians::Technician>,
     /// The host's key, as text.
     key: Option<String>,
+    /// The bound account, as said to the interface.
+    owners: Option<String>,
     /// The request on screen, waiting for its answer.
     asking: Option<(u64, oneshot::Sender<Option<Permissions>>)>,
     next_ask: u64,
@@ -325,6 +329,9 @@ impl UiHub {
             }
             if let Some(name) = &state.name {
                 let _ = tx.send(ToUi::Name(name.clone()));
+            }
+            if state.owners.is_some() {
+                let _ = tx.send(ToUi::Owners(state.owners.clone()));
             }
             if let Some(notice) = &state.notice {
                 let _ = tx.send(ToUi::Notice(notice.clone()));
@@ -449,6 +456,16 @@ impl UiHub {
         let key = key.to_string();
         state.key = Some(key.clone());
         state.send(ToUi::Key(key));
+    }
+
+    /// The account bound here (`None`: none), for the home screen.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn set_owners(&self, text: Option<String>) {
+        let mut state = self.0.lock().expect("lock");
+        if state.owners != text {
+            state.owners = text.clone();
+            state.send(ToUi::Owners(text));
+        }
     }
 
     pub fn set_id(&self, id: DeviceId) {

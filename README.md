@@ -172,6 +172,18 @@ HextRemote.exe service technicians --revoke-all     # revoga todos
 Trocar ou desligar a senha revoga todos. Com a senha desligada, ninguém entra sem aceite, nem os vinculados.
 Cada vínculo, entrada e revogação vai para o `audit.log`.
 
+**Conta vinculada** (Windows, com o serviço). Com o computador em **Meus computadores** da sua conta, o
+botão **Deixar os dispositivos da conta entrarem sem aceite** (ou a linha de comando, como administrador)
+faz os dispositivos da lista da conta entrarem sem aceite e sem senha. Quem sai da lista deixa de entrar, e a
+sessão dele cai em até 30 segundos. O computador confere a lista ele mesmo: o servidor não consegue pôr
+ninguém nela.
+
+```sh
+HextRemote.exe service account               # mostra a conta vinculada
+HextRemote.exe service account <ID da lista> # vincula (o ID está no app, em Dispositivos)
+HextRemote.exe service account --off         # desvincula
+```
+
 Dá para atender vários computadores ao mesmo tempo (até 8), cada um na sua janela: conecte em um e depois em
 outro, pela mesma tela inicial. A seção **Sessões abertas** lista cada um, com **Mostrar** (traz a janela para
 a frente) e **Encerrar** (ou **Cancelar**, enquanto o outro lado ainda não aceitou). A área de transferência

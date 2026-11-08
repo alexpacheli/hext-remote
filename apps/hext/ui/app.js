@@ -72,6 +72,8 @@ const pages = {
       );
       showSessions(view.viewers);
       showTechnicians(view.technicians);
+      $("owners-section").hidden = !view.owners;
+      $("owners-text").textContent = view.owners || "";
       if (view.viewer_failure) {
         showStatus(view.viewer_failure, true);
       } else {
@@ -446,6 +448,33 @@ function startAccount() {
     };
     setTimeout(ask, 5000);
   });
+  on("owners-off", async () => {
+    if (!confirm("Os dispositivos da conta voltam a precisar de aceite. Desligar?")) return;
+    try {
+      await invoke("account_unbind");
+    } catch (message) {
+      showStatus(String(message), true);
+    }
+  });
+  on("computer-bind", async () => {
+    if (!shownChain) return;
+    if (
+      !confirm(
+        "Os dispositivos da lista da conta vão entrar neste computador sem ninguém aceitar. " +
+          "Quem sair da lista deixa de entrar. Continuar?",
+      )
+    )
+      return;
+    try {
+      await invoke("account_bind", { chain: shownChain });
+      accountStatus(
+        "Feito como administrador: os dispositivos da conta entram sem aceite. " +
+          "Para desfazer: HextRemote service account --off.",
+      );
+    } catch (message) {
+      accountStatus(String(message), true);
+    }
+  });
   on("computer-add", async () => {
     try {
       await invoke("computer_add");
@@ -630,6 +659,10 @@ async function loadDevices() {
   $("devices-invite").hidden = !member;
   $("devices-open-join").hidden = devices.state !== "outside";
   $("computer-add").hidden = !member || devices.listed;
+  shownChain = devices.chain;
+  $("chain-id").hidden = !member;
+  $("chain-id").textContent = `ID da lista: ${devices.chain}`;
+  $("computer-bind").hidden = !member || !devices.listed || !devices.bindable;
   $("computers-title").hidden = devices.computers.length === 0;
   $("computers-list").replaceChildren(
     ...devices.computers.map((computer) => {
@@ -709,6 +742,9 @@ function showAccount(view) {
     accountPanel(null);
   }
 }
+
+/** The list's ID, as last shown (for binding this computer to it). */
+let shownChain = "";
 
 /** The account's computers: a click connects. */
 function showComputers(computers, online) {

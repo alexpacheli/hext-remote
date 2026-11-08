@@ -610,6 +610,63 @@ fn audit(entry: &str) {
     super::kept::audit_to(super::log_file("audit"), entry);
 }
 
+fn owners_file() -> Result<PathBuf> {
+    Ok(machine_dir()?.join("owners.json"))
+}
+
+/// This computer's binding to an account, as this computer's key sees it.
+fn owners() -> Result<crate::owners::Owners> {
+    let key = load_or_create(&FileKeyStore::machine(machine_dir()?.join("device.key")))?.0;
+    Ok(crate::owners::Owners::new(
+        owners_file()?,
+        Arc::new(key),
+        DEFAULT_SERVER.to_owned(),
+    ))
+}
+
+/// Binds this computer to the account with list `chain`, unbinds it
+/// (`off`), or shows the binding. The service reads the file on each
+/// request: nothing to restart.
+pub fn account(chain: Option<&str>, off: bool) -> Result<()> {
+    if chain.is_none() && !off {
+        match owners()?.bound() {
+            Some((id, name)) => println!(
+                "Vinculado à conta da lista {}{}: os dispositivos dela entram sem aceite.",
+                hex::encode(id),
+                name.map(|n| format!(", como \"{n}\"")).unwrap_or_default()
+            ),
+            None => println!("Nenhuma conta vinculada: todo acesso pede aceite."),
+        }
+        return Ok(());
+    }
+    require_admin()?;
+    if !exists() {
+        bail!("instale o serviço primeiro (HextRemote service install)");
+    }
+    let owners = owners()?;
+    if off {
+        owners.unbind()?;
+        audit("conta desvinculada: os acessos voltam a pedir aceite");
+        println!("Conta desvinculada: todo acesso volta a pedir aceite.");
+        return Ok(());
+    }
+    let id = crate::owners::parse_id(chain.unwrap_or_default())?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let bound = runtime.block_on(owners.bind(id))?;
+    let devices = bound.devices().len();
+    audit(&format!(
+        "conta vinculada (lista {}): {devices} dispositivo(s) entram sem aceite",
+        hex::encode(id)
+    ));
+    println!(
+        "Vinculado. Os {devices} dispositivo(s) da conta entram sem aceite; quem sair da conta \
+         deixa de entrar (e a sessão dele cai)."
+    );
+    Ok(())
+}
+
 /// The password as the service sees it, and the technicians it lets in
 /// without it (shown on `ui`).
 struct MachinePassword(UiHub);
@@ -961,8 +1018,16 @@ async fn serve() -> Result<()> {
     let resumes = ResumeTokens::default();
     restore_resume(&resumes);
     let host_key = key.public_key();
+    let owners = crate::owners::Owners::new(owners_file()?, key.clone(), DEFAULT_SERVER.to_owned());
+    let shown = ui.clone();
+    tokio::spawn(crate::owners::keep_fresh(
+        owners.clone(),
+        OWNERS_CHECK,
+        move |text| shown.set_owners(text),
+    ));
     let (attempts, attempts_out) = tokio::sync::mpsc::unbounded_channel();
     let config = Arc::new(HostConfig {
+        owners: Some(Arc::new(owners.clone())),
         peer: PeerInfo::local(APP_VERSION, name.clone()),
         // Only viewers the user accepted, with their one-time codes.
         access_code: None,
@@ -995,7 +1060,7 @@ async fn serve() -> Result<()> {
         (session_codes, resumes),
         attempts_out,
         slot.clone(),
-        Box::new(ConsoleAsk(ui)),
+        Box::new(ConsoleAsk(ui, owners)),
     ));
     crate::host::accept(&endpoint, config, slot, STOP.notified()).await;
     // A session still on: the agent stops streaming and releases any held
@@ -1018,7 +1083,10 @@ fn write_id(id: DeviceId) {
 /// Asks whoever is at the console: in the interface, or, where no window of
 /// the user can be seen (the sign-in screen, a locked computer), in a
 /// message box.
-struct ConsoleAsk(UiHub);
+struct ConsoleAsk(UiHub, crate::owners::Owners);
+
+/// How often the bound account's list is fetched again.
+const OWNERS_CHECK: Duration = Duration::from_secs(60);
 
 impl Ask for ConsoleAsk {
     fn ask<'a>(&'a mut self, name: &'a str, id: DeviceId) -> BoxFuture<'a, Option<Permissions>> {
@@ -1049,6 +1117,22 @@ impl Ask for ConsoleAsk {
 
     fn bound(&self, key: &hext_crypto::PublicKey) -> bool {
         technicians_store().is_ok_and(|store| store.bound(key))
+    }
+
+    fn owner<'a>(
+        &'a mut self,
+        key: &'a hext_crypto::PublicKey,
+    ) -> BoxFuture<'a, Option<crate::owners::Way>> {
+        Box::pin(async move {
+            // The file changes from the command line; the list from the
+            // account (one just removed no longer comes in).
+            self.1.load();
+            self.1.bound()?;
+            if let Err(e) = self.1.refresh().await {
+                warn!("conta vinculada: {e:#}");
+            }
+            self.1.way(key)
+        })
     }
 
     fn locked(&self) -> bool {

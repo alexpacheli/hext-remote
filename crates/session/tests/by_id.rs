@@ -34,6 +34,7 @@ async fn accepted_by_id_then_streams() {
     let host_addrs = hext_net::addr_to_strings(&endpoint.addr());
     let codes = SessionCodes::default();
     let config = Arc::new(HostConfig {
+        owners: None,
         peer: PeerInfo::local("test", "host"),
         access_code: None,
         session_codes: codes.clone(),
@@ -87,6 +88,7 @@ async fn accepted_by_id_then_streams() {
                         needs_password: false,
                         remember: false,
                         bound: false,
+                        via: None,
                     },
                 ),
             })

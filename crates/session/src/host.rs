@@ -55,7 +55,20 @@ pub struct HostConfig {
     pub restart: Option<Arc<dyn Restart>>,
     /// Where files from viewers go; `None`: this host takes none.
     pub files: Option<Arc<dyn FileAccess>>,
+    /// Who the account lets in (F5); `None`: no account here. A session
+    /// let in that way ends once its viewer is no longer.
+    pub owners: Option<Arc<dyn Owners>>,
 }
+
+/// Who the account bound to this computer lets in without anyone accepting.
+pub trait Owners: Send + Sync {
+    /// Whether `viewer` is still let in, as the latest list says.
+    fn still(&self, viewer: &PublicKey) -> bool;
+}
+
+/// How often a session let in by the account checks that its viewer still
+/// is.
+const OWNER_CHECK: Duration = Duration::from_secs(30);
 
 /// What a restart takes on the host.
 pub trait Restart: Send + Sync {
@@ -611,13 +624,14 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             .audit(&format!("sessão retomada: {}", who(grant)));
     }
     let returnable = grant.clone();
+    let via_account = grant.as_ref().is_some_and(|grant| grant.via.is_some());
     let session = match grant {
         Some(grant) => {
             if let Some(audit) = audit.as_ref().filter(|_| !resumed) {
-                let how = if grant.bound {
-                    " (técnico vinculado, sem senha)"
-                } else {
-                    ""
+                let how = match (&grant.via, grant.bound) {
+                    (Some(via), _) => format!(" ({via})"),
+                    (None, true) => " (técnico vinculado, sem senha)".to_owned(),
+                    (None, false) => String::new(),
                 };
                 audit.audit(&format!("sessão iniciada{how}: {}", who(&grant)));
             }
@@ -717,7 +731,7 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         outcomes,
         tell: tell_about_files(
             config.presence.clone(),
-            audit,
+            audit.clone(),
             session.name.clone(),
             session_on.clone(),
         ),
@@ -748,9 +762,27 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // Once: the system refuses a second restart while one is under way.
     let mut restarting = false;
     let mut chat_pace = ChatPace::new();
+    // Let in by the account: checked now and then.
+    let owners = config.owners.clone().filter(|_| via_account);
+    let mut owner_check = tokio::time::interval(OWNER_CHECK);
+    owner_check.tick().await;
 
     let result = loop {
         tokio::select! {
+            _ = owner_check.tick(), if owners.is_some() => {
+                if owners.as_ref().is_some_and(|owners| !owners.still(&viewer)) {
+                    info!("o técnico saiu da conta: sessão encerrada");
+                    if let Some(audit) = &audit {
+                        audit.audit(&format!(
+                            "sessão encerrada: {} não está mais na conta",
+                            session.name
+                        ));
+                    }
+                    let _ = control.send(&Control::Bye).await;
+                    conn.close(0u32.into(), ENDED_ON_HOST);
+                    break Ok(());
+                }
+            }
             msg = control.recv() => match msg {
                 Ok(Control::RequestKeyframe) => {
                     if let Some(screen) = screen.lock().expect("lock").as_ref() {

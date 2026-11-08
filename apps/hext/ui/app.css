@@ -510,3 +510,8 @@ input[type="password"] {
   color: var(--muted);
   cursor: pointer;
 }
+
+#chain-id {
+  overflow-wrap: anywhere;
+  user-select: text;
+}

@@ -157,6 +157,7 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ServiceAction::Technicians { revoke, revoke_all } => {
                 windows::technicians(revoke.as_deref(), revoke_all)
             }
+            ServiceAction::Account { chain, off } => windows::account(chain.as_deref(), off),
             ServiceAction::Run => windows::run(),
             ServiceAction::Name { .. } => unreachable!("answered above"),
         }
@@ -173,6 +174,9 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ),
             ServiceAction::Technicians { .. } => anyhow::bail!(
                 "no Mac, o acesso não assistido ainda não existe, nem os técnicos vinculados"
+            ),
+            ServiceAction::Account { .. } => anyhow::bail!(
+                "no Mac, a entrada pela conta sem aceite chega com o serviço do sistema (F6)"
             ),
             ServiceAction::Run => anyhow::bail!("no Mac, quem inicia o Hext Remote é o login"),
             ServiceAction::Name { .. } => unreachable!("answered above"),

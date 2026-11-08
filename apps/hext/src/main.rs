@@ -15,6 +15,8 @@ mod bench;
 mod chat;
 mod host;
 mod name;
+#[cfg_attr(not(windows), allow(dead_code))] // the service is where it binds
+mod owners;
 #[cfg(any(windows, target_os = "macos"))]
 mod presence;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
@@ -172,6 +174,17 @@ enum ServiceAction {
         /// Revoga todos.
         #[arg(long)]
         revoke_all: bool,
+    },
+    /// Vincula este computador a uma conta: os dispositivos dela entram sem
+    /// aceite (e os das contas com que ela o compartilha, como ela disser).
+    /// Sem argumentos, mostra a conta vinculada. Precisa de administrador.
+    Account {
+        /// O ID da lista da conta (no app de um dispositivo dela, em
+        /// Dispositivos).
+        chain: Option<String>,
+        /// Desvincula: todo acesso volta a pedir aceite.
+        #[arg(long, conflicts_with = "chain")]
+        off: bool,
     },
     /// (Interno) O próprio serviço, iniciado pelo Windows.
     #[command(hide = true)]
