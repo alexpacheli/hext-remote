@@ -103,6 +103,10 @@ fn technicians_store() -> Result<crate::technicians::Technicians> {
     ))
 }
 
+/// How often the interface's list of technicians is checked against the
+/// file.
+const TECHNICIANS_CHECK: Duration = Duration::from_secs(5);
+
 /// The shortest password taken: guesses are limited, but it may be all that
 /// stands between the internet and this computer.
 const MIN_PASSWORD: usize = 10;
@@ -623,12 +627,19 @@ impl UnattendedPassword for MachinePassword {
         audit(entry);
     }
 
-    fn bind(&self, viewer: &hext_crypto::PublicKey, grant: &hext_session::Grant) {
+    fn bind(&self, viewer: &hext_crypto::PublicKey, grant: &hext_session::Grant) -> bool {
         let bound =
             technicians_store().and_then(|store| Ok(store.bind(viewer, &grant.id, &grant.name)?));
         match bound {
-            Ok(()) => self.0.technicians_changed(),
-            Err(e) => warn!("técnico vinculado: {e:#}"),
+            Ok(()) => {
+                self.0.technicians_changed();
+                true
+            }
+            Err(e) => {
+                warn!("técnico vinculado: {e:#}");
+                audit(&format!("não foi possível vincular o técnico: {e:#}"));
+                false
+            }
         }
     }
 }
@@ -929,6 +940,16 @@ async fn serve() -> Result<()> {
         let hub = agents.clone();
         async move { launch(session, &hub).await }
     }));
+    // The command line changes the list too (`service technicians`,
+    // `service password`): the interface follows it.
+    let watched = ui.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(TECHNICIANS_CHECK);
+        loop {
+            every.tick().await;
+            watched.technicians_changed();
+        }
+    });
     let interfaces = ui.clone();
     tokio::spawn(supervise("interface", move |session| {
         let ui = interfaces.clone();
