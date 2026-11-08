@@ -2493,6 +2493,7 @@ dependencies = [
  "hext-session",
  "hext-signal",
  "qrcode",
+ "reqwest",
  "rfd",
  "ring",
  "rpassword",

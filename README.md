@@ -47,6 +47,10 @@ Os instaladores ficam em **GitHub → Releases** (a partir da 0.6.0, F6, [plano]
 Sem os certificados configurados (veja a seção 4 do plano), os instaladores saem sem assinatura e o sistema
 avisa, como nos executáveis do CI abaixo.
 
+**Atualização.** Com o serviço do Windows, o Hext Remote se atualiza sozinho, entre uma sessão e outra. Nos
+outros casos, a tela inicial avisa quando há uma versão nova (no Linux: `hext-remote update check`). Cada
+versão é assinada pelo pipeline de release, e o app recusa qualquer outra.
+
 ## Baixar os executáveis do CI
 
 Cada push gera executáveis em **GitHub → Actions → CI → (execução) → Artifacts**:

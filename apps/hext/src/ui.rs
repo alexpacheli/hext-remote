@@ -136,6 +136,77 @@ struct View {
     computers: Vec<Computer>,
     /// The account bound to this computer (marco 5), as said.
     owners: Option<String>,
+    /// A newer version (F6), where nothing installs it by itself.
+    update: Option<UpdateView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UpdateView {
+    version: String,
+    page: String,
+}
+
+/// How often the interface looks for a newer version.
+const UPDATE_CHECK: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+
+/// Looks for a newer version now and then, and shows it. Not with the
+/// Windows service: it installs the new one by itself.
+fn watch_updates(app: AppHandle) {
+    if !crate::update::enabled() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        loop {
+            if !(cfg!(windows) && managed(&app)) {
+                match crate::update::check().await {
+                    Ok(found) => {
+                        let update = found.map(|m| UpdateView {
+                            page: m.page(),
+                            version: m.version,
+                        });
+                        app.state::<Shared>().view.lock().expect("lock").update = update;
+                        changed(&app);
+                    }
+                    Err(e) => warn!("atualização: {e:#}"),
+                }
+            }
+            tokio::time::sleep(UPDATE_CHECK).await;
+        }
+    });
+}
+
+/// Opens the new version's page in the browser.
+#[tauri::command]
+fn open_update(shared: State<'_, Shared>) -> Result<(), String> {
+    let page = shared
+        .view
+        .lock()
+        .expect("lock")
+        .update
+        .as_ref()
+        .map(|u| u.page.clone())
+        .ok_or("Nenhuma versão nova.")?;
+    open_url(&page).map_err(|e| e.to_string())
+}
+
+/// `url` in the system's browser.
+fn open_url(url: &str) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let mut command = {
+        use std::os::windows::process::CommandExt;
+        let mut command = std::process::Command::new("rundll32");
+        command.args(["url.dll,FileProtocolHandler", url]);
+        command.creation_flags(0x0800_0000); // no console window
+        command
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = std::process::Command::new("/usr/bin/open");
+        command.arg(url);
+        command
+    };
+    command.spawn().map(drop)
 }
 
 struct Shared {
@@ -1493,6 +1564,7 @@ pub fn run(link: Link) -> Result<()> {
             share_add,
             share_remove,
             account_activity,
+            open_update,
             computer_remove
         ])
         .on_window_event(move |window, event| {
@@ -1533,6 +1605,7 @@ pub fn run(link: Link) -> Result<()> {
                 open_home(&handle);
             }
             watch_presence(handle.clone());
+            watch_updates(handle.clone());
             show_account(handle.clone());
             connect_to_host(handle, link, outgoing);
             Ok(())

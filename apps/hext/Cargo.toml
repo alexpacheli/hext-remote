@@ -21,6 +21,7 @@ hext-proto.workspace = true
 hext-render.workspace = true
 hext-session.workspace = true
 hext-signal.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 ring.workspace = true
 rpassword.workspace = true
 serde.workspace = true
@@ -83,6 +84,7 @@ assets = [
 
 [package.metadata.generate-rpm]
 name = "hext-remote"
+license = "Proprietary"
 summary = "Hext Remote: acesso remoto"
 assets = [
     { source = "target/release/hext", dest = "/usr/bin/hext-remote", mode = "755" },

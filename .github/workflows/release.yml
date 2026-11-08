@@ -232,6 +232,18 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # The signed list the apps update from (none without the key).
+      - name: Update manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::warning::sem UPDATE_SIGNING_KEY: esta versão não vai para a atualização automática"
+            exit 0
+          fi
+          app="dist/HextRemote-$VERSION-x86_64.AppImage"
+          chmod +x "$app"
+          "$app" --appimage-extract-and-run update manifest dist "$VERSION"
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Draft release

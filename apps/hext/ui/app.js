@@ -63,6 +63,10 @@ const pages = {
       const notice = $("notice");
       notice.hidden = !view.notice;
       notice.textContent = view.notice ?? "";
+      $("update").hidden = !view.update;
+      $("update-text").textContent = view.update
+        ? `Versão ${view.update.version} disponível.`
+        : "";
 
       showAccount(view.account);
       showComputers(view.computers, view.online);
@@ -452,6 +456,13 @@ function startAccount() {
     if (!confirm("Os dispositivos da conta voltam a precisar de aceite. Desligar?")) return;
     try {
       await invoke("account_unbind");
+    } catch (message) {
+      showStatus(String(message), true);
+    }
+  });
+  on("update-open", async () => {
+    try {
+      await invoke("open_update");
     } catch (message) {
       showStatus(String(message), true);
     }

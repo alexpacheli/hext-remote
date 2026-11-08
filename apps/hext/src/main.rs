@@ -28,6 +28,7 @@ mod technicians;
 mod ui;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
 mod ui_link;
+mod update;
 mod viewer;
 
 /// Linux has no interface until F7.
@@ -111,6 +112,11 @@ enum Command {
     /// Testa se os codificadores da GPU mudam a taxa com o vídeo rodando
     /// (diagnóstico, Windows).
     EncoderRates,
+    /// Confere se há uma versão nova (F6).
+    Update {
+        #[command(subcommand)]
+        action: UpdateAction,
+    },
     /// Instala o Hext Remote: no Windows, como serviço, online com o ID deste
     /// computador desde o boot; no Mac, para abrir sozinho a cada login.
     Service {
@@ -129,6 +135,22 @@ enum Command {
     Ui {
         #[arg(long)]
         pipe: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum UpdateAction {
+    /// Mostra se há uma versão nova e onde baixar.
+    Check,
+    /// (Release) Gera a chave que assina as atualizações.
+    #[command(hide = true)]
+    Keygen,
+    /// (Release) Escreve latest.json e latest.json.sig com os instaladores da
+    /// pasta, assinados com UPDATE_SIGNING_KEY.
+    #[command(hide = true)]
+    Manifest {
+        dir: std::path::PathBuf,
+        version: String,
     },
 }
 
@@ -354,6 +376,7 @@ fn main() -> Result<()> {
         Some(Command::Encoders) => bench::encoders(),
         Some(Command::EncoderRates) => bench::encoder_rates(),
         Some(Command::Service { action }) => service::command(action),
+        Some(Command::Update { action }) => update::command(action),
         Some(Command::Agent { pipe }) => service::agent(&pipe),
         #[cfg(windows)]
         Some(Command::Ui { pipe: Some(pipe) }) => ui::run(ui::Link::Service(pipe)),

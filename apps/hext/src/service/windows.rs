@@ -1062,6 +1062,7 @@ async fn serve() -> Result<()> {
         files: Some(Arc::new(UserFiles)),
     });
     let slot = Arc::new(Semaphore::new(1));
+    tokio::spawn(keep_updated(slot.clone()));
     tokio::spawn(crate::signaling::host(
         DEFAULT_SERVER.to_owned(),
         key,
@@ -1094,6 +1095,71 @@ fn write_id(id: DeviceId) {
 /// the user can be seen (the sign-in screen, a locked computer), in a
 /// message box.
 struct ConsoleAsk(UiHub, crate::owners::Owners);
+
+/// How often the service looks for a newer version.
+const UPDATE_CHECK: Duration = Duration::from_secs(60 * 60);
+
+/// Installs newer versions by itself (F6): the signed `.msi`, between
+/// sessions (`slot` held meanwhile: nobody comes in while it installs).
+async fn keep_updated(slot: Arc<Semaphore>) {
+    if !crate::update::enabled() {
+        return;
+    }
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    let mut every = tokio::time::interval(UPDATE_CHECK);
+    loop {
+        every.tick().await;
+        let manifest = match crate::update::check().await {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) => continue,
+            Err(e) => {
+                warn!("atualização: {e:#}");
+                continue;
+            }
+        };
+        let Ok(_free) = slot.clone().try_acquire_owned() else {
+            info!("versão {}: depois da sessão", manifest.version);
+            continue;
+        };
+        match install_update(&manifest).await {
+            // The installer stops this service and starts the new one.
+            Ok(()) => tokio::time::sleep(Duration::from_secs(600)).await,
+            Err(e) => warn!("atualização para {}: {e:#}", manifest.version),
+        }
+    }
+}
+
+async fn install_update(manifest: &crate::update::Manifest) -> Result<()> {
+    // In the computer's folder: only the system and administrators write
+    // there, from the download to the installer.
+    let dir = machine_dir()?.join("update");
+    let msi = crate::update::download(manifest, "windows-msi", &dir).await?;
+    audit(&format!(
+        "atualização automática: {APP_VERSION} → {}",
+        manifest.version
+    ));
+    let log = dir.join("install.log");
+    // On its own, out of this service's job: it stops the service.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let mut command = Command::new("msiexec.exe");
+    command
+        .arg("/i")
+        .arg(&msi)
+        .args(["/qn", "/norestart", "/l*v"])
+        .arg(&log);
+    if command
+        .creation_flags(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+        .is_err()
+    {
+        command
+            .creation_flags(DETACHED_PROCESS)
+            .spawn()
+            .context("msiexec")?;
+    }
+    Ok(())
+}
 
 /// How often the bound account's list is fetched again.
 const OWNERS_CHECK: Duration = Duration::from_secs(60);
