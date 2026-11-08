@@ -71,6 +71,12 @@
         <ul class="sessions" id="sessions"></ul>
       </section>
 
+      <section id="owners-section" hidden>
+        <h2>Conta vinculada</h2>
+        <p class="hint" id="owners-text"></p>
+        <button type="button" id="owners-off">Desligar a entrada sem aceite</button>
+      </section>
+
       <section id="technicians-section" hidden>
         <h2>Técnicos que entram sem senha</h2>
         <p class="hint">
@@ -140,6 +146,8 @@
             <h3 id="computers-title" hidden>Computadores da conta</h3>
             <ul class="sessions" id="computers-list"></ul>
             <button type="button" id="computer-add" hidden>Pôr este computador em Meus computadores</button>
+            <button type="button" id="computer-bind" hidden>Deixar os dispositivos da conta entrarem sem aceite</button>
+            <p class="hint" id="chain-id" hidden></p>
           </div>
         </div>
         <div class="account-panel" id="account-recovery-key" hidden>

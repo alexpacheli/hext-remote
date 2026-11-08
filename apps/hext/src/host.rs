@@ -127,6 +127,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
         },
     };
     let config = Arc::new(HostConfig {
+        owners: None,
         peer: PeerInfo::local(APP_VERSION, device_name()),
         access_code: Some(code),
         session_codes: session_codes.clone(),
@@ -214,6 +215,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
     let resumes = ResumeTokens::default();
     let restart = crate::service::own_restart(&resumes);
     let config = Arc::new(HostConfig {
+        owners: None,
         peer: PeerInfo::local(APP_VERSION, name.clone()),
         access_code: None,
         session_codes: session_codes.clone(),

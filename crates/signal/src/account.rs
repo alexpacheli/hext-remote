@@ -80,6 +80,14 @@ pub enum AccountCall {
     },
     /// The devices asking to join (for the one showing the code).
     ChainPending,
+    /// For a computer (by its host key, the one logged in; no account
+    /// login): the chains it is in, and those of the accounts they share it
+    /// with. It checks them itself. `known`: chains it is bound to, wanted
+    /// even if it is no longer on their list (to see that it is not).
+    ChainHost {
+        #[serde(default)]
+        known: Vec<crate::chain::ChainId>,
+    },
 }
 
 /// A device asking to join the chain.
@@ -131,6 +139,10 @@ pub enum AccountReply {
     /// Devices asking to join.
     Joins {
         joins: Vec<Join>,
+    },
+    /// The chains of [`AccountCall::ChainHost`].
+    HostChains {
+        chains: Vec<Vec<Entry>>,
     },
     Error {
         error: AccountError,
@@ -188,6 +200,7 @@ impl std::fmt::Debug for AccountCall {
             Self::ChainAppend { .. } => "ChainAppend",
             Self::ChainJoin { .. } => "ChainJoin",
             Self::ChainPending => "ChainPending",
+            Self::ChainHost { .. } => "ChainHost",
         })
     }
 }

@@ -27,8 +27,13 @@ pub struct Grant {
     /// without it ([`crate::host::UnattendedPassword::bind`]).
     pub remember: bool,
     /// Nobody accepted: the viewer is a technician this computer trusts
-    /// (it once came in with the password, and asked to be remembered).
+    /// (it once came in with the password, and asked to be remembered), or
+    /// one of the account's devices (`via`).
     pub bound: bool,
+    /// Nobody accepted, by the account (F5): how, as the audit says it
+    /// ("entrou como dono", "por compartilhamento de …"). The session ends
+    /// once [`crate::host::Owners`] no longer lets that viewer in.
+    pub via: Option<String>,
 }
 
 /// A code, the viewer it was issued to, when, and what it grants.
@@ -93,6 +98,7 @@ mod tests {
             needs_password: false,
             remember: false,
             bound: false,
+            via: None,
         }
     }
 

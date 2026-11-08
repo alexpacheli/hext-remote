@@ -108,6 +108,7 @@ impl Host {
         });
         let (attempts, outcomes) = tokio::sync::mpsc::unbounded_channel();
         let config = Arc::new(HostConfig {
+            owners: None,
             peer: PeerInfo::local("test", "host"),
             access_code: None,
             session_codes: codes.clone(),
@@ -220,6 +221,7 @@ impl Host {
             needs_password,
             remember: false,
             bound: false,
+            via: None,
         };
         self.connect_with(viewer, grant, password, resume).await
     }
@@ -313,6 +315,7 @@ fn remembering() -> Grant {
         needs_password: true,
         remember: true,
         bound: false,
+        via: None,
     }
 }
 
@@ -363,6 +366,7 @@ async fn a_bound_technician_gets_in_without_the_password_and_it_is_audited() {
         needs_password: false,
         remember: false,
         bound: true,
+        via: None,
         ..remembering()
     };
     let session = host.connect_with(&viewer, grant, None, None).await.unwrap();
@@ -381,6 +385,7 @@ async fn a_bound_technician_gets_in_without_the_password_and_it_is_audited() {
             needs_password: false,
             remember: false,
             bound: true,
+            via: None,
             ..remembering()
         },
     );

@@ -36,6 +36,11 @@ pub struct DevicesView {
     pub computers: Vec<ComputerItem>,
     /// This computer is on the list as a computer.
     pub listed: bool,
+    /// The list's ID (hex; empty with no list), for binding a computer.
+    pub chain: String,
+    /// This computer can be bound to the account from here (the service
+    /// is installed).
+    pub bindable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -187,6 +192,8 @@ impl Account {
                 devices: Vec::new(),
                 computers: Vec::new(),
                 listed: false,
+                chain: String::new(),
+                bindable: false,
             });
         };
         let devices = chain
@@ -219,6 +226,8 @@ impl Account {
             devices,
             computers,
             listed,
+            chain: hex::encode(chain.id),
+            bindable: false,
         })
     }
 
@@ -913,6 +922,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![]);
+        drop(host);
+    }
+
+    #[tokio::test]
+    async fn the_bound_accounts_devices_come_in_while_on_its_list() {
+        use crate::owners::{Owners, parse_id};
+        use hext_session::host::Owners as _;
+        use hext_signal::{Client, Role};
+        let (mut world, first) = World::new().await;
+        first.create_chain().await.unwrap();
+        let host_key = Arc::new(DeviceKey::generate().unwrap());
+        let host = Client::connect(&world.server, &host_key, "Escritório", "t", Role::Host)
+            .await
+            .unwrap();
+        let hex_key = host_key.public_key().to_string();
+        let dir = world.computer().file.parent().unwrap().to_owned();
+        std::fs::create_dir_all(&dir).unwrap();
+        let owners = Owners::new(
+            dir.join("owners.json"),
+            host_key.clone(),
+            world.server.clone(),
+        );
+        let me = first.key().unwrap().public_key();
+        assert_eq!(owners.way(&me), None, "not bound");
+
+        let chain = parse_id(&first.devices(None).await.unwrap().chain).unwrap();
+        // Off the account's computers, it is not bound.
+        assert!(owners.bind(chain).await.is_err());
+        first
+            .add_computer(&hex_key, &host.id().to_string(), "Escritório")
+            .await
+            .unwrap();
+        // Nor to a list the server does not have.
+        assert!(owners.bind([7; 32]).await.is_err());
+        owners.bind(chain).await.unwrap();
+        assert_eq!(owners.bound().unwrap().0, chain);
+        let way = owners.way(&me).unwrap();
+        assert_eq!(way.via, "entrou como dono");
+        assert!(way.permissions.control && way.permissions.files);
+        assert_eq!(
+            owners.way(&DeviceKey::generate().unwrap().public_key()),
+            None
+        );
+
+        // A device that joins comes in after the next refresh...
+        let notebook = world.second().await;
+        let code = chain::new_code(chain::JOIN_CODE_LEN);
+        notebook.join(&code).await.unwrap();
+        first.approve(&code).await.unwrap().unwrap();
+        let notebook_key = notebook.key().unwrap().public_key();
+        assert!(!owners.still(&notebook_key));
+        owners.refresh().await.unwrap();
+        assert!(owners.still(&notebook_key));
+        // ...and one taken out no longer does (a session of it ends).
+        first.remove(&notebook_key.to_string()).await.unwrap();
+        owners.refresh().await.unwrap();
+        assert!(!owners.still(&notebook_key));
+        assert!(owners.still(&me));
+        // The computer taken off the list: nobody comes in by the account.
+        first.remove_computer(&hex_key).await.unwrap();
+        owners.refresh().await.unwrap();
+        assert!(!owners.still(&me));
+
+        // A server handing out an older list (the computer back on it) is
+        // not believed, also after a restart (the file).
+        world
+            .state
+            .db
+            .tamper("DELETE FROM account_chain WHERE seq = (SELECT MAX(seq) FROM account_chain)")
+            .unwrap();
+        assert!(owners.refresh().await.is_err());
+        assert!(!owners.still(&me));
+        let again = Owners::new(dir.join("owners.json"), host_key, world.server.clone());
+        assert!(again.refresh().await.is_err());
+        assert!(!again.still(&me));
+
+        owners.unbind().unwrap();
+        assert_eq!(owners.bound(), None);
         drop(host);
     }
 

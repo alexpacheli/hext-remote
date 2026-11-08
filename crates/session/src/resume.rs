@@ -166,6 +166,7 @@ mod tests {
             needs_password: false,
             remember: false,
             bound: false,
+            via: None,
         }
     }
 

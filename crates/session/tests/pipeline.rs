@@ -37,6 +37,7 @@ async fn start_host() -> (
     let endpoint = host_endpoint().await;
     let addr = endpoint.addr();
     let config = Arc::new(HostConfig {
+        owners: None,
         peer: PeerInfo::local("test", "host"),
         access_code: Some(CODE.into()),
         session_codes: Default::default(),
@@ -160,6 +161,7 @@ async fn host_ending_the_session_is_not_an_error() {
     let endpoint = host_endpoint().await;
     let addr = endpoint.addr();
     let config = Arc::new(HostConfig {
+        owners: None,
         peer: PeerInfo::local("test", "host"),
         access_code: Some(CODE.into()),
         session_codes: Default::default(),

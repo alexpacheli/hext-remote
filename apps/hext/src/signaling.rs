@@ -74,6 +74,12 @@ pub trait Ask: Send {
     fn bound(&self, _key: &PublicKey) -> bool {
         false
     }
+
+    /// How the device with `key` comes in by the account bound here (F5),
+    /// without anyone accepting; `None`: it does not.
+    fn owner<'a>(&'a mut self, _key: &'a PublicKey) -> BoxFuture<'a, Option<crate::owners::Way>> {
+        Box::pin(async { None })
+    }
 }
 
 /// What a session nobody accepted may do: all a technician needs.
@@ -244,6 +250,7 @@ async fn serve(
                     needs_password: true,
                     remember,
                     bound: false,
+                    via: None,
                 };
                 accept(request, from_key, grant, (endpoint, has_relay), codes).await
             } else {
@@ -252,6 +259,24 @@ async fn serve(
                 );
                 ClientMsg::NoUnattended { request }
             };
+            client.send(&answer).await?;
+            continue;
+        }
+        // A device of the account bound here (or of one it shares this
+        // computer with): nobody to ask. The code is good only from the
+        // device holding that key, and the session checks it still is.
+        if let Some(way) = ask.owner(&from_key).await {
+            info!("pedido de {from_name} ({from}), {}: aceito", way.via);
+            let grant = Grant {
+                permissions: way.permissions,
+                name: from_name,
+                id: from.to_string(),
+                needs_password: false,
+                remember: false,
+                bound: true,
+                via: Some(way.via),
+            };
+            let answer = accept(request, from_key, grant, (endpoint, has_relay), codes).await;
             client.send(&answer).await?;
             continue;
         }
@@ -266,6 +291,7 @@ async fn serve(
                 needs_password: false,
                 remember: false,
                 bound: true,
+                via: None,
             };
             let answer = accept(request, from_key, grant, (endpoint, has_relay), codes).await;
             client.send(&answer).await?;
@@ -314,6 +340,7 @@ async fn serve(
                 needs_password: false,
                 remember: false,
                 bound: false,
+                via: None,
             };
             accept(request, from_key, grant, (endpoint, has_relay), codes).await
         } else {

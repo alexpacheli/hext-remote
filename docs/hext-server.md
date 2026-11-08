@@ -83,6 +83,7 @@ computador: `account {request, call}` e a resposta `account {request, reply}`. O
 | `forgot_password {email}`, `reset_password {email, code, password}` | Troca a senha por um código no e-mail. Sai de todos os computadores |
 | `change_password {old, new}` | Troca a senha sabendo a antiga. Sai dos outros computadores |
 | `chain_get`, `chain_append {entry}` | A lista de dispositivos da conta (a cadeia assinada, abaixo) e mais uma entrada no fim. A primeira exige 2FA e é assinada pelo próprio dispositivo |
+| `chain_host {known}` | Para um computador, sem login de conta (vale a chave com que ele se conectou): as cadeias das contas que o têm em Meus computadores, as das contas com quem elas o compartilham e as de `known` (as que ele vinculou, para ver se ainda o têm). Até 16; ele confere cada uma |
 | `chain_join {device, name, proof}`, `chain_pending` | Um dispositivo pede para entrar na lista (só por si mesmo), e o que mostra o código vê os pedidos (10 minutos, até 5) |
 
 - **Guardado:** a senha como hash Argon2id; códigos, tokens e códigos de recuperação como SHA-256 (são

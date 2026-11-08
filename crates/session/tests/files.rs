@@ -156,6 +156,7 @@ async fn session_answering(
             needs_password: false,
             remember: false,
             bound: false,
+            via: None,
         },
     );
     let (choose, chosen) = mpsc::unbounded_channel();
@@ -166,6 +167,7 @@ async fn session_answering(
     let host_downloads = Folder::new("host");
     let viewer_downloads = Folder::new("viewer");
     let config = Arc::new(HostConfig {
+        owners: None,
         peer: PeerInfo::local("test", "host"),
         access_code: None,
         session_codes: codes,

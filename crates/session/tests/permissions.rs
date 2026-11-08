@@ -185,6 +185,7 @@ async fn session_with(permissions: Permissions) -> Running {
             needs_password: false,
             remember: false,
             bound: false,
+            via: None,
         },
     );
     let desktop = Counting::default();
@@ -194,6 +195,7 @@ async fn session_with(permissions: Permissions) -> Running {
     let pasted = desktop.pasted.clone();
     let indicator = Arc::new(Indicator::default());
     let config = Arc::new(HostConfig {
+        owners: None,
         peer: PeerInfo::local("test", "host"),
         access_code: None,
         session_codes: codes,
