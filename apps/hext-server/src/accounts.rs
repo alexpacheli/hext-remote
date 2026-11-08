@@ -446,6 +446,18 @@ impl Db {
         tx.commit()
     }
 
+    /// The accounts that share a computer with `account`.
+    fn sharing_with(&self, account: i64) -> rusqlite::Result<Vec<i64>> {
+        let conn = self.conn();
+        let mut query = conn.prepare(
+            "SELECT DISTINCT s.account_id FROM account_shares s
+             JOIN account_chain_ids i ON i.chain_id = s.with_chain
+             WHERE i.account_id = ?1",
+        )?;
+        let rows = query.query_map(params![account], |row| row.get(0))?;
+        rows.collect()
+    }
+
     fn account_of_chain(&self, id: &[u8; 32]) -> rusqlite::Result<Option<i64>> {
         self.conn()
             .query_row(
@@ -478,7 +490,13 @@ impl Db {
                 "SELECT 1 FROM account_computers c
                  JOIN account_members m ON m.account_id = c.account_id
                  JOIN devices v ON v.public_key = m.public_key
-                 WHERE c.device_id = ?1 AND v.id = ?2",
+                 WHERE c.device_id = ?1 AND v.id = ?2
+                 UNION
+                 SELECT 1 FROM account_shares s
+                 JOIN account_chain_ids i ON i.chain_id = s.with_chain
+                 JOIN account_members m ON m.account_id = i.account_id
+                 JOIN devices v ON v.public_key = m.public_key
+                 WHERE s.device_id = ?1 AND v.id = ?2",
                 params![host.get(), viewer.get()],
                 |_| Ok(()),
             )
@@ -876,6 +894,20 @@ async fn run(
                     let mut chains = Vec::new();
                     for account in accounts.into_iter().take(16) {
                         chains.push(db.chain(account)?);
+                    }
+                    Ok(chains)
+                })
+                .await?;
+            Ok(AccountReply::HostChains { chains })
+        }
+        AccountCall::ChainShared => {
+            let account = logged_in(state, login, device).await?;
+            let id = account.id;
+            let chains = state
+                .db(move |db| {
+                    let mut chains = Vec::new();
+                    for other in db.sharing_with(id)?.into_iter().take(16) {
+                        chains.push(db.chain(other)?);
                     }
                     Ok(chains)
                 })

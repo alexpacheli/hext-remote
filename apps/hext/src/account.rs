@@ -36,8 +36,11 @@ pub struct DevicesView {
     pub computers: Vec<ComputerItem>,
     /// This computer is on the list as a computer.
     pub listed: bool,
-    /// The list's ID (hex; empty with no list), for binding a computer.
+    /// The list's ID (hex; empty with no list), for binding a computer
+    /// and for being shared with.
     pub chain: String,
+    /// Computers of other accounts shared with this one (marco 6).
+    pub shared: Vec<SharedItem>,
     /// This computer can be bound to the account from here (the service
     /// is installed).
     pub bindable: bool,
@@ -50,6 +53,27 @@ pub struct ComputerItem {
     pub name: String,
     /// This computer.
     pub me: bool,
+    /// The accounts it is shared with.
+    pub shares: Vec<ShareItem>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ShareItem {
+    /// The other account's list ID (hex).
+    pub with: String,
+    pub name: String,
+    pub allowed: chain::Allowed,
+    pub until: Option<u64>,
+}
+
+/// A computer of another account, shared with this one.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SharedItem {
+    pub host: String,
+    pub id: String,
+    pub name: String,
+    pub allowed: chain::Allowed,
+    pub until: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -185,6 +209,10 @@ impl Account {
         let me = self.key()?.public_key();
         let mut link = self.link();
         let found = self.chain(&mut link).await;
+        let shared = match &found {
+            Ok(Some((_, chain))) => shared_with(&mut link, chain.id).await,
+            _ => Vec::new(),
+        };
         link.close().await;
         let Some((_, chain)) = found? else {
             return Ok(DevicesView {
@@ -193,6 +221,7 @@ impl Account {
                 computers: Vec::new(),
                 listed: false,
                 chain: String::new(),
+                shared,
                 bindable: false,
             });
         };
@@ -218,6 +247,17 @@ impl Account {
                 id: c.id.to_string(),
                 name: c.name.clone(),
                 me: Some(c.host.to_string().as_str()) == host,
+                shares: chain
+                    .shares()
+                    .iter()
+                    .filter(|s| s.host == c.host)
+                    .map(|s| ShareItem {
+                        with: hex::encode(s.with),
+                        name: s.name.clone(),
+                        allowed: s.allowed,
+                        until: s.until,
+                    })
+                    .collect(),
             })
             .collect();
         let listed = computers.iter().any(|c| c.me);
@@ -227,8 +267,51 @@ impl Account {
             computers,
             listed,
             chain: hex::encode(chain.id),
+            shared,
             bindable: false,
         })
+    }
+
+    /// Opens computer `host` to the devices of the account with list `with`
+    /// (its ID, given by that account's owner: not looked up on the server,
+    /// which could hand out a list of its own), allowing `allowed`, for
+    /// `days` (`None`: until taken back). `name`: how the audit names them.
+    pub async fn share(
+        &self,
+        host: &str,
+        with: &str,
+        name: &str,
+        allowed: chain::Allowed,
+        days: Option<u32>,
+    ) -> Result<(), String> {
+        let host: PublicKey = host.parse().map_err(|_| "chave inválida".to_owned())?;
+        let with = crate::owners::parse_id(with).map_err(|_| {
+            "O ID da lista da outra conta tem 64 letras e números (0-9, a-f): ela o vê em \
+             Dispositivos."
+                .to_owned()
+        })?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Dê um nome a quem recebe (o e-mail, por exemplo).".into());
+        }
+        let name: String = name.chars().take(chain::MAX_NAME).collect();
+        let until = days.map(|days| now_secs() + u64::from(days.clamp(1, 3650)) * 86_400);
+        self.sign(Op::Share {
+            host,
+            with,
+            name,
+            allowed,
+            until,
+        })
+        .await
+        .map(drop)
+    }
+
+    /// Takes back computer `host` from the account with list `with`.
+    pub async fn unshare(&self, host: &str, with: &str) -> Result<(), String> {
+        let host: PublicKey = host.parse().map_err(|_| "chave inválida".to_owned())?;
+        let with = crate::owners::parse_id(with).map_err(|e| e.to_string())?;
+        self.sign(Op::Unshare { host, with }).await.map(drop)
     }
 
     /// Puts computer `host` (its host key), with ID `id`, in the list.
@@ -438,6 +521,42 @@ pub struct Link<'a> {
     resumed: bool,
 }
 
+/// The computers other accounts share with the one of list `mine`, as their
+/// (checked) lists say; none if the server does not tell.
+async fn shared_with(link: &mut Link<'_>, mine: chain::ChainId) -> Vec<SharedItem> {
+    let Ok(AccountReply::HostChains { chains }) = link.call(AccountCall::ChainShared).await else {
+        return Vec::new();
+    };
+    let now = now_secs();
+    let mut out = Vec::new();
+    for entries in chains {
+        let Ok(chain) = Chain::verify(&entries) else {
+            continue;
+        };
+        for share in chain.shares() {
+            if share.with != mine || share.until.is_some_and(|until| until <= now) {
+                continue;
+            }
+            if let Some(computer) = chain.computer(&share.host) {
+                out.push(SharedItem {
+                    host: computer.host.to_string(),
+                    id: computer.id.to_string(),
+                    name: computer.name.clone(),
+                    allowed: share.allowed,
+                    until: share.until,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 impl Link<'_> {
     /// Makes `call`, logged in first with the kept login when the call needs
     /// one. A token in the answer stays here: the answer goes without it.
@@ -452,6 +571,7 @@ impl Link<'_> {
                 | AccountCall::ChainAppend { .. }
                 | AccountCall::ChainJoin { .. }
                 | AccountCall::ChainPending
+                | AccountCall::ChainShared
                 | AccountCall::TotpSetup
                 | AccountCall::TotpEnable { .. }
                 | AccountCall::ChangePassword { .. }
@@ -1000,6 +1120,147 @@ mod tests {
 
         owners.unbind().unwrap();
         assert_eq!(owners.bound(), None);
+        drop(host);
+    }
+
+    /// Another account, with 2FA and its own list, on another computer.
+    async fn other_account(world: &mut World, email: &str) -> Account {
+        let account = world.computer();
+        let register = AccountCall::Register {
+            email: email.into(),
+            password: PASSWORD.into(),
+        };
+        account.call(register).await.unwrap();
+        let verify = AccountCall::Verify {
+            email: email.into(),
+            code: code(&world.inbox).await,
+            password: PASSWORD.into(),
+        };
+        account.call(verify).await.unwrap();
+        let login = AccountCall::Login {
+            email: email.into(),
+            password: PASSWORD.into(),
+            second: None,
+        };
+        account.call(login).await.unwrap();
+        let Ok(AccountReply::Totp { secret, .. }) = account.call(AccountCall::TotpSetup).await
+        else {
+            panic!("no 2FA secret");
+        };
+        let totp = hext_server::accounts::totp_code(&secret, now_secs()).unwrap();
+        account
+            .call(AccountCall::TotpEnable { code: totp })
+            .await
+            .unwrap();
+        account.create_chain().await.unwrap();
+        account
+    }
+
+    #[tokio::test]
+    async fn a_computer_shared_with_another_account_lets_it_in_as_allowed() {
+        use crate::owners::{Owners, parse_id};
+        use hext_session::host::Owners as _;
+        use hext_signal::{Client, Role};
+        let (mut world, first) = World::new().await;
+        first.create_chain().await.unwrap();
+        let host_key = Arc::new(DeviceKey::generate().unwrap());
+        let host = Client::connect(&world.server, &host_key, "Escritório", "t", Role::Host)
+            .await
+            .unwrap();
+        let id = host.id();
+        let hex_key = host_key.public_key().to_string();
+        first
+            .add_computer(&hex_key, &id.to_string(), "Escritório")
+            .await
+            .unwrap();
+        let dir = world.computer().file.parent().unwrap().to_owned();
+        std::fs::create_dir_all(&dir).unwrap();
+        let owners = Owners::new(
+            dir.join("owners.json"),
+            host_key.clone(),
+            world.server.clone(),
+        );
+        let mine = parse_id(&first.devices(None).await.unwrap().chain).unwrap();
+        owners.bind(mine).await.unwrap();
+
+        // The technician's account, with its own list.
+        let technician = other_account(&mut world, "tecnico@example.com").await;
+        let theirs = technician.devices(None).await.unwrap().chain;
+        let their_key = technician.key().unwrap().public_key();
+        let mut viewer = Client::connect(
+            &world.server,
+            &technician.key().unwrap(),
+            "T",
+            "t",
+            Role::Viewer,
+        )
+        .await
+        .unwrap();
+        assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![]);
+        assert_eq!(owners.way(&their_key), None);
+
+        // A wrong ID or no name is refused before anything is signed.
+        assert!(
+            first
+                .share(&hex_key, "abc", "x", chain::Allowed::default(), None)
+                .await
+                .is_err()
+        );
+        assert!(
+            first
+                .share(&hex_key, &theirs, " ", chain::Allowed::default(), None)
+                .await
+                .is_err()
+        );
+        let allowed = chain::Allowed {
+            control: true,
+            ..chain::Allowed::default()
+        };
+        first
+            .share(&hex_key, &theirs, "tecnico@example.com", allowed, Some(7))
+            .await
+            .unwrap();
+        let view = first.devices(Some(&hex_key)).await.unwrap();
+        assert_eq!(view.computers[0].shares.len(), 1);
+        assert_eq!(view.computers[0].shares[0].with, theirs);
+        // The technician sees it, online.
+        let shared = technician.devices(None).await.unwrap().shared;
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].name, "Escritório");
+        assert_eq!(shared[0].allowed, allowed);
+        assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![id]);
+        // The computer lets them in, as allowed.
+        owners.refresh().await.unwrap();
+        let way = owners.way(&their_key).unwrap();
+        assert_eq!(way.via, "por compartilhamento com tecnico@example.com");
+        assert!(way.permissions.control && !way.permissions.files && !way.permissions.restart);
+
+        // Expired: out (and no longer listed).
+        first
+            .sign(Op::Share {
+                host: host_key.public_key(),
+                with: parse_id(&theirs).unwrap(),
+                name: "tecnico@example.com".into(),
+                allowed,
+                until: Some(1),
+            })
+            .await
+            .unwrap();
+        owners.refresh().await.unwrap();
+        assert!(!owners.still(&their_key));
+        assert!(technician.devices(None).await.unwrap().shared.is_empty());
+
+        // Shared again, then taken back.
+        first
+            .share(&hex_key, &theirs, "tecnico@example.com", allowed, None)
+            .await
+            .unwrap();
+        owners.refresh().await.unwrap();
+        assert!(owners.still(&their_key));
+        first.unshare(&hex_key, &theirs).await.unwrap();
+        owners.refresh().await.unwrap();
+        assert!(!owners.still(&their_key));
+        assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![]);
         drop(host);
     }
 

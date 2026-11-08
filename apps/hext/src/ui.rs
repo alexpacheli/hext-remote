@@ -959,6 +959,10 @@ async fn account_devices(
                     id: c.id.clone(),
                     name: c.name.clone(),
                 })
+                .chain(d.shared.iter().map(|c| Computer {
+                    id: c.id.clone(),
+                    name: format!("{} (compartilhado)", c.name),
+                }))
                 .collect()
         })
         .unwrap_or_default();
@@ -1017,6 +1021,37 @@ fn account_unbind() -> Result<(), String> {
     );
     #[cfg(not(windows))]
     Err("Só com o serviço instalado.".to_owned())
+}
+
+/// Opens one of the account's computers to another account (marco 6).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // as the page sends them
+async fn share_add(
+    shared: State<'_, Shared>,
+    host: String,
+    with: String,
+    name: String,
+    control: bool,
+    clipboard: bool,
+    files: bool,
+    restart: bool,
+    days: Option<u32>,
+) -> Result<(), String> {
+    let allowed = hext_signal::chain::Allowed {
+        control,
+        clipboard,
+        files,
+        restart,
+    };
+    the_account(&shared)?
+        .share(&host, &with, &name, allowed, days)
+        .await
+}
+
+/// Takes a computer back from another account.
+#[tauri::command]
+async fn share_remove(shared: State<'_, Shared>, host: String, with: String) -> Result<(), String> {
+    the_account(&shared)?.unshare(&host, &with).await
 }
 
 /// Takes a computer out of the account's list.
@@ -1447,6 +1482,8 @@ pub fn run(link: Link) -> Result<()> {
             computer_add,
             account_bind,
             account_unbind,
+            share_add,
+            share_remove,
             computer_remove
         ])
         .on_window_event(move |window, event| {

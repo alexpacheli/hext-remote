@@ -184,6 +184,11 @@ HextRemote.exe service account <ID da lista> # vincula (o ID está no app, em Di
 HextRemote.exe service account --off         # desvincula
 ```
 
+**Compartilhar com outra conta.** Em Dispositivos, **Compartilhar** ao lado do computador abre o acesso aos
+dispositivos de outra conta: cole o **ID da lista** dela (ela o vê em Dispositivos), dê um nome, escolha as
+permissões e a validade. **Revogar** fecha na hora (uma sessão em andamento cai em até 30 segundos). Vale
+com o computador vinculado à sua conta.
+
 Dá para atender vários computadores ao mesmo tempo (até 8), cada um na sua janela: conecte em um e depois em
 outro, pela mesma tela inicial. A seção **Sessões abertas** lista cada um, com **Mostrar** (traz a janela para
 a frente) e **Encerrar** (ou **Cancelar**, enquanto o outro lado ainda não aceitou). A área de transferência

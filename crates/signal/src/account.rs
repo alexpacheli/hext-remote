@@ -88,6 +88,10 @@ pub enum AccountCall {
         #[serde(default)]
         known: Vec<crate::chain::ChainId>,
     },
+    /// The chains of the accounts that share a computer with this one (the
+    /// one logged in), as [`AccountReply::HostChains`]. Only for listing:
+    /// the computer decides who comes in.
+    ChainShared,
 }
 
 /// A device asking to join the chain.
@@ -201,6 +205,7 @@ impl std::fmt::Debug for AccountCall {
             Self::ChainJoin { .. } => "ChainJoin",
             Self::ChainPending => "ChainPending",
             Self::ChainHost { .. } => "ChainHost",
+            Self::ChainShared => "ChainShared",
         })
     }
 }
