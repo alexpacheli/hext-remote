@@ -103,8 +103,8 @@ computador: `account {request, call}` e a resposta `account {request, reply}`. O
   (`chain.json`, ao lado da conta).
 - **Entrar na lista:** o dispositivo novo prova a sua chave com um HMAC do código de 12 caracteres (cerca de
   60 bits) que aparece no dispositivo que já está nela. O código não passa pelo servidor, e vale 10 minutos.
-- **E-mail:** por enquanto vai só para o log do servidor (com um aviso ao iniciar), até a decisão 3 do
-  plano (domínio e serviço de envio).
+- **E-mail:** a confirmação do cadastro e a troca de senha vão por SMTP (veja "E-mail" abaixo). Sem o
+  SMTP configurado, vão só para o log do servidor, com um aviso ao iniciar.
 
 ## Rodar
 
@@ -133,6 +133,33 @@ O banco fica no volume `/data` (`hext-server.db`). O backup é copiar esse arqui
 
 A instalação na VM (Caddy com TLS automático, `hext-server` e `iroh-relay`, que só aceita computadores
 registrados) está em [deploy.md](deploy.md): um script faz tudo.
+
+### E-mail
+
+O servidor manda os e-mails da conta por SMTP, sempre criptografado (STARTTLS na porta 587, TLS direto na
+465). Qualquer provedor serve; o nosso é a Brevo. Na VM, crie `/etc/hext/mail.env`, que só o `hext-server`
+lê:
+
+```sh
+sudo tee /etc/hext/mail.env >/dev/null <<'FIM'
+HEXT_SMTP_HOST=smtp-relay.brevo.com
+HEXT_SMTP_PORT=587
+HEXT_SMTP_USER=<o login SMTP da Brevo>
+HEXT_SMTP_PASSWORD=<a chave SMTP da Brevo>
+HEXT_MAIL_FROM=Hext Remote <nao-responda@seu-dominio.com.br>
+FIM
+sudo chmod 600 /etc/hext/mail.env
+sudo systemctl restart hext-server
+journalctl -u hext-server -n 20      # "SMTP: conexão e login ok"
+```
+
+- A senha só é lida da variável `HEXT_SMTP_PASSWORD`, nunca da linha de comando (lá ela apareceria no `ps`).
+- Com `HEXT_SMTP_HOST` e sem as outras, o servidor não sobe: uma configuração pela metade não cai em
+  silêncio para o log.
+- O login é conferido ao iniciar. Um e-mail que falha fica no log ("não foi enviado"), sem o código.
+- **O remetente precisa estar verificado na Brevo**, com o domínio autenticado (os registros DKIM e DMARC
+  que a Brevo mostra em Remetentes e domínios, colocados no DNS do domínio). Sem isso, a Brevo recusa ou os
+  e-mails caem no spam.
 
 ### Acesso ao relay
 

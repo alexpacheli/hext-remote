@@ -147,6 +147,15 @@ jobs:
           keychain="$RUNNER_TEMP/build.keychain"
           password="$(openssl rand -hex 16)"
           echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          # A .p12 is DER: it starts with 0x30. Anything else is the wrong file
+          # (a .cer, a PEM, a cut paste), and `security` would only say "Unknown format".
+          size=$(wc -c < "$RUNNER_TEMP/cert.p12" | tr -d ' ')
+          first=$(head -c 1 "$RUNNER_TEMP/cert.p12" | od -An -tx1 | tr -d ' \n')
+          echo "Certificado: $size bytes"
+          if [ "$first" != "30" ] || [ "$size" -lt 1500 ]; then
+            echo "::error::APPLE_CERTIFICATE não é um .p12 em base64: exporte de Meus Certificados (com a chave privada) e use base64 -i arquivo.p12"
+            exit 1
+          fi
           security create-keychain -p "$password" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$password" "$keychain"

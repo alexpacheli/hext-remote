@@ -1,7 +1,10 @@
 name: CI
 
 on:
+  # Branches with a PR are checked by pull_request; push only for main (no
+  # double runs).
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
