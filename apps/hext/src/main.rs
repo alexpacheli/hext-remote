@@ -12,6 +12,7 @@ mod bench;
 #[cfg(any(windows, target_os = "macos"))]
 mod chat;
 mod host;
+mod loop_watch;
 mod name;
 #[cfg(any(windows, target_os = "macos"))]
 mod presence;
