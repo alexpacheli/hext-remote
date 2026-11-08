@@ -95,7 +95,12 @@ pub enum AccountCall {
     /// For a computer (no account login): entries of its audit, for the
     /// Atividade screen of the accounts that list it. At most
     /// [`MAX_EVENTS`] a call, each up to [`MAX_EVENT_LEN`] characters.
-    HostEvents { events: Vec<String> },
+    HostEvents {
+        events: Vec<String>,
+        /// The account this computer is bound to: only it gets them.
+        #[serde(default)]
+        chain: Option<crate::chain::ChainId>,
+    },
     /// The latest entries of the account's computers, the latest first.
     Activity,
 }

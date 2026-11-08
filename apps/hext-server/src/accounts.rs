@@ -429,10 +429,17 @@ impl Db {
                 params![account, device.key.as_bytes().as_slice()],
             )?;
         }
+        // Only a computer whose ID is its key's: a list naming somebody
+        // else's ID gets neither its presence nor its activity.
         for computer in chain.computers() {
             tx.execute(
-                "INSERT OR IGNORE INTO account_computers (account_id, device_id) VALUES (?1, ?2)",
-                params![account, computer.id.get()],
+                "INSERT OR IGNORE INTO account_computers (account_id, device_id)
+                 SELECT ?1, id FROM devices WHERE id = ?2 AND public_key = ?3",
+                params![
+                    account,
+                    computer.id.get(),
+                    computer.host.as_bytes().as_slice()
+                ],
             )?;
         }
         tx.execute(
@@ -449,22 +456,36 @@ impl Db {
             };
             tx.execute(
                 "INSERT OR IGNORE INTO account_shares (account_id, device_id, with_chain)
-                 VALUES (?1, ?2, ?3)",
-                params![account, computer.id.get(), share.with.as_slice()],
+                 SELECT ?1, id, ?3 FROM devices WHERE id = ?2 AND public_key = ?4",
+                params![
+                    account,
+                    computer.id.get(),
+                    share.with.as_slice(),
+                    computer.host.as_bytes().as_slice()
+                ],
             )?;
         }
         tx.commit()
     }
 
-    /// Keeps `events` of computer `host` for the accounts that list it (the
-    /// latest [`KEPT_EVENTS`] of each).
-    fn record_events(&self, host: DeviceId, at: i64, events: &[String]) -> rusqlite::Result<()> {
+    /// Keeps `events` of computer `host` for the account of chain `chain`,
+    /// if it lists the computer (the latest [`KEPT_EVENTS`]).
+    fn record_events(
+        &self,
+        host: DeviceId,
+        chain: &[u8; 32],
+        at: i64,
+        events: &[String],
+    ) -> rusqlite::Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let accounts: Vec<i64> = {
-            let mut query =
-                tx.prepare("SELECT account_id FROM account_computers WHERE device_id = ?1")?;
-            let rows = query.query_map(params![host.get()], |row| row.get(0))?;
+            let mut query = tx.prepare(
+                "SELECT c.account_id FROM account_computers c
+                 JOIN account_chain_ids i ON i.account_id = c.account_id
+                 WHERE c.device_id = ?1 AND i.chain_id = ?2",
+            )?;
+            let rows = query.query_map(params![host.get(), chain.as_slice()], |row| row.get(0))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         for account in accounts {
@@ -535,18 +556,15 @@ impl Db {
             .optional()
     }
 
-    /// The accounts that list computer `host` (by ID), and the accounts
-    /// they share it with.
-    fn accounts_of_computer(&self, host: DeviceId) -> rusqlite::Result<Vec<i64>> {
+    /// The accounts `account` shares computer `host` (by ID) with.
+    fn shared_by(&self, account: i64, host: DeviceId) -> rusqlite::Result<Vec<i64>> {
         let conn = self.conn();
         let mut query = conn.prepare(
-            "SELECT account_id FROM account_computers WHERE device_id = ?1
-             UNION
-             SELECT i.account_id FROM account_shares s
+            "SELECT DISTINCT i.account_id FROM account_shares s
              JOIN account_chain_ids i ON i.chain_id = s.with_chain
-             WHERE s.device_id = ?1",
+             WHERE s.account_id = ?1 AND s.device_id = ?2",
         )?;
-        let rows = query.query_map(params![host.get()], |row| row.get(0))?;
+        let rows = query.query_map(params![account, host.get()], |row| row.get(0))?;
         rows.collect()
     }
 
@@ -950,12 +968,21 @@ async fn run(
             // At most a handful; each is checked by the computer.
             let chains = state
                 .db(move |db| {
-                    let mut accounts = db.accounts_of_computer(device)?;
+                    // The chains asked for first, then the ones they share
+                    // this computer with: nobody else's list crowds them out.
+                    let mut accounts = Vec::new();
                     for id in known.iter().take(4) {
                         if let Some(account) = db.account_of_chain(id)?
                             && !accounts.contains(&account)
                         {
                             accounts.push(account);
+                        }
+                    }
+                    for account in accounts.clone() {
+                        for other in db.shared_by(account, device)? {
+                            if !accounts.contains(&other) {
+                                accounts.push(other);
+                            }
                         }
                     }
                     let mut chains = Vec::new();
@@ -967,7 +994,7 @@ async fn run(
                 .await?;
             Ok(AccountReply::HostChains { chains })
         }
-        AccountCall::HostEvents { events } => {
+        AccountCall::HostEvents { events, chain } => {
             // Kept only for the accounts that list this computer.
             let events: Vec<String> = events
                 .into_iter()
@@ -979,9 +1006,11 @@ async fn run(
                 })
                 .collect();
             let at = crate::db::now();
-            state
-                .db(move |db| db.record_events(device, at, &events))
-                .await?;
+            if let Some(chain) = chain {
+                state
+                    .db(move |db| db.record_events(device, &chain, at, &events))
+                    .await?;
+            }
             Ok(AccountReply::Ok)
         }
         AccountCall::Activity => {

@@ -1098,6 +1098,8 @@ struct ConsoleAsk(UiHub, crate::owners::Owners);
 
 /// How often the service looks for a newer version.
 const UPDATE_CHECK: Duration = Duration::from_secs(60 * 60);
+/// After a failed install, before the next try.
+const UPDATE_RETRY: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Installs newer versions by itself (F6): the signed `.msi`, between
 /// sessions (`slot` held meanwhile: nobody comes in while it installs).
@@ -1121,10 +1123,19 @@ async fn keep_updated(slot: Arc<Semaphore>) {
             info!("versão {}: depois da sessão", manifest.version);
             continue;
         };
-        match install_update(&manifest).await {
-            // The installer stops this service and starts the new one.
-            Ok(()) => tokio::time::sleep(Duration::from_secs(600)).await,
-            Err(e) => warn!("atualização para {}: {e:#}", manifest.version),
+        // Done, the installer stops this service and starts the new one;
+        // failed, this one goes on, and tries again later.
+        if let Err(e) = install_update(&manifest).await {
+            warn!("atualização para {}: {e:#}", manifest.version);
+            audit(&format!(
+                "atualização automática para {} falhou: {e:#}",
+                manifest.version
+            ));
+            if let Ok(dir) = machine_dir() {
+                let _ = std::fs::remove_dir_all(dir.join("update"));
+            }
+            drop(_free);
+            tokio::time::sleep(UPDATE_RETRY).await;
         }
     }
 }
@@ -1148,17 +1159,28 @@ async fn install_update(manifest: &crate::update::Manifest) -> Result<()> {
         .arg(&msi)
         .args(["/qn", "/norestart", "/l*v"])
         .arg(&log);
-    if command
+    let mut child = match command
         .creation_flags(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
         .spawn()
-        .is_err()
     {
-        command
+        Ok(child) => child,
+        Err(_) => command
             .creation_flags(DETACHED_PROCESS)
             .spawn()
-            .context("msiexec")?;
+            .context("msiexec")?,
+    };
+    // A success stops this service before the wait ends.
+    let waited = tokio::time::timeout(
+        Duration::from_secs(15 * 60),
+        tokio::task::spawn_blocking(move || child.wait()),
+    )
+    .await
+    .context("msiexec: sem terminar em 15 minutos")???;
+    if waited.success() {
+        Ok(())
+    } else {
+        bail!("msiexec: {waited} (veja {})", log.display())
     }
-    Ok(())
 }
 
 /// How often the bound account's list is fetched again.
@@ -1204,7 +1226,15 @@ impl Ask for ConsoleAsk {
             // account (one just removed no longer comes in).
             self.1.load();
             self.1.bound()?;
-            if let Err(e) = self.1.refresh().await {
+            // One of the account: checked against the latest list. Anyone
+            // else: at most every half minute (a device that just joined),
+            // or strangers would hold up every request.
+            let checked = if self.1.way(key).is_some() {
+                self.1.refresh().await
+            } else {
+                self.1.refresh_if_stale(Duration::from_secs(30)).await
+            };
+            if let Err(e) = checked {
                 warn!("conta vinculada: {e:#}");
             }
             self.1.way(key)
