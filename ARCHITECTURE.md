@@ -369,7 +369,7 @@ docs/
 - **macOS:** `.dmg` assinado e **notarizado**.
   - No primeiro uso como host, o app guia o usuário para liberar "Gravação de Tela" e "Acessibilidade" nos Ajustes.
   - Em empresas, as permissões podem ser liberadas antes via MDM (perfil PPPC).
-- **Linux:** `.AppImage`, `.deb` e `.rpm`.
+- **Linux:** `.AppImage`, `.deb` e `.rpm`. Os pacotes entram na F6, junto com os outros instaladores. O app Linux completo (interface e host) entra na F7.
 - **Atualização automática:** canal estável e beta, com pacotes assinados (por exemplo, o updater do Tauri com assinatura própria).
 
 ---
@@ -384,7 +384,7 @@ docs/
 | **F3 — Internet** ([plano](docs/F3.md)) | VPS, ID numérico, sinalização, STUN, hole punching, relay UDP + TCP/443, pedido de aceite, ponta a ponta | Conectar pela internet só com o ID, inclusive atrás de NAT/firewall |
 | **F4 — Essenciais de suporte** ([plano](docs/F4.md)) | Serviço Windows (login/UAC/Ctrl+Alt+Del), inicialização automática nos 3 SOs, senha não assistida (PAKE), clipboard, arquivos, chat, multi-monitor completo, reiniciar e reconectar, tela de login no macOS | Um técnico consegue fazer um atendimento real de ponta a ponta |
 | **F5 — Contas** | Login, 2FA, catálogo de endereços, vínculo de dispositivos, compartilhamento, auditoria. **Acesso não assistido sempre com consentimento prévio, indicador visível de sessão ativa e log de auditoria** (ver [7.4](#74-consentimento-e-transparência-princípio-do-produto)); sem modo oculto. | Acessar as próprias máquinas sem aceite e gerenciar técnicos |
-| **F6 — Distribuição** | Instaladores, assinatura, notarização, auto-update, `.exe` portátil | Usuário final instala sem avisos de segurança |
+| **F6 — Distribuição** | Instaladores, assinatura, notarização, auto-update, `.exe` portátil. **Linux:** `.deb`, `.rpm` e `.AppImage` no pipeline de release e testados numa máquina Linux real (hoje o CI só compila a linha de comando, sem nenhum teste fora do CI). O app Linux completo (interface e host) vem na F7, usando esses pacotes | Usuário final instala sem avisos de segurança; no Linux, o pacote instala, atualiza e roda |
 | **F7 — Extras** | Cliente e host Linux, vários técnicos no mesmo computador (se precisar), áudio, privacidade (tela preta), gravação de sessão, HEVC/AV1, Wake-on-LAN, mobile e web | — |
 
 ---
