@@ -18,6 +18,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
+use crate::accounts::{self, LogMailer, Mailer};
 use crate::db::Db;
 use crate::limits::RateLimiter;
 
@@ -93,6 +94,11 @@ pub struct State {
     /// (host, viewer): requests with the password the host let through, and
     /// until when it may say the viewer got in.
     open_attempts: Mutex<HashMap<(DeviceId, DeviceId), Instant>>,
+    /// Where account e-mails go.
+    pub(crate) mailer: Arc<dyn Mailer>,
+    /// Account calls that guess a password or a code.
+    pub(crate) account_guesses_by_ip: RateLimiter<IpAddr>,
+    pub(crate) account_guesses_by_email: RateLimiter<String>,
 }
 
 /// A device logged in as a host (it takes requests).
@@ -120,7 +126,13 @@ struct Pending {
 }
 
 impl State {
+    /// E-mails go to the log (see [`LogMailer`]).
     pub fn new(db: Db) -> Self {
+        warn!("contas: os e-mails vão só para o log (nenhum envio configurado)");
+        Self::with_mailer(db, Arc::new(LogMailer))
+    }
+
+    pub fn with_mailer(db: Db, mailer: Arc<dyn Mailer>) -> Self {
         let db = Arc::new(db);
         // Audit entries are written in order, off the async threads.
         let (audit, mut entries) = mpsc::unbounded_channel();
@@ -149,6 +161,15 @@ impl State {
             presence_by_device: RateLimiter::new(PRESENCE_PER_DEVICE, PRESENCE_WINDOW),
             locked_hosts: Mutex::default(),
             open_attempts: Mutex::default(),
+            mailer,
+            account_guesses_by_ip: RateLimiter::new(
+                accounts::GUESSES_PER_IP,
+                accounts::GUESS_WINDOW,
+            ),
+            account_guesses_by_email: RateLimiter::new(
+                accounts::GUESSES_PER_EMAIL,
+                accounts::GUESS_WINDOW,
+            ),
         }
     }
 
@@ -162,7 +183,7 @@ impl State {
     }
 
     /// Runs a database call off the async threads.
-    async fn db<T: Send + 'static>(
+    pub(crate) async fn db<T: Send + 'static>(
         &self,
         call: impl FnOnce(&Db) -> rusqlite::Result<T> + Send + 'static,
     ) -> rusqlite::Result<T> {
@@ -209,6 +230,8 @@ impl State {
         self.requests_to_host.prune(now);
         self.stranger_requests.prune(now);
         self.presence_by_device.prune(now);
+        self.account_guesses_by_ip.prune(now);
+        self.account_guesses_by_email.prune(now);
         self.locked_hosts
             .lock()
             .expect("lock")
@@ -354,6 +377,8 @@ struct Session {
     refused_by: Option<DeviceId>,
     /// It takes [`ServerMsg::Waiting`].
     notices: bool,
+    /// The account this connection is logged in to.
+    account: Option<i64>,
 }
 
 type Sink = futures_util::stream::SplitSink<WebSocket, Message>;
@@ -456,11 +481,13 @@ pub async fn handle(socket: WebSocket, state: &State, ip: IpAddr) {
         limited: false,
         refused_by: None,
         notices,
+        account: None,
     };
     let welcome = ServerMsg::Welcome {
         id,
         takes_attempts: true,
         takes_presence: true,
+        takes_accounts: true,
     };
     if send(&mut sink, &welcome).await {
         let mut ping = tokio::time::interval(PING_INTERVAL);
@@ -636,6 +663,15 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
             }
             let online = state.presence(me.id, ids).await;
             Some(ServerMsg::Presence { online })
+        }
+        ClientMsg::Account { request, call } => {
+            let caller = accounts::Caller {
+                device: me.id,
+                ip: me.ip,
+                login: &mut me.account,
+            };
+            let reply = accounts::handle(state, caller, call).await;
+            Some(ServerMsg::Account { request, reply })
         }
     }
 }

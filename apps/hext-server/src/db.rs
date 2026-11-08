@@ -1,7 +1,7 @@
 //! Devices and the audit log, in SQLite.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hext_crypto::PublicKey;
@@ -59,10 +59,15 @@ impl Db {
                  PRIMARY KEY (host_id, viewer_id)
              ) WITHOUT ROWID;",
         )?;
+        crate::accounts::init(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             rng: SystemRandom::new(),
         })
+    }
+
+    pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().expect("db lock")
     }
 
     /// The ID of the device with this key, if it has logged in before;
@@ -246,7 +251,7 @@ fn id_of(conn: &Connection, key: &PublicKey) -> rusqlite::Result<Option<DeviceId
         .transpose()
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
