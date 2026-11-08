@@ -175,6 +175,8 @@ impl ToViewer {
 pub enum ToUi {
     /// This computer's ID.
     Id(String),
+    /// This computer's host key (what the account's list names it by).
+    Key(String),
     /// This computer's name, as viewers see it.
     Name(String),
     /// Something the user should know (a permission missing, for example).
@@ -273,6 +275,8 @@ struct State {
     technicians: Option<(crate::technicians::Technicians, Audit)>,
     /// The list as the interface last got it.
     technicians_shown: Vec<crate::technicians::Technician>,
+    /// The host's key, as text.
+    key: Option<String>,
     /// The request on screen, waiting for its answer.
     asking: Option<(u64, oneshot::Sender<Option<Permissions>>)>,
     next_ask: u64,
@@ -315,6 +319,9 @@ impl UiHub {
             // What the new interface must show.
             if let Some(id) = &state.id {
                 let _ = tx.send(ToUi::Id(id.clone()));
+            }
+            if let Some(key) = &state.key {
+                let _ = tx.send(ToUi::Key(key.clone()));
             }
             if let Some(name) = &state.name {
                 let _ = tx.send(ToUi::Name(name.clone()));
@@ -433,6 +440,15 @@ impl UiHub {
     #[cfg_attr(not(any(windows, test)), allow(dead_code))]
     pub fn connected(&self) -> bool {
         self.0.lock().expect("lock").ui.is_some()
+    }
+
+    /// The host's key, for the interface to put this computer in an
+    /// account.
+    pub fn set_key(&self, key: &hext_crypto::PublicKey) {
+        let mut state = self.0.lock().expect("lock");
+        let key = key.to_string();
+        state.key = Some(key.clone());
+        state.send(ToUi::Key(key));
     }
 
     pub fn set_id(&self, id: DeviceId) {

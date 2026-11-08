@@ -84,6 +84,18 @@ pub(crate) fn init(conn: &Connection) -> rusqlite::Result<()> {
              entry TEXT NOT NULL,
              PRIMARY KEY (account_id, seq)
          ) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS account_members (
+             account_id INTEGER NOT NULL,
+             public_key BLOB NOT NULL,
+             PRIMARY KEY (account_id, public_key)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS account_members_by_key ON account_members (public_key);
+         CREATE TABLE IF NOT EXISTS account_computers (
+             account_id INTEGER NOT NULL,
+             device_id INTEGER NOT NULL,
+             PRIMARY KEY (account_id, device_id)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS account_computers_by_id ON account_computers (device_id);
          CREATE TABLE IF NOT EXISTS account_sessions (
              token_hash BLOB PRIMARY KEY,
              account_id INTEGER NOT NULL,
@@ -374,6 +386,50 @@ impl Db {
             entries.push(entry);
         }
         Ok(entries)
+    }
+
+    /// Who is in the account now, as its chain says: for presence (which
+    /// computers a device may see online). Only that: access is the
+    /// computers' own call, on the chain itself.
+    fn index(&self, account: i64, chain: &Chain) -> rusqlite::Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM account_members WHERE account_id = ?1",
+            params![account],
+        )?;
+        tx.execute(
+            "DELETE FROM account_computers WHERE account_id = ?1",
+            params![account],
+        )?;
+        for device in chain.devices() {
+            tx.execute(
+                "INSERT OR IGNORE INTO account_members (account_id, public_key) VALUES (?1, ?2)",
+                params![account, device.key.as_bytes().as_slice()],
+            )?;
+        }
+        for computer in chain.computers() {
+            tx.execute(
+                "INSERT OR IGNORE INTO account_computers (account_id, device_id) VALUES (?1, ?2)",
+                params![account, computer.id.get()],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// Whether `viewer` is a device of an account that has computer `host`.
+    pub(crate) fn same_account(&self, host: DeviceId, viewer: DeviceId) -> rusqlite::Result<bool> {
+        self.conn()
+            .query_row(
+                "SELECT 1 FROM account_computers c
+                 JOIN account_members m ON m.account_id = c.account_id
+                 JOIN devices v ON v.public_key = m.public_key
+                 WHERE c.device_id = ?1 AND v.id = ?2",
+                params![host.get(), viewer.get()],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|found| found.is_some())
     }
 
     /// Adds `entry` as number `seq`; false if that place is taken (someone
@@ -785,6 +841,10 @@ async fn run(
             };
             if !appended {
                 return Err(AccountError::ChainConflict.into());
+            }
+            {
+                let chain = chain.clone();
+                state.db(move |db| db.index(id, &chain)).await?;
             }
             if let Op::AddDevice { device: added, .. } = &entry.op {
                 state.joins.joined(id, added);

@@ -171,6 +171,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub async fn portable(hub: UiHub) -> Result<()> {
     let key = Arc::new(crate::device_key(None)?);
+    hub.set_key(&key.public_key());
     let name = device_name();
     // The user's name for this computer, theirs to change here.
     hub.set_name(name.clone(), hext_crypto::config_dir().ok());

@@ -61,6 +61,11 @@
         <p class="status" id="status" role="status"></p>
       </section>
 
+      <section id="computers-section" hidden>
+        <h2>Meus computadores</h2>
+        <ul class="recent" id="computers"></ul>
+      </section>
+
       <section id="sessions-section" hidden>
         <h2>Sessões abertas</h2>
         <ul class="sessions" id="sessions"></ul>
@@ -132,6 +137,9 @@
             <button type="button" class="primary" id="devices-create" hidden>Criar a lista com este computador</button>
             <button type="button" class="primary" id="devices-invite" hidden>Adicionar outro dispositivo</button>
             <button type="button" class="primary" id="devices-open-join" hidden>Colocar este computador na conta</button>
+            <h3 id="computers-title" hidden>Computadores da conta</h3>
+            <ul class="sessions" id="computers-list"></ul>
+            <button type="button" id="computer-add" hidden>Pôr este computador em Meus computadores</button>
           </div>
         </div>
         <div class="account-panel" id="account-recovery-key" hidden>
