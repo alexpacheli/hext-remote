@@ -3,6 +3,9 @@
 //! its device key is written down here. No password is kept, only keys. The
 //! list is the owner's to see and revoke, and it goes when the password
 //! changes or is turned off.
+// (Only the Windows service keeps such a list; elsewhere only the
+// interface shows one.)
+#![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 
@@ -38,7 +41,6 @@ impl Technicians {
     }
 
     /// Where it is kept.
-    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn path(&self) -> &Path {
         &self.file
     }
@@ -122,7 +124,6 @@ impl Technicians {
 }
 
 /// `since` as a day (UTC), for the command line.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub fn date(since: u64) -> String {
     // Days since 1970 to a civil date (Howard Hinnant's algorithm).
     let days = (since / 86_400) as i64 + 719_468;
