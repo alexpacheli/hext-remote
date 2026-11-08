@@ -33,6 +33,20 @@ cargo run -p hext          # a interface
 cargo run -p hext -- --help
 ```
 
+## Instalar
+
+Os instaladores ficam em **GitHub → Releases** (a partir da 0.6.0, F6, [plano](docs/F6.md)):
+
+- **Windows:** `HextRemote-<versão>-x64.msi` instala o app e o serviço (para acesso sem aceite e na tela de
+  login). Para muitos computadores: `msiexec /i HextRemote-<versão>-x64.msi /qn`. Para um atendimento
+  rápido sem instalar: `HextRemote-<versão>-portable.exe`.
+- **macOS:** `HextRemote-<versão>.dmg`: arraste o Hext Remote para Aplicativos.
+- **Linux** (linha de comando até a F7): `.deb` (Ubuntu, Debian), `.rpm` (Fedora, RHEL) ou `.AppImage`. O
+  programa se chama `hext-remote`.
+
+Sem os certificados configurados (veja a seção 4 do plano), os instaladores saem sem assinatura e o sistema
+avisa, como nos executáveis do CI abaixo.
+
 ## Baixar os executáveis do CI
 
 Cada push gera executáveis em **GitHub → Actions → CI → (execução) → Artifacts**:
