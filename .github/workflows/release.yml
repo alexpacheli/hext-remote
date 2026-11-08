@@ -168,7 +168,7 @@ jobs:
 
   linux:
     needs: version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # glibc 2.35: the packages run on older distros too
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
