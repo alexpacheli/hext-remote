@@ -664,8 +664,20 @@ async function loadDevices() {
   $("chain-id").textContent = `ID da lista: ${devices.chain}`;
   $("computer-bind").hidden = !member || !devices.listed || !devices.bindable;
   $("computers-title").hidden = devices.computers.length === 0;
+  $("shared-title").hidden = devices.shared.length === 0;
+  $("shared-list").replaceChildren(
+    ...devices.shared.map((computer) => {
+      const label = document.createElement("span");
+      label.className = "who";
+      label.textContent = `${computer.name} (${computer.id}): ${allowedText(computer.allowed)}${untilText(computer.until)}`;
+      label.title = label.textContent;
+      const item = document.createElement("li");
+      item.append(label);
+      return item;
+    }),
+  );
   $("computers-list").replaceChildren(
-    ...devices.computers.map((computer) => {
+    ...devices.computers.flatMap((computer) => {
       const label = document.createElement("span");
       label.className = "who";
       label.textContent = `${computer.name} (${computer.id})${computer.me ? ", este computador" : ""}`;
@@ -686,9 +698,17 @@ async function loadDevices() {
             accountStatus(String(message), true);
           }
         });
-        item.append(remove);
+        const share = document.createElement("button");
+        share.type = "button";
+        share.className = "link";
+        share.textContent = "Compartilhar";
+        share.addEventListener("click", () => {
+          sharing = sharing === computer.host ? null : computer.host;
+          loadDevices();
+        });
+        item.append(share, remove);
       }
-      return item;
+      return [item, ...shareRows(computer, member)];
     }),
   );
   $("devices-list").replaceChildren(
@@ -741,6 +761,102 @@ function showAccount(view) {
   if (!!was !== !!view || account.panel === null) {
     accountPanel(null);
   }
+}
+
+/** The computer whose share form is open (its host key), if any. */
+let sharing = null;
+
+/** What a share allows, in words. */
+function allowedText(allowed) {
+  const parts = ["ver"];
+  if (allowed.control) parts.push("controlar");
+  if (allowed.clipboard) parts.push("área de transferência");
+  if (allowed.files) parts.push("arquivos");
+  if (allowed.restart) parts.push("reiniciar");
+  return parts.join(", ");
+}
+
+function untilText(until) {
+  return until ? `, até ${new Date(until * 1000).toLocaleDateString()}` : "";
+}
+
+/** A computer's shares, each with Revogar, and the form to share it. */
+function shareRows(computer, member) {
+  const rows = computer.shares.map((share) => {
+    const label = document.createElement("span");
+    label.className = "who";
+    label.textContent = `↳ ${share.name}: ${allowedText(share.allowed)}${untilText(share.until)}`;
+    label.title = label.textContent;
+    const item = document.createElement("li");
+    item.className = "share";
+    item.append(label);
+    if (member) {
+      const revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.className = "link";
+      revoke.textContent = "Revogar";
+      revoke.addEventListener("click", async () => {
+        try {
+          await invoke("share_remove", { host: computer.host, with: share.with });
+          loadDevices();
+        } catch (message) {
+          accountStatus(String(message), true);
+        }
+      });
+      item.append(revoke);
+    }
+    return item;
+  });
+  if (member && sharing === computer.host) rows.push(shareForm(computer));
+  return rows;
+}
+
+function shareForm(computer) {
+  const form = document.createElement("form");
+  form.className = "share-form";
+  form.innerHTML = `
+    <label>ID da lista da outra conta (ela o vê em Dispositivos)
+      <input name="with" required spellcheck="false" autocomplete="off"></label>
+    <label>Nome, como a auditoria mostra (o e-mail, por exemplo)
+      <input name="label" required maxlength="64" autocomplete="off"></label>
+    <label><input type="checkbox" name="control" checked> Controlar</label>
+    <label><input type="checkbox" name="clipboard"> Área de transferência</label>
+    <label><input type="checkbox" name="files"> Arquivos</label>
+    <label><input type="checkbox" name="restart"> Reiniciar</label>
+    <label>Validade
+      <select name="days">
+        <option value="">Até revogar</option>
+        <option value="1">1 dia</option>
+        <option value="7">7 dias</option>
+        <option value="30">30 dias</option>
+      </select></label>
+    <button type="submit" class="primary">Compartilhar</button>`;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const field = (name) => form.elements.namedItem(name);
+    try {
+      await invoke("share_add", {
+        host: computer.host,
+        with: field("with").value.trim(),
+        name: field("label").value.trim(),
+        control: field("control").checked,
+        clipboard: field("clipboard").checked,
+        files: field("files").checked,
+        restart: field("restart").checked,
+        days: field("days").value ? Number(field("days").value) : null,
+      });
+      sharing = null;
+      accountStatus(
+        `${computer.name} compartilhado. Vale com o computador vinculado à conta (entrada sem aceite).`,
+      );
+      loadDevices();
+    } catch (message) {
+      accountStatus(String(message), true);
+    }
+  });
+  const item = document.createElement("li");
+  item.append(form);
+  return item;
 }
 
 /** The list's ID, as last shown (for binding this computer to it). */
