@@ -19,6 +19,7 @@ mod presence;
 mod recent;
 mod service;
 mod signaling;
+mod technicians;
 #[cfg(any(windows, target_os = "macos"))]
 mod ui;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
@@ -160,6 +161,16 @@ enum ServiceAction {
         #[arg(long)]
         off: bool,
     },
+    /// Lista os técnicos que entram sem a senha (vinculados no primeiro
+    /// acesso com ela), ou revoga. Precisa de administrador.
+    Technicians {
+        /// Revoga este técnico (pelo ID dele ou pela chave).
+        #[arg(long, conflicts_with = "revoke_all")]
+        revoke: Option<String>,
+        /// Revoga todos.
+        #[arg(long)]
+        revoke_all: bool,
+    },
     /// (Interno) O próprio serviço, iniciado pelo Windows.
     #[command(hide = true)]
     Run,
@@ -266,6 +277,10 @@ struct ViewArgs {
     /// padrão (num terminal, é pedida sem aparecer). Só pelo ID.
     #[arg(long)]
     password_stdin: bool,
+    /// Com a senha: pede para o host confiar neste técnico daí em diante,
+    /// sem a senha (o host lista e revoga). Nenhuma senha fica guardada.
+    #[arg(long, requires = "password_stdin")]
+    remember: bool,
     /// (Interno) Conversa com a interface que abriu este visualizador: uma
     /// linha por sessão, e ela pode pedir outros computadores.
     #[arg(long, hide = true)]

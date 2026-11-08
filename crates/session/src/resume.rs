@@ -164,6 +164,8 @@ mod tests {
             name: "Técnico".into(),
             id: "482 913 557".into(),
             needs_password: false,
+            remember: false,
+            bound: false,
         }
     }
 

@@ -94,6 +94,15 @@ fn password_file() -> Result<PathBuf> {
     Ok(machine_dir()?.join("unattended.key"))
 }
 
+/// The technicians trusted without the password (F4 marco 12). In the
+/// computer's folder, which only the system and the administrators reach:
+/// nobody else can put a key of their own there.
+fn technicians_store() -> Result<crate::technicians::Technicians> {
+    Ok(crate::technicians::Technicians::new(
+        machine_dir()?.join("technicians.json"),
+    ))
+}
+
 /// The shortest password taken: guesses are limited, but it may be all that
 /// stands between the internet and this computer.
 const MIN_PASSWORD: usize = 10;
@@ -451,7 +460,13 @@ pub fn status() -> Result<()> {
         Err(_) => println!("ID: ainda não (ou rode como administrador para ler)"),
     }
     match std::fs::metadata(password_file()?) {
-        Ok(_) => println!("Acesso não assistido: ligado"),
+        Ok(_) => {
+            println!("Acesso não assistido: ligado");
+            let count = technicians_store()?.list().len();
+            if count > 0 {
+                println!("Técnicos vinculados (entram sem a senha): {count}");
+            }
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             println!("Acesso não assistido: desligado");
         }
@@ -496,6 +511,7 @@ pub fn password(off: bool) -> Result<()> {
     }
     let file = password_file()?;
     if off {
+        revoke_bound()?;
         Verifier::remove(&file)?;
         audit("acesso não assistido desligado");
         println!("Acesso não assistido desligado.");
@@ -509,10 +525,79 @@ pub fn password(off: bool) -> Result<()> {
     if *password != *again {
         bail!("as senhas não são iguais");
     }
+    // (Before the new one: if anything fails, nobody keeps a way in.)
+    revoke_bound()?;
     Verifier::new(&password)?.save(&file)?;
     audit("senha do acesso não assistido definida");
     println!("Acesso não assistido ligado.");
     println!("Durante a sessão, este computador mostra quem está conectado.");
+    Ok(())
+}
+
+/// The technicians bound under the old password: a new one (or none)
+/// starts from nobody.
+fn revoke_bound() -> Result<()> {
+    let technicians = technicians_store()?;
+    let had = technicians.list().len();
+    technicians.clear()?;
+    if had > 0 {
+        audit(&format!(
+            "técnicos vinculados revogados com a troca da senha: {had}"
+        ));
+        println!("Os técnicos vinculados ({had}) voltam a precisar da senha.");
+    }
+    Ok(())
+}
+
+/// Lists the technicians trusted without the password, or revokes them.
+pub fn technicians(revoke: Option<&str>, revoke_all: bool) -> Result<()> {
+    require_admin()?;
+    let store = technicians_store()?;
+    if revoke_all {
+        let list = store.list();
+        store.clear()?;
+        audit(&format!(
+            "todos os técnicos vinculados revogados: {}",
+            list.len()
+        ));
+        println!(
+            "Técnicos revogados: {}. Voltam a precisar da senha.",
+            list.len()
+        );
+        return Ok(());
+    }
+    if let Some(which) = revoke {
+        let gone = store.revoke(which)?;
+        if gone.is_empty() {
+            bail!("nenhum técnico vinculado com o ID ou a chave {which}");
+        }
+        for t in &gone {
+            audit(&format!(
+                "técnico desvinculado: \"{}\" (ID {})",
+                t.name, t.id
+            ));
+            println!(
+                "Revogado: {} (ID {}). Volta a precisar da senha.",
+                t.name, t.id
+            );
+        }
+        return Ok(());
+    }
+    let list = store.list();
+    if list.is_empty() {
+        println!("Nenhum técnico vinculado: todos precisam da senha.");
+        return Ok(());
+    }
+    println!("Técnicos que entram sem a senha:");
+    for t in list {
+        println!(
+            "  {} (ID {}), desde {}",
+            t.name,
+            t.id,
+            crate::technicians::date(t.since)
+        );
+    }
+    println!("Para revogar: HextRemote service technicians --revoke <ID>");
     Ok(())
 }
 
@@ -521,8 +606,9 @@ fn audit(entry: &str) {
     super::kept::audit_to(super::log_file("audit"), entry);
 }
 
-/// The password as the service sees it.
-struct MachinePassword;
+/// The password as the service sees it, and the technicians it lets in
+/// without it (shown on `ui`).
+struct MachinePassword(UiHub);
 
 impl UnattendedPassword for MachinePassword {
     fn verifier(&self) -> Option<Verifier> {
@@ -535,6 +621,15 @@ impl UnattendedPassword for MachinePassword {
 
     fn audit(&self, entry: &str) {
         audit(entry);
+    }
+
+    fn bind(&self, viewer: &hext_crypto::PublicKey, grant: &hext_session::Grant) {
+        let bound =
+            technicians_store().and_then(|store| Ok(store.bind(viewer, &grant.id, &grant.name)?));
+        match bound {
+            Ok(()) => self.0.technicians_changed(),
+            Err(e) => warn!("técnico vinculado: {e:#}"),
+        }
     }
 }
 
@@ -813,6 +908,10 @@ async fn serve() -> Result<()> {
     let ui = UiHub::default();
     // (Changed with `service name`, as an administrator.)
     ui.set_name(name.clone(), None);
+    match technicians_store() {
+        Ok(store) => ui.set_technicians(store, audit),
+        Err(e) => warn!("técnicos vinculados: {e:#}"),
+    }
     let ending = ui.clone();
     let hub = AgentHub::new(
         || {
@@ -858,7 +957,7 @@ async fn serve() -> Result<()> {
         unattended: Some(UnattendedAccess {
             key: host_key,
             lockout: Lockout::default(),
-            password: Arc::new(MachinePassword),
+            password: Arc::new(MachinePassword(ui.clone())),
             attempts,
         }),
         resumes: resumes.clone(),
@@ -923,7 +1022,11 @@ impl Ask for ConsoleAsk {
     }
 
     fn unattended(&self) -> bool {
-        MachinePassword.verifier().is_some()
+        MachinePassword(self.0.clone()).verifier().is_some()
+    }
+
+    fn bound(&self, key: &hext_crypto::PublicKey) -> bool {
+        technicians_store().is_ok_and(|store| store.bound(key))
     }
 
     fn locked(&self) -> bool {

@@ -154,6 +154,8 @@ async fn session_answering(
             name: "Técnico".into(),
             id: "482 913 557".into(),
             needs_password: false,
+            remember: false,
+            bound: false,
         },
     );
     let (choose, chosen) = mpsc::unbounded_channel();

@@ -148,7 +148,7 @@ impl Client {
     pub async fn request_access(
         &mut self,
         to: DeviceId,
-        unattended: bool,
+        (unattended, remember): (bool, bool),
         mut on_waiting: impl FnMut(),
     ) -> Result<Result<Access, Rejection>> {
         let request = self.next_request;
@@ -157,6 +157,7 @@ impl Client {
             request,
             to,
             unattended,
+            remember: remember && unattended,
         })
         .await?;
         let answer = async {

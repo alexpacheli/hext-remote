@@ -127,6 +127,8 @@ async fn request_accept_and_decline() {
             request: 1,
             to: host.id(),
             unattended: false,
+            // (Without the password there is nothing to remember: dropped.)
+            remember: true,
         })
         .await
         .unwrap();
@@ -136,11 +138,12 @@ async fn request_accept_and_decline() {
         from_key,
         from_name,
         unattended,
+        remember,
     } = recv(&mut host).await
     else {
         panic!("expected a request");
     };
-    assert!(!unattended);
+    assert!(!unattended && !remember);
     assert_eq!(
         (from, from_key, from_name.as_str()),
         (viewer.id(), viewer_key.public_key(), "Técnico")
@@ -167,6 +170,7 @@ async fn request_accept_and_decline() {
             request: 2,
             to: host.id(),
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -226,6 +230,7 @@ async fn offline_and_unknown_ids_look_the_same() {
                     request,
                     to,
                     unattended: false,
+                    remember: false,
                 })
                 .await
                 .unwrap();
@@ -248,6 +253,7 @@ async fn cannot_connect_to_itself() {
         request: 5,
         to,
         unattended: false,
+        remember: false,
     })
     .await
     .unwrap();
@@ -272,6 +278,7 @@ async fn guessing_ids_is_rate_limited() {
                 request,
                 to,
                 unattended: false,
+                remember: false,
             })
             .await
             .unwrap();
@@ -298,6 +305,7 @@ async fn reconnecting_does_not_reset_the_limit() {
                     request,
                     to,
                     unattended: false,
+                    remember: false,
                 })
                 .await
                 .unwrap();
@@ -322,6 +330,7 @@ async fn one_waiting_request_per_viewer_and_host() {
             request: 1,
             to,
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -332,6 +341,7 @@ async fn one_waiting_request_per_viewer_and_host() {
             request: 2,
             to,
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -352,6 +362,7 @@ async fn ask(viewer: &mut Client, host: &mut Client, request: u64, accept: bool)
             request,
             to,
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -387,6 +398,7 @@ async fn refused_as(
             request,
             to,
             unattended,
+            remember: false,
         })
         .await
         .unwrap();
@@ -433,6 +445,7 @@ async fn a_flooded_host_closes_to_strangers_only() {
             request: 0,
             to,
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -505,6 +518,7 @@ async fn a_viewer_leaving_cancels_its_request() {
             request: 1,
             to: host.id(),
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -526,6 +540,7 @@ async fn unanswered_requests_time_out() {
             request: 3,
             to: host.id(),
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -565,6 +580,7 @@ async fn only_the_host_can_answer() {
             request: 1,
             to: host.id(),
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -608,6 +624,7 @@ async fn a_viewer_with_the_same_key_leaves_the_host_alone() {
             request: 1,
             to: host.id(),
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -619,6 +636,7 @@ async fn a_viewer_with_the_same_key_leaves_the_host_alone() {
             request: 2,
             to,
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -640,6 +658,7 @@ async fn a_viewer_with_the_same_key_leaves_the_host_alone() {
             request: 3,
             to,
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();
@@ -734,6 +753,7 @@ async fn messages_before_login_close_the_connection() {
             request: 1,
             to: DeviceId::new(482_913_557).unwrap(),
             unattended: false,
+            remember: false,
         }
         .to_json(),
     )
@@ -774,6 +794,7 @@ async fn unattended_requests_reach_the_host_marked_and_leave_no_trust() {
                 request,
                 to,
                 unattended: true,
+                remember: false,
             })
             .await
             .unwrap();
@@ -803,6 +824,7 @@ async fn unattended_requests_reach_the_host_marked_and_leave_no_trust() {
             request: 4,
             to,
             unattended: true,
+            remember: false,
         })
         .await
         .unwrap();
@@ -838,6 +860,7 @@ async fn send_with_password(viewer: &mut Client, to: DeviceId, request: u64) {
             request,
             to,
             unattended: true,
+            remember: false,
         })
         .await
         .unwrap();
@@ -1062,6 +1085,7 @@ async fn a_host_without_unattended_access_says_so() {
             request: 1,
             to: host.id(),
             unattended: true,
+            remember: false,
         })
         .await
         .unwrap();
@@ -1090,6 +1114,7 @@ async fn a_locked_host_tells_the_viewer_while_it_waits() {
             request: 1,
             to: host.id(),
             unattended: false,
+            remember: false,
         })
         .await
         .unwrap();

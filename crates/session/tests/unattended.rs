@@ -7,8 +7,8 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use hext_codec::{DecoderPreference, EncoderSettings};
-use hext_crypto::DeviceKey;
 use hext_crypto::pake::Verifier;
+use hext_crypto::{DeviceKey, PublicKey};
 use hext_net::{Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::{Hello, PeerInfo, Permissions, RejectReason};
 use hext_session::host::{Attempt, HostConfig, LocalDesktop, UnattendedAccess, UnattendedPassword};
@@ -23,6 +23,8 @@ const PASSWORD: &str = "cavalo correto";
 struct Kept {
     password: Option<&'static str>,
     audit: Mutex<Vec<String>>,
+    /// The technicians bound, as (key, ID).
+    bound: Mutex<Vec<(PublicKey, String)>>,
 }
 
 impl UnattendedPassword for Kept {
@@ -33,6 +35,10 @@ impl UnattendedPassword for Kept {
 
     fn audit(&self, entry: &str) {
         self.audit.lock().unwrap().push(entry.to_owned());
+    }
+
+    fn bind(&self, viewer: &PublicKey, grant: &Grant) {
+        self.bound.lock().unwrap().push((*viewer, grant.id.clone()));
     }
 }
 
@@ -97,6 +103,7 @@ impl Host {
         let kept = Arc::new(Kept {
             password,
             audit: Mutex::default(),
+            bound: Mutex::default(),
         });
         let (attempts, outcomes) = tokio::sync::mpsc::unbounded_channel();
         let config = Arc::new(HostConfig {
@@ -205,15 +212,26 @@ impl Host {
         password: Option<&str>,
         resume: Option<[u8; 32]>,
     ) -> hext_session::Result<client::ClientHandle> {
-        let code = self.codes.issue(
-            viewer.public_key(),
-            Grant {
-                permissions,
-                name: "Técnico".into(),
-                id: "482 913 557".into(),
-                needs_password,
-            },
-        );
+        let grant = Grant {
+            permissions,
+            name: "Técnico".into(),
+            id: "482 913 557".into(),
+            needs_password,
+            remember: false,
+            bound: false,
+        };
+        self.connect_with(viewer, grant, password, resume).await
+    }
+
+    /// Opens a session as `viewer`, which the server sent with `grant`.
+    async fn connect_with(
+        &self,
+        viewer: &DeviceKey,
+        grant: Grant,
+        password: Option<&str>,
+        resume: Option<[u8; 32]>,
+    ) -> hext_session::Result<client::ClientHandle> {
+        let code = self.codes.issue(viewer.public_key(), grant);
         let endpoint = hext_net::bind(viewer, &EndpointConfig::default())
             .await
             .unwrap();
@@ -282,6 +300,90 @@ async fn the_right_password_opens_a_session_and_it_is_audited() {
     assert!(audit[0].starts_with("sessão iniciada"), "{audit:?}");
     assert!(audit[0].contains("482 913 557"), "{audit:?}");
     assert!(audit[1].starts_with("sessão encerrada"), "{audit:?}");
+}
+
+/// What the server sends for a technician asking with the password, and to
+/// be remembered.
+fn remembering() -> Grant {
+    Grant {
+        permissions: Permissions::CONTROL,
+        name: "Técnico".into(),
+        id: "482 913 557".into(),
+        needs_password: true,
+        remember: true,
+        bound: false,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn asking_to_be_remembered_binds_the_technician_after_the_password() {
+    let host = Host::start(Some(PASSWORD)).await;
+    let viewer = DeviceKey::generate().unwrap();
+    let session = host
+        .connect_with(&viewer, remembering(), Some(PASSWORD), None)
+        .await
+        .unwrap();
+    session.close().await.unwrap();
+    assert_eq!(
+        *host.kept.bound.lock().unwrap(),
+        [(viewer.public_key(), "482 913 557".to_owned())]
+    );
+    let audit = host.audit(3).await;
+    assert!(audit[0].starts_with("técnico vinculado"), "{audit:?}");
+    assert!(audit[1].starts_with("sessão iniciada"), "{audit:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wrong_password_binds_nobody() {
+    let host = Host::start(Some(PASSWORD)).await;
+    let viewer = DeviceKey::generate().unwrap();
+    let wrong = host
+        .connect_with(&viewer, remembering(), Some("cavalo errado"), None)
+        .await;
+    assert_eq!(rejected(wrong), Some(RejectReason::WrongPassword));
+    assert!(host.kept.bound.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_asking_nobody_is_bound() {
+    let host = Host::start(Some(PASSWORD)).await;
+    let viewer = DeviceKey::generate().unwrap();
+    let session = host.attempt(&viewer, Some(PASSWORD)).await.unwrap();
+    session.close().await.unwrap();
+    host.audit(2).await;
+    assert!(host.kept.bound.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bound_technician_gets_in_without_the_password_and_it_is_audited() {
+    let host = Host::start(Some(PASSWORD)).await;
+    let viewer = DeviceKey::generate().unwrap();
+    let grant = Grant {
+        needs_password: false,
+        remember: false,
+        bound: true,
+        ..remembering()
+    };
+    let session = host.connect_with(&viewer, grant, None, None).await.unwrap();
+    session.close().await.unwrap();
+    let audit = host.audit(2).await;
+    assert!(
+        audit[0].starts_with("sessão iniciada (técnico vinculado"),
+        "{audit:?}"
+    );
+    assert!(audit[1].starts_with("sessão encerrada"), "{audit:?}");
+    // Its code is good from its own device only.
+    let other = DeviceKey::generate().unwrap();
+    let code = host.codes.issue(
+        viewer.public_key(),
+        Grant {
+            needs_password: false,
+            remember: false,
+            bound: true,
+            ..remembering()
+        },
+    );
+    assert!(host.codes.redeem(&code, &other.public_key()).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]

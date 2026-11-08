@@ -154,6 +154,9 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ServiceAction::Uninstall { purge } => windows::uninstall(purge),
             ServiceAction::Status => windows::status(),
             ServiceAction::Password { off } => windows::password(off),
+            ServiceAction::Technicians { revoke, revoke_all } => {
+                windows::technicians(revoke.as_deref(), revoke_all)
+            }
             ServiceAction::Run => windows::run(),
             ServiceAction::Name { .. } => unreachable!("answered above"),
         }
@@ -167,6 +170,9 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ServiceAction::Password { .. } => anyhow::bail!(
                 "no Mac, o acesso não assistido ainda não existe: cada acesso pede aceite (a volta \
                  depois de reiniciar ou de uma queda de rede não pede)"
+            ),
+            ServiceAction::Technicians { .. } => anyhow::bail!(
+                "no Mac, o acesso não assistido ainda não existe, nem os técnicos vinculados"
             ),
             ServiceAction::Run => anyhow::bail!("no Mac, quem inicia o Hext Remote é o login"),
             ServiceAction::Name { .. } => unreachable!("answered above"),

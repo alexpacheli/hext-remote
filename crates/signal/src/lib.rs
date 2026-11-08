@@ -80,6 +80,10 @@ pub enum ServerMsg {
         /// It comes with the unattended password: nobody is asked.
         #[serde(default)]
         unattended: bool,
+        /// With the password, the viewer asks to be trusted from then on,
+        /// without it (F4 marco 12). The host decides.
+        #[serde(default)]
+        remember: bool,
     },
     /// (To a viewer) the host accepted: connect to it, and expect its key.
     Accepted {
@@ -136,6 +140,10 @@ pub enum ClientMsg {
         /// With the unattended password, instead of asking anyone.
         #[serde(default)]
         unattended: bool,
+        /// With the password: be trusted from then on, without it (the
+        /// host decides).
+        #[serde(default)]
+        remember: bool,
     },
     /// (Host) accept a [`ServerMsg::Request`]: where to connect, and the
     /// one-time code the viewer will present.
@@ -295,6 +303,7 @@ mod tests {
                 request: 7,
                 to: id,
                 unattended: true,
+                remember: false,
             },
             ClientMsg::NoUnattended { request: 7 },
             ClientMsg::Waiting { request: 7 },

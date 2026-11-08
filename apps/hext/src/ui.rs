@@ -124,6 +124,8 @@ struct View {
     transfer_news: u64,
     /// Counts the sessions: a file is chosen for the one that was on.
     sessions: u64,
+    /// The technicians this computer trusts without the password.
+    technicians: Vec<crate::technicians::Technician>,
 }
 
 struct Shared {
@@ -426,6 +428,7 @@ fn received(app: &AppHandle, msg: ToUi) {
                 forget_transfer(app.clone(), view.transfer_news);
             }
         }
+        ToUi::Technicians(list) => view.technicians = list,
         ToUi::Chat(text) => {
             if let Some(session) = &view.session {
                 shared
@@ -539,6 +542,13 @@ async fn own_host(app: &AppHandle, outgoing: mpsc::UnboundedReceiver<FromUi>, lo
         }
     });
     talk(app, ours, outgoing).await;
+}
+
+/// Stops trusting a technician without the password (by its key). Anyone at
+/// the computer may: it only takes access away.
+#[tauri::command]
+fn revoke_technician(shared: State<'_, Shared>, key: String) {
+    shared.send(FromUi::Revoke(key));
 }
 
 /// Gives this computer another name (empty: back to the system's). The
@@ -802,8 +812,10 @@ fn connect(
     shared: State<'_, Shared>,
     id: String,
     password: Option<String>,
+    remember: Option<bool>,
 ) -> Result<(), String> {
     let password = password.filter(|p| !p.is_empty()).map(Zeroizing::new);
+    let remember = remember.unwrap_or(false) && password.is_some();
     let id: DeviceId = id.parse().map_err(|e| format!("{e}"))?;
     let shown = id.to_string();
     let n = shared.next_viewer.fetch_add(1, Ordering::Relaxed);
@@ -829,7 +841,7 @@ fn connect(
             hub: 0,
         });
     }
-    if let Err(e) = open_viewer(&app, n, id, password) {
+    if let Err(e) = open_viewer(&app, n, id, (password, remember)) {
         let message = format!("Não foi possível abrir a conexão: {e:#}");
         let mut view = shared.view.lock().expect("lock");
         view.viewers.retain(|v| v.session != n);
@@ -941,23 +953,27 @@ fn open_viewer(
     app: &AppHandle,
     n: u64,
     id: DeviceId,
-    password: Option<Zeroizing<String>>,
+    (password, remember): (Option<Zeroizing<String>>, bool),
 ) -> Result<()> {
     let shared = app.state::<Shared>();
     let asked = ToViewer::Open {
         session: n,
         id,
         password,
+        remember,
     };
     let running = shared.hub.lock().expect("lock").as_ref().map(|(g, _)| *g);
     let generation = match running {
         Some(generation) if tell_viewer(&shared, &asked) => generation,
         // None running, or it just left.
         _ => {
-            let ToViewer::Open { password, .. } = asked else {
+            let ToViewer::Open {
+                password, remember, ..
+            } = asked
+            else {
                 unreachable!("an open");
             };
-            start_viewer(app, n, id, password)?
+            start_viewer(app, n, id, (password, remember))?
         }
     };
     let mut view = shared.view.lock().expect("lock");
@@ -973,7 +989,7 @@ fn start_viewer(
     app: &AppHandle,
     n: u64,
     id: DeviceId,
-    password: Option<Zeroizing<String>>,
+    (password, remember): (Option<Zeroizing<String>>, bool),
 ) -> Result<u64> {
     // Not the key the portable host is using: our relay serves one
     // connection per key, so the two would keep knocking each other off.
@@ -999,6 +1015,9 @@ fn start_viewer(
     if password.is_some() {
         // Through its input: an argument could be read in the process list.
         command.arg("--password-stdin");
+        if remember {
+            command.arg("--remember");
+        }
     }
     let mut child = command.spawn().context("iniciar o visualizador")?;
     let mut stdin = child.stdin.take().context("entrada do visualizador")?;
@@ -1199,6 +1218,7 @@ pub fn run(link: Link) -> Result<()> {
             chat_send,
             open_host_chat,
             rename,
+            revoke_technician,
             connect,
             viewer_focus,
             viewer_close,

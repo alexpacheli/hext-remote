@@ -89,6 +89,8 @@ pub fn of_session_line(line: &str) -> Option<(u64, &str)> {
 }
 
 const OPEN: &str = "open";
+/// An open with the password, asking to be trusted from then on.
+const OPEN_REMEMBER: &str = "open-remember";
 const FOCUS: &str = "focus";
 const CLOSE: &str = "close";
 
@@ -96,11 +98,13 @@ const CLOSE: &str = "close";
 /// password.)
 pub enum ToViewer {
     /// Another computer, as session `session`; with `password`, nobody there
-    /// needs to accept.
+    /// needs to accept, and with `remember` (and the password), it trusts
+    /// this technician from then on, without it.
     Open {
         session: u64,
         id: DeviceId,
         password: Option<Zeroizing<String>>,
+        remember: bool,
     },
     /// Bring the session's window forward.
     Focus(u64),
@@ -118,12 +122,17 @@ impl ToViewer {
                 session,
                 id,
                 password: None,
+                ..
             } => format!("{OPEN} {session} {}", id.get()),
             Self::Open {
                 session,
                 id,
                 password: Some(password),
-            } => format!("{OPEN} {session} {} {}", id.get(), password.as_str()),
+                remember,
+            } => {
+                let verb = if *remember { OPEN_REMEMBER } else { OPEN };
+                format!("{verb} {session} {} {}", id.get(), password.as_str())
+            }
             Self::Focus(session) => session_line(*session, FOCUS),
             Self::Close(session) => session_line(*session, CLOSE),
             Self::Chat(session, text) => session_line(*session, &chat_json(text)),
@@ -132,7 +141,12 @@ impl ToViewer {
 
     /// A line of [`ToViewer::line`] (its end already gone).
     pub fn parse(line: &str) -> Option<Self> {
-        if let Some(rest) = line.strip_prefix(OPEN).and_then(|r| r.strip_prefix(' ')) {
+        let open = |verb: &str| line.strip_prefix(verb).and_then(|r| r.strip_prefix(' '));
+        let (remember, open) = match open(OPEN_REMEMBER) {
+            Some(rest) => (true, Some(rest)),
+            None => (false, open(OPEN)),
+        };
+        if let Some(rest) = open {
             let mut parts = rest.splitn(3, ' ');
             let session = parts.next()?.parse().ok()?;
             let id = parts.next()?.parse().ok()?;
@@ -143,6 +157,7 @@ impl ToViewer {
             return Some(Self::Open {
                 session,
                 id,
+                remember: remember && password.is_some(),
                 password,
             });
         }
@@ -187,6 +202,9 @@ pub enum ToUi {
     },
     /// The viewer wrote.
     Chat(ChatText),
+    /// The technicians this computer trusts without the password (only
+    /// where there is such a list: the service).
+    Technicians(Vec<crate::technicians::Technician>),
 }
 
 /// Interface → owner of the sessions.
@@ -208,6 +226,9 @@ pub enum FromUi {
     /// system's). Taken only where the name is this user's, by the app's
     /// own host: the service's is an administrator's to change.
     Rename(String),
+    /// Stop trusting this technician (by key) without the password. Anyone
+    /// at the computer may: it only takes access away.
+    Revoke(String),
 }
 
 /// The session going on, as shown on the indicator.
@@ -223,6 +244,9 @@ pub struct SessionView {
 /// must show. Cheap to clone (shared).
 #[derive(Clone, Default)]
 pub struct UiHub(Arc<Mutex<State>>);
+
+/// Writes a line in the audit log.
+type Audit = fn(&str);
 
 #[derive(Default)]
 struct State {
@@ -244,6 +268,9 @@ struct State {
     name_dir: Option<PathBuf>,
     /// The other end of `chat_out`, until the session takes it.
     chat_to_session: Option<mpsc::UnboundedReceiver<ChatText>>,
+    /// The technicians trusted without the password, and how a revocation
+    /// is written down; `None`: no such list here.
+    technicians: Option<(crate::technicians::Technicians, Audit)>,
     /// The request on screen, waiting for its answer.
     asking: Option<(u64, oneshot::Sender<Option<Permissions>>)>,
     next_ask: u64,
@@ -279,6 +306,9 @@ impl UiHub {
             }
             if let Some(notice) = &state.notice {
                 let _ = tx.send(ToUi::Notice(notice.clone()));
+            }
+            if let Some((technicians, _)) = &state.technicians {
+                let _ = tx.send(ToUi::Technicians(technicians.list()));
             }
             if let Some((session, _)) = &state.session {
                 let _ = tx.send(ToUi::SessionStarted(session.clone()));
@@ -335,6 +365,24 @@ impl UiHub {
                     let _ = chat_out.send(text);
                 }
             }
+            FromUi::Revoke(key) => {
+                let Some((technicians, audit)) = &state.technicians else {
+                    return;
+                };
+                match technicians.revoke(&key) {
+                    Ok(gone) => {
+                        for t in gone {
+                            audit(&format!(
+                                "técnico desvinculado na tela: \"{}\" (ID {})",
+                                t.name, t.id
+                            ));
+                        }
+                    }
+                    Err(e) => warn!("{}: {e}", technicians.path().display()),
+                }
+                let list = technicians.list();
+                state.send(ToUi::Technicians(list));
+            }
             FromUi::Rename(typed) => {
                 let Some(dir) = state.name_dir.clone() else {
                     return;
@@ -387,6 +435,24 @@ impl UiHub {
         state.name = Some(name.clone());
         state.name_dir = name_dir;
         state.send(ToUi::Name(name));
+    }
+
+    /// The technicians trusted here without the password, and how a
+    /// revocation on the interface is written down.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn set_technicians(&self, technicians: crate::technicians::Technicians, audit: Audit) {
+        let mut state = self.0.lock().expect("lock");
+        state.send(ToUi::Technicians(technicians.list()));
+        state.technicians = Some((technicians, audit));
+    }
+
+    /// The list of technicians changed: the interface shows it again.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn technicians_changed(&self) {
+        let state = self.0.lock().expect("lock");
+        if let Some((technicians, _)) = &state.technicians {
+            state.send(ToUi::Technicians(technicians.list()));
+        }
     }
 
     pub fn set_notice(&self, notice: String) {
@@ -566,6 +632,7 @@ mod tests {
             session: 3,
             id: id(),
             password: Some(Zeroizing::new("uma senha  com espaços ".to_owned())),
+            remember: false,
         };
         let line = open.line();
         assert_eq!(line.as_str(), "open 3 482913557 uma senha  com espaços ");
@@ -573,6 +640,7 @@ mod tests {
             session: 3,
             id: back,
             password: Some(password),
+            remember: false,
         }) = ToViewer::parse(&line)
         else {
             panic!("an open with a password");
@@ -582,6 +650,32 @@ mod tests {
             ToViewer::parse("open 4 482913557"),
             Some(ToViewer::Open {
                 session: 4,
+                password: None,
+                ..
+            })
+        ));
+        let remembered = ToViewer::Open {
+            session: 6,
+            id: id(),
+            password: Some(Zeroizing::new("senha".to_owned())),
+            remember: true,
+        };
+        let line = remembered.line();
+        assert_eq!(line.as_str(), "open-remember 6 482913557 senha");
+        assert!(matches!(
+            ToViewer::parse(&line),
+            Some(ToViewer::Open {
+                session: 6,
+                remember: true,
+                password: Some(_),
+                ..
+            })
+        ));
+        // Without the password there is nothing to remember it by.
+        assert!(matches!(
+            ToViewer::parse("open-remember 7 482913557"),
+            Some(ToViewer::Open {
+                remember: false,
                 password: None,
                 ..
             })
