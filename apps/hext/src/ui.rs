@@ -397,9 +397,8 @@ fn open_home(app: &AppHandle) {
         let home = window(&app, "main", "index.html", |builder| {
             builder
                 .title("Hext Remote")
-                .inner_size(420.0, 640.0)
-                .resizable(false)
-                .maximizable(false)
+                .inner_size(940.0, 620.0)
+                .min_inner_size(560.0, 480.0)
                 .center()
         });
         match home {

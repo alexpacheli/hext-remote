@@ -7,224 +7,291 @@
     <script src="app.js" defer></script>
   </head>
   <body data-page="home">
+    <aside class="sidebar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+          <defs>
+            <linearGradient id="logo-fill" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#5b7cfa" />
+              <stop offset="1" stop-color="#7c4dff" />
+            </linearGradient>
+          </defs>
+          <path d="M16 2.5 27.7 9.25v13.5L16 29.5 4.3 22.75V9.25Z" fill="url(#logo-fill)" />
+          <path d="M11 10.5v11M21 10.5v11M11 16h10" stroke="#fff" stroke-width="2.6" stroke-linecap="round" fill="none" />
+        </svg>
+        <span>Hext Remote</span>
+      </div>
+      <nav aria-label="Seções">
+        <button type="button" class="nav active" data-tab="home">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1Z" /></svg>
+          <span>Início</span>
+        </button>
+        <button type="button" class="nav" data-tab="account">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7" /></svg>
+          <span>Conta</span>
+        </button>
+        <button type="button" class="nav" data-tab="security">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.6 3.4 8.3 8 9 4.6-.7 8-4.4 8-9V6Z" /><path d="m9 12 2 2 4-4" /></svg>
+          <span>Segurança</span>
+        </button>
+      </nav>
+      <p class="me-status" id="me-status"><span class="dot" id="me-dot"></span><span id="me-state">Conectando…</span></p>
+    </aside>
+
     <main>
-      <h1>Hext Remote</h1>
-
-      <section>
-        <h2>Seu ID</h2>
-        <p class="id" id="own-id">Conectando…</p>
-        <p class="name-line" id="name-line" hidden>
-          <span id="own-name"></span>
-          <button type="button" class="link" id="rename">Alterar</button>
-        </p>
-        <form id="rename-form" class="rename" hidden>
-          <input
-            id="new-name"
-            maxlength="64"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="Nome deste computador (vazio: o do sistema)"
-            aria-label="Nome deste computador"
-          />
-          <button type="submit" class="primary">Salvar</button>
-          <button type="button" id="rename-cancel">Cancelar</button>
-        </form>
-        <p class="hint">Passe este número para quem vai acessar este computador.</p>
-        <p class="notice" id="notice" hidden></p>
-        <p class="notice" id="install" hidden>
-          <span>Para acessar este computador a qualquer hora, também sem ninguém na frente dele:</span>
-          <button type="button" class="link" id="install-here">Instalar neste computador</button>
-        </p>
-        <p class="notice" id="update" hidden>
-          <span id="update-text"></span>
-          <button type="button" class="link" id="update-open">Baixar</button>
-        </p>
-      </section>
-
-      <section>
-        <h2>Acessar outro computador</h2>
-        <form id="connect">
-          <input
-            id="target"
-            inputmode="numeric"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="ID do outro computador"
-            aria-label="ID do outro computador"
-          />
-          <button type="submit" id="connect-button" class="primary">Conectar</button>
-          <input
-            id="password"
-            class="wide"
-            type="password"
-            autocomplete="off"
-            placeholder="Senha, para entrar sem ninguém aceitar (opcional)"
-            aria-label="Senha de acesso não assistido (opcional)"
-          />
-          <label class="wide hint" id="remember-line" hidden>
-            <input type="checkbox" id="remember" />
-            Entrar sem senha da próxima vez (o outro computador pode revogar)
-          </label>
-        </form>
-        <p class="status" id="status" role="status"></p>
-      </section>
-
-      <section id="computers-section" hidden>
-        <h2>Meus computadores</h2>
-        <ul class="recent" id="computers"></ul>
-      </section>
-
-      <section id="sessions-section" hidden>
-        <h2>Sessões abertas</h2>
-        <ul class="sessions" id="sessions"></ul>
-      </section>
-
-      <section id="owners-section" hidden>
-        <h2>Conta vinculada</h2>
-        <p class="hint" id="owners-text"></p>
-        <button type="button" id="owners-off">Desligar a entrada sem aceite</button>
-      </section>
-
-      <section id="technicians-section" hidden>
-        <h2>Técnicos que entram sem senha</h2>
-        <p class="hint">
-          Entraram uma vez com a senha e pediram para não precisar dela de novo. Trocar a senha
-          revoga todos.
-        </p>
-        <ul class="sessions" id="technicians"></ul>
-      </section>
-
-      <section id="account-section">
-        <h2>Conta</h2>
-        <!-- Each panel is one step; only one shows at a time. -->
-        <div class="account-panel" id="account-out">
-          <p class="hint">
-            Opcional. Com uma conta, você vai entrar nos seus computadores sem precisar de aceite.
+      <div class="tab" id="tab-home">
+        <div class="notices">
+          <p class="notice" id="notice" hidden></p>
+          <p class="notice info" id="install" hidden>
+            <span>Para acessar este computador a qualquer hora, também sem ninguém na frente dele.</span>
+            <button type="button" class="link" id="install-here">Instalar neste computador</button>
           </p>
-          <button type="button" class="primary" id="account-open-login">Entrar</button>
-          <button type="button" id="account-open-register">Criar conta</button>
+          <p class="notice info" id="update" hidden>
+            <span id="update-text"></span>
+            <button type="button" class="link" id="update-open">Baixar</button>
+          </p>
         </div>
-        <form class="account-panel" id="account-login" hidden>
-          <input id="login-email" class="wide" inputmode="email" spellcheck="false" autocomplete="username" placeholder="E-mail" aria-label="E-mail" />
-          <input id="login-password" class="wide" type="password" autocomplete="current-password" placeholder="Senha" aria-label="Senha" />
-          <input id="login-second" class="wide" inputmode="numeric" autocomplete="one-time-code" placeholder="Código do app autenticador (ou de recuperação)" aria-label="Código da verificação em duas etapas" hidden />
-          <button type="submit" class="primary">Entrar</button>
-          <button type="button" class="cancel">Cancelar</button>
-          <button type="button" class="link" id="account-open-forgot">Esqueci a senha</button>
-        </form>
-        <form class="account-panel" id="account-register" hidden>
-          <input id="register-email" class="wide" inputmode="email" spellcheck="false" autocomplete="username" placeholder="E-mail" aria-label="E-mail" />
-          <input id="register-password" class="wide" type="password" autocomplete="new-password" placeholder="Senha (pelo menos 10 caracteres)" aria-label="Senha" />
-          <input id="register-again" class="wide" type="password" autocomplete="new-password" placeholder="A mesma senha de novo" aria-label="Repita a senha" />
-          <button type="submit" class="primary">Criar conta</button>
-          <button type="button" class="cancel">Cancelar</button>
-        </form>
-        <form class="account-panel" id="account-verify" hidden>
-          <p class="hint wide">Mandamos um código de 6 dígitos para <strong id="verify-email"></strong>.</p>
-          <input id="verify-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Código" aria-label="Código do e-mail" />
-          <button type="submit" class="primary">Confirmar</button>
-          <input id="verify-password" class="wide" type="password" autocomplete="new-password" placeholder="A senha que você escolheu" aria-label="Senha" hidden />
-          <button type="button" class="cancel">Cancelar</button>
-        </form>
-        <form class="account-panel" id="account-forgot" hidden>
-          <input id="forgot-email" class="wide" inputmode="email" spellcheck="false" autocomplete="username" placeholder="E-mail da conta" aria-label="E-mail" />
-          <button type="submit" class="primary">Mandar código</button>
-          <button type="button" class="cancel">Cancelar</button>
-        </form>
-        <form class="account-panel" id="account-reset" hidden>
-          <p class="hint wide">Se houver uma conta com esse e-mail, chegou um código nele.</p>
-          <input id="reset-code" class="wide" inputmode="numeric" autocomplete="one-time-code" placeholder="Código" aria-label="Código do e-mail" />
-          <input id="reset-password" class="wide" type="password" autocomplete="new-password" placeholder="Senha nova" aria-label="Senha nova" />
-          <button type="submit" class="primary">Trocar a senha</button>
-          <button type="button" class="cancel">Cancelar</button>
-        </form>
-        <div class="account-panel" id="account-in" hidden>
-          <p class="name-line"><span id="account-email"></span></p>
-          <p class="hint" id="account-totp"></p>
-          <button type="button" class="primary" id="account-open-totp">Ligar a verificação em duas etapas</button>
-          <button type="button" id="account-open-change">Trocar a senha</button>
-          <button type="button" class="link" id="account-logout">Sair da conta</button>
-          <div class="wide devices" id="devices" hidden>
-            <h3>Dispositivos da conta</h3>
-            <p class="hint" id="devices-hint"></p>
-            <ul class="sessions" id="devices-list"></ul>
-            <button type="button" class="primary" id="devices-create" hidden>Criar a lista com este computador</button>
-            <button type="button" class="primary" id="devices-invite" hidden>Adicionar outro dispositivo</button>
-            <button type="button" class="primary" id="devices-open-join" hidden>Colocar este computador na conta</button>
-            <h3 id="computers-title" hidden>Computadores da conta</h3>
-            <ul class="sessions" id="computers-list"></ul>
-            <button type="button" id="computer-add" hidden>Pôr este computador em Meus computadores</button>
-            <button type="button" id="computer-bind" hidden>Deixar os dispositivos da conta entrarem sem aceite</button>
-            <p class="hint" id="chain-id" hidden></p>
-            <h3 id="shared-title" hidden>Compartilhados com esta conta</h3>
-            <ul class="sessions" id="shared-list"></ul>
-            <div id="activity" hidden>
-              <h3>Atividade</h3>
-              <p class="hint">Os acessos aos computadores vinculados à conta, como a auditoria de cada um registrou.</p>
-              <button type="button" id="activity-load">Ver os acessos</button>
-              <ul class="sessions" id="activity-list"></ul>
+
+        <div class="hero">
+          <section class="card me">
+            <h2>Este computador</h2>
+            <div class="id-row">
+              <p class="id" id="own-id">Conectando…</p>
+              <button type="button" class="icon" id="copy-id" title="Copiar o ID" aria-label="Copiar o ID" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h8" /></svg>
+              </button>
+            </div>
+            <p class="name-line" id="name-line" hidden>
+              <span id="own-name"></span>
+              <button type="button" class="link" id="rename">Alterar</button>
+            </p>
+            <form id="rename-form" class="rename" hidden>
+              <input
+                id="new-name"
+                maxlength="64"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Nome deste computador (vazio: o do sistema)"
+                aria-label="Nome deste computador"
+              />
+              <button type="submit" class="primary">Salvar</button>
+              <button type="button" id="rename-cancel">Cancelar</button>
+            </form>
+            <p class="hint">Passe este número para quem vai acessar este computador.</p>
+          </section>
+
+          <section class="card connect">
+            <h2>Acessar outro computador</h2>
+            <form id="connect">
+              <input
+                id="target"
+                class="wide big"
+                inputmode="numeric"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="ID do outro computador"
+                aria-label="ID do outro computador"
+              />
+              <input
+                id="password"
+                class="wide"
+                type="password"
+                autocomplete="off"
+                placeholder="Senha de acesso (opcional)"
+                aria-label="Senha de acesso não assistido (opcional)"
+              />
+              <label class="wide hint" id="remember-line" hidden>
+                <input type="checkbox" id="remember" />
+                Entrar sem senha da próxima vez (o outro computador pode revogar)
+              </label>
+              <button type="submit" id="connect-button" class="primary wide">Conectar</button>
+            </form>
+            <p class="status" id="status" role="status"></p>
+          </section>
+        </div>
+
+        <section class="group" id="sessions-section" hidden>
+          <h2>Sessões abertas</h2>
+          <ul class="rows" id="sessions"></ul>
+        </section>
+
+        <section class="group" id="computers-section" hidden>
+          <h2>Meus computadores</h2>
+          <ul class="tiles" id="computers"></ul>
+        </section>
+
+        <section class="group" id="recent-section" hidden>
+          <h2>Recentes</h2>
+          <ul class="tiles" id="recent"></ul>
+        </section>
+
+        <section class="empty" id="home-empty" hidden>
+          <p>Os computadores que você acessar aparecem aqui.</p>
+        </section>
+      </div>
+
+      <div class="tab" id="tab-account" hidden>
+        <header class="tab-head">
+          <h1>Conta</h1>
+          <p class="hint">Seus computadores e dispositivos, de qualquer lugar.</p>
+        </header>
+        <section class="card" id="account-section">
+          <!-- Each panel is one step; only one shows at a time. -->
+          <div class="account-panel" id="account-out">
+            <p class="hint">
+              Opcional. Com uma conta, você vai entrar nos seus computadores sem precisar de aceite.
+            </p>
+            <button type="button" class="primary" id="account-open-login">Entrar</button>
+            <button type="button" id="account-open-register">Criar conta</button>
+          </div>
+          <form class="account-panel" id="account-login" hidden>
+            <input id="login-email" class="wide" inputmode="email" spellcheck="false" autocomplete="username" placeholder="E-mail" aria-label="E-mail" />
+            <input id="login-password" class="wide" type="password" autocomplete="current-password" placeholder="Senha" aria-label="Senha" />
+            <input id="login-second" class="wide" inputmode="numeric" autocomplete="one-time-code" placeholder="Código do app autenticador (ou de recuperação)" aria-label="Código da verificação em duas etapas" hidden />
+            <button type="submit" class="primary">Entrar</button>
+            <button type="button" class="cancel">Cancelar</button>
+            <button type="button" class="link" id="account-open-forgot">Esqueci a senha</button>
+          </form>
+          <form class="account-panel" id="account-register" hidden>
+            <input id="register-email" class="wide" inputmode="email" spellcheck="false" autocomplete="username" placeholder="E-mail" aria-label="E-mail" />
+            <input id="register-password" class="wide" type="password" autocomplete="new-password" placeholder="Senha (pelo menos 10 caracteres)" aria-label="Senha" />
+            <input id="register-again" class="wide" type="password" autocomplete="new-password" placeholder="A mesma senha de novo" aria-label="Repita a senha" />
+            <button type="submit" class="primary">Criar conta</button>
+            <button type="button" class="cancel">Cancelar</button>
+          </form>
+          <form class="account-panel" id="account-verify" hidden>
+            <p class="hint wide">Mandamos um código de 6 dígitos para <strong id="verify-email"></strong>.</p>
+            <input id="verify-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Código" aria-label="Código do e-mail" />
+            <button type="submit" class="primary">Confirmar</button>
+            <input id="verify-password" class="wide" type="password" autocomplete="new-password" placeholder="A senha que você escolheu" aria-label="Senha" hidden />
+            <button type="button" class="cancel">Cancelar</button>
+          </form>
+          <form class="account-panel" id="account-forgot" hidden>
+            <input id="forgot-email" class="wide" inputmode="email" spellcheck="false" autocomplete="username" placeholder="E-mail da conta" aria-label="E-mail" />
+            <button type="submit" class="primary">Mandar código</button>
+            <button type="button" class="cancel">Cancelar</button>
+          </form>
+          <form class="account-panel" id="account-reset" hidden>
+            <p class="hint wide">Se houver uma conta com esse e-mail, chegou um código nele.</p>
+            <input id="reset-code" class="wide" inputmode="numeric" autocomplete="one-time-code" placeholder="Código" aria-label="Código do e-mail" />
+            <input id="reset-password" class="wide" type="password" autocomplete="new-password" placeholder="Senha nova" aria-label="Senha nova" />
+            <button type="submit" class="primary">Trocar a senha</button>
+            <button type="button" class="cancel">Cancelar</button>
+          </form>
+          <div class="account-panel" id="account-in" hidden>
+            <p class="name-line"><span id="account-email"></span></p>
+            <p class="hint" id="account-totp"></p>
+            <button type="button" class="primary" id="account-open-totp">Ligar a verificação em duas etapas</button>
+            <button type="button" id="account-open-change">Trocar a senha</button>
+            <button type="button" class="link" id="account-logout">Sair da conta</button>
+            <div class="wide devices" id="devices" hidden>
+              <h3>Dispositivos da conta</h3>
+              <p class="hint" id="devices-hint"></p>
+              <ul class="rows" id="devices-list"></ul>
+              <button type="button" class="primary" id="devices-create" hidden>Criar a lista com este computador</button>
+              <button type="button" class="primary" id="devices-invite" hidden>Adicionar outro dispositivo</button>
+              <button type="button" class="primary" id="devices-open-join" hidden>Colocar este computador na conta</button>
+              <h3 id="computers-title" hidden>Computadores da conta</h3>
+              <ul class="rows" id="computers-list"></ul>
+              <button type="button" id="computer-add" hidden>Pôr este computador em Meus computadores</button>
+              <button type="button" id="computer-bind" hidden>Deixar os dispositivos da conta entrarem sem aceite</button>
+              <p class="hint" id="chain-id" hidden></p>
+              <h3 id="shared-title" hidden>Compartilhados com esta conta</h3>
+              <ul class="rows" id="shared-list"></ul>
+              <div id="activity" hidden>
+                <h3>Atividade</h3>
+                <p class="hint">Os acessos aos computadores vinculados à conta, como a auditoria de cada um registrou.</p>
+                <button type="button" id="activity-load">Ver os acessos</button>
+                <ul class="rows" id="activity-list"></ul>
+              </div>
             </div>
           </div>
-        </div>
-        <div class="account-panel" id="account-recovery-key" hidden>
-          <p class="hint">
-            Esta é a chave de recuperação da conta. Com ela, você coloca um computador na conta quando
-            nenhum outro estiver à mão. Guarde num lugar seguro: ela não aparece de novo, e ninguém
-            (nem o suporte) consegue recuperá-la.
-          </p>
-          <p class="secret big" id="recovery-key"></p>
-          <button type="button" class="primary" id="account-recovery-key-done">Guardei a chave</button>
-        </div>
-        <div class="account-panel" id="account-invite" hidden>
-          <p class="hint">
-            No outro computador, entre na mesma conta e escolha "Colocar este computador na conta".
-            Depois digite este código lá (vale por 10 minutos):
-          </p>
-          <p class="secret big" id="invite-code"></p>
-          <p class="hint" id="invite-state">Esperando o outro computador…</p>
-          <button type="button" class="cancel">Fechar</button>
-        </div>
-        <form class="account-panel" id="account-join" hidden>
-          <p class="hint wide">
-            Num computador que já está na conta, escolha "Adicionar outro dispositivo" e digite aqui o
-            código que aparecer. Sem outro computador à mão, use a chave de recuperação.
-          </p>
-          <input id="join-code" class="wide" autocomplete="off" spellcheck="false" placeholder="Código ou chave de recuperação" aria-label="Código do outro computador ou chave de recuperação" />
-          <button type="submit" class="primary">Entrar na lista</button>
-          <button type="button" class="cancel">Cancelar</button>
-        </form>
-        <form class="account-panel" id="account-totp-setup" hidden>
-          <p class="hint wide">
-            Leia o código com o app autenticador (Google Authenticator, Authy, 1Password…) ou digite a
-            chave nele. Depois escreva o código de 6 dígitos que o app mostra.
-          </p>
-          <div class="qr wide" id="totp-qr"></div>
-          <p class="secret wide" id="totp-secret"></p>
-          <input id="totp-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Código do app" aria-label="Código do app autenticador" />
-          <button type="submit" class="primary">Ligar</button>
-          <button type="button" class="cancel">Cancelar</button>
-        </form>
-        <div class="account-panel" id="account-recovery" hidden>
-          <p class="hint">
-            Guarde estes códigos num lugar seguro. Cada um entra uma vez no lugar do app autenticador,
-            se você perder o celular. Eles não aparecem de novo.
-          </p>
-          <ul class="codes" id="recovery-codes"></ul>
-          <button type="button" class="primary" id="account-recovery-done">Guardei os códigos</button>
-        </div>
-        <form class="account-panel" id="account-change" hidden>
-          <input id="change-old" class="wide" type="password" autocomplete="current-password" placeholder="Senha atual" aria-label="Senha atual" />
-          <input id="change-new" class="wide" type="password" autocomplete="new-password" placeholder="Senha nova" aria-label="Senha nova" />
-          <button type="submit" class="primary">Trocar</button>
-          <button type="button" class="cancel">Cancelar</button>
-        </form>
-        <p class="status" id="account-status" role="status"></p>
-      </section>
+          <div class="account-panel" id="account-recovery-key" hidden>
+            <p class="hint">
+              Esta é a chave de recuperação da conta. Com ela, você coloca um computador na conta quando
+              nenhum outro estiver à mão. Guarde num lugar seguro: ela não aparece de novo, e ninguém
+              (nem o suporte) consegue recuperá-la.
+            </p>
+            <p class="secret big" id="recovery-key"></p>
+            <button type="button" class="primary" id="account-recovery-key-done">Guardei a chave</button>
+          </div>
+          <div class="account-panel" id="account-invite" hidden>
+            <p class="hint">
+              No outro computador, entre na mesma conta e escolha "Colocar este computador na conta".
+              Depois digite este código lá (vale por 10 minutos):
+            </p>
+            <p class="secret big" id="invite-code"></p>
+            <p class="hint" id="invite-state">Esperando o outro computador…</p>
+            <button type="button" class="cancel">Fechar</button>
+          </div>
+          <form class="account-panel" id="account-join" hidden>
+            <p class="hint wide">
+              Num computador que já está na conta, escolha "Adicionar outro dispositivo" e digite aqui o
+              código que aparecer. Sem outro computador à mão, use a chave de recuperação.
+            </p>
+            <input id="join-code" class="wide" autocomplete="off" spellcheck="false" placeholder="Código ou chave de recuperação" aria-label="Código do outro computador ou chave de recuperação" />
+            <button type="submit" class="primary">Entrar na lista</button>
+            <button type="button" class="cancel">Cancelar</button>
+          </form>
+          <form class="account-panel" id="account-totp-setup" hidden>
+            <p class="hint wide">
+              Leia o código com o app autenticador (Google Authenticator, Authy, 1Password…) ou digite a
+              chave nele. Depois escreva o código de 6 dígitos que o app mostra.
+            </p>
+            <div class="qr wide" id="totp-qr"></div>
+            <p class="secret wide" id="totp-secret"></p>
+            <input id="totp-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Código do app" aria-label="Código do app autenticador" />
+            <button type="submit" class="primary">Ligar</button>
+            <button type="button" class="cancel">Cancelar</button>
+          </form>
+          <div class="account-panel" id="account-recovery" hidden>
+            <p class="hint">
+              Guarde estes códigos num lugar seguro. Cada um entra uma vez no lugar do app autenticador,
+              se você perder o celular. Eles não aparecem de novo.
+            </p>
+            <ul class="codes" id="recovery-codes"></ul>
+            <button type="button" class="primary" id="account-recovery-done">Guardei os códigos</button>
+          </div>
+          <form class="account-panel" id="account-change" hidden>
+            <input id="change-old" class="wide" type="password" autocomplete="current-password" placeholder="Senha atual" aria-label="Senha atual" />
+            <input id="change-new" class="wide" type="password" autocomplete="new-password" placeholder="Senha nova" aria-label="Senha nova" />
+            <button type="submit" class="primary">Trocar</button>
+            <button type="button" class="cancel">Cancelar</button>
+          </form>
+          <p class="status" id="account-status" role="status"></p>
+        </section>
+      </div>
 
-      <section id="recent-section" hidden>
-        <h2>Computadores acessados</h2>
-        <ul class="recent" id="recent"></ul>
-      </section>
+      <div class="tab" id="tab-security" hidden>
+        <header class="tab-head">
+          <h1>Segurança</h1>
+          <p class="hint">Quem entra neste computador sem que alguém aceite na tela.</p>
+        </header>
+
+        <section class="card" id="owners-section" hidden>
+          <h2>Conta vinculada</h2>
+          <p class="hint" id="owners-text"></p>
+          <div class="buttons">
+            <button type="button" id="owners-off">Desligar a entrada sem aceite</button>
+          </div>
+        </section>
+
+        <section class="card" id="technicians-section" hidden>
+          <h2>Técnicos que entram sem senha</h2>
+          <p class="hint">
+            Entraram uma vez com a senha e pediram para não precisar dela de novo. Trocar a senha
+            revoga todos.
+          </p>
+          <ul class="rows" id="technicians"></ul>
+        </section>
+
+        <section class="empty" id="security-empty" hidden>
+          <p>Ninguém entra sem aceite neste computador.</p>
+          <p class="hint">
+            A senha de acesso e a entrada pela conta valem com o Hext Remote instalado.
+          </p>
+        </section>
+      </div>
     </main>
   </body>
 </html>
