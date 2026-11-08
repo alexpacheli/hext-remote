@@ -266,9 +266,13 @@ struct ViewArgs {
     /// padrão (num terminal, é pedida sem aparecer). Só pelo ID.
     #[arg(long)]
     password_stdin: bool,
-    /// (Interno) Avisa a interface que abriu este visualizador quando conectar.
+    /// (Interno) Conversa com a interface que abriu este visualizador: uma
+    /// linha por sessão, e ela pode pedir outros computadores.
     #[arg(long, hide = true)]
     report_to_ui: bool,
+    /// (Interno) O número da primeira sessão, para a interface.
+    #[arg(long, hide = true, default_value_t = 1)]
+    session: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]

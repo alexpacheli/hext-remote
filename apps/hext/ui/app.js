@@ -57,24 +57,11 @@ const pages = {
       notice.textContent = view.notice ?? "";
 
       showRecent(view.recent, view.online);
-      const busy = view.viewer.state === "asking" || view.viewer.state === "connected";
-      $("connect-button").disabled = busy;
-      switch (view.viewer.state) {
-        case "asking":
-          showStatus(
-            view.viewer.locked
-              ? "O computador está bloqueado: peça para alguém acordar a tela."
-              : "Aguardando o outro computador…",
-          );
-          break;
-        case "connected":
-          showStatus("Conectado. A tela abriu em outra janela.");
-          break;
-        case "failed":
-          showStatus(view.viewer.message, true);
-          break;
-        default:
-          showStatus("");
+      showSessions(view.viewers);
+      if (view.viewer_failure) {
+        showStatus(view.viewer_failure, true);
+      } else {
+        showStatus("");
       }
     },
   },
@@ -224,6 +211,42 @@ const pages = {
     },
   },
 };
+
+/** What a computer open from here is doing. */
+function sessionState({ asking, locked }) {
+  if (locked) {
+    return "bloqueado: peça para alguém acordar a tela";
+  }
+  return asking ? "aguardando aceitar…" : "conectado";
+}
+
+/** The computers open from here, each in its window. */
+function showSessions(viewers) {
+  $("sessions-section").hidden = viewers.length === 0;
+  $("sessions").replaceChildren(
+    ...viewers.map((viewer) => {
+      const who = viewer.name ? `${viewer.name} (${viewer.id})` : viewer.id;
+      const label = document.createElement("span");
+      label.className = "who";
+      label.textContent = `${who}: ${sessionState(viewer)}`;
+      label.title = label.textContent;
+      const show = document.createElement("button");
+      show.type = "button";
+      show.className = "link";
+      show.textContent = "Mostrar";
+      show.hidden = viewer.asking;
+      show.addEventListener("click", () => invoke("viewer_focus", { session: viewer.session }));
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "link";
+      close.textContent = viewer.asking ? "Cancelar" : "Encerrar";
+      close.addEventListener("click", () => invoke("viewer_close", { session: viewer.session }));
+      const item = document.createElement("li");
+      item.append(label, show, close);
+      return item;
+    }),
+  );
+}
 
 /**
  * The computers accessed; a click fills in the ID. `online`: the IDs online

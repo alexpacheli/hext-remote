@@ -4,7 +4,9 @@
 //! tokio runtime and decoding on its own thread. Each decoded frame is
 //! handed over through `latest` and the event loop is woken to draw it.
 
+use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,6 +35,7 @@ use winit::keyboard::{KeyCode, ModifiersKeyState, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 use zeroize::Zeroizing;
 
+use crate::ui_link::ToViewer;
 use crate::{APP_VERSION, CmdKey, CodecChoice, CtrlKey, ViewArgs, device_name, parse_addr};
 
 /// Trackpad scrolling arrives in pixels; this many make one wheel notch.
@@ -57,8 +60,12 @@ const BACK_MAX: Duration = Duration::from_secs(10);
 const TRANSFER_SHOWN: Duration = Duration::from_secs(8);
 /// How long the mouse waits for the host to change displays.
 const SWITCH_WAIT: Duration = Duration::from_secs(2);
+/// How long a viewer of the interface stays with no window, for the next
+/// computer asked for: one leaving just as it is asked would lose it.
+const IDLE_STAY: Duration = Duration::from_secs(60);
 
-enum UserEvent {
+/// News of one session, for the window loop.
+enum SessionEvent {
     Frame,
     SessionEnded,
     /// The attempt to come back ended.
@@ -74,22 +81,95 @@ enum UserEvent {
         text: String,
         answer: oneshot::Sender<bool>,
     },
+    /// (While opening) the host's screen is locked: someone must wake it.
+    Locked,
+}
+
+enum UserEvent {
+    /// About a session, by its number.
+    Session(u64, SessionEvent),
+    /// That session is open, or could not be.
+    Opened(u64, Box<Result<Started>>),
+    /// The interface asks for something.
+    Ui(ToViewer),
+    /// The interface is gone: nobody will ask for more.
+    UiGone,
+}
+
+/// Hands one session's news to the window loop.
+#[derive(Clone)]
+struct Tell {
+    session: u64,
+    proxy: EventLoopProxy<UserEvent>,
+}
+
+impl Tell {
+    fn send(&self, event: SessionEvent) {
+        let _ = self
+            .proxy
+            .send_event(UserEvent::Session(self.session, event));
+    }
+}
+
+/// What every session of this viewer shares: one key, one endpoint. Our
+/// relay serves one connection per key, so two endpoints (two viewers)
+/// would keep knocking each other off.
+struct Net {
+    key: hext_crypto::DeviceKey,
+    /// The signaling server, to connect by ID.
+    server: Option<String>,
+    /// The hosts' keys, as first seen (by ID only).
+    known: Option<KnownHosts>,
+    relay: Option<hext_net::RelayUrl>,
+    /// Bound on first use: by ID, only once logged in (and so registered,
+    /// which the default relay requires).
+    endpoint: tokio::sync::OnceCell<Endpoint>,
+}
+
+impl Net {
+    fn new(args: &ViewArgs, target: &Target) -> Result<Self> {
+        let key = crate::device_key(args.device_key.as_deref())?;
+        let server = crate::server(&args.server).map(str::to_owned);
+        let (known, relay) = match target {
+            Target::Id(_) => {
+                // Next to the key, so each key (profile) has its own.
+                let known = match &args.device_key {
+                    Some(path) => KnownHosts::new(path.with_file_name("known_hosts")),
+                    None => KnownHosts::default_location()?,
+                };
+                (
+                    Some(known),
+                    crate::relay_for(&args.relay, server.as_deref())?,
+                )
+            }
+            // Not registered through a server: no default relay.
+            Target::Ip { .. } => (None, crate::relay_for(&args.relay, None)?),
+        };
+        Ok(Self {
+            key,
+            server,
+            known,
+            relay,
+            endpoint: tokio::sync::OnceCell::new(),
+        })
+    }
+
+    async fn endpoint(&self) -> Result<&Endpoint> {
+        self.endpoint
+            .get_or_try_init(|| bind(&self.key, self.relay.clone()))
+            .await
+    }
 }
 
 /// What it takes to reach the host again: only by ID.
 struct Route {
-    server: String,
+    net: Arc<Net>,
     id: DeviceId,
-    key: hext_crypto::DeviceKey,
-    known: KnownHosts,
 }
 
-/// What [`open`] got.
-struct Opened {
-    endpoint: Endpoint,
-    conn: Connection,
-    code: String,
-    viewer: hext_crypto::PublicKey,
+/// A session just opened.
+struct Started {
+    session: ClientHandle,
     route: Option<Route>,
 }
 
@@ -98,132 +178,309 @@ struct Back {
     route: Route,
     decoder: DecoderPreference,
     latest: Latest,
-    proxy: EventLoopProxy<UserEvent>,
+    tell: Tell,
 }
 
 /// The newest picture, and the host's display it shows.
 type Latest = Arc<Mutex<Option<(YuvFrame, u8)>>>;
 
+/// How a session's window ends.
+enum Ending {
+    /// Closed, or the host ended it.
+    Over,
+    Failed(anyhow::Error),
+}
+
 pub fn run(args: ViewArgs) -> Result<()> {
     let password = read_password(&args)?;
+    // The arguments first, before any network.
+    let target = target(&args)?;
+    if password.is_some() && !matches!(target, Target::Id(_)) {
+        bail!("a senha de acesso não assistido só vale conectando pelo ID");
+    }
+    let net = Arc::new(Net::new(&args, &target)?);
     let runtime = tokio::runtime::Runtime::new()?;
-    let Opened {
-        endpoint,
-        conn,
-        code,
-        viewer,
-        route,
-    } = runtime.block_on(open(&args, password.is_some()))?;
-    let password = password.map(|password| PasswordLogin { password, viewer });
-    let hello = Hello {
-        peer: PeerInfo::local(APP_VERSION, device_name()),
-        access_code: code,
-        resume: None,
-    };
-
     if args.headless {
-        return runtime.block_on(headless(endpoint, conn, args, hello, password));
+        return runtime.block_on(headless(net, target, &args, password));
     }
 
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let latest: Latest = Arc::default();
-
-    let session = runtime.block_on(async {
-        let mut session = client::start(
-            conn,
-            hello,
-            password,
-            decoder(args.decoder),
-            show_frames(latest.clone(), proxy.clone()),
-        )
-        .await
-        .map_err(explain)?;
-        tokio::spawn(end_of(&session, proxy.clone()));
-        tokio::spawn(share_clipboard(&mut session));
-        tokio::spawn(share_files(&mut session, proxy.clone()));
-        tokio::spawn(hear_displays(&session, proxy.clone()));
-        if args.report_to_ui {
-            tokio::spawn(hear_chat(&mut session));
-        }
-        anyhow::Ok(session)
-    })?;
-    info!(
-        "conectado a {} ({:?}, v{})",
-        session.host.device_name, session.host.os, session.host.app_version
-    );
-    if !session.permissions.control {
-        info!("o host permitiu só ver a tela");
-    }
     if args.report_to_ui {
-        println!(
-            "{} {}",
-            crate::ui_link::VIEWER_CONNECTED,
-            crate::signaling::shown_name(&session.host.device_name)
-        );
         listen_to_ui(proxy.clone());
     }
-
-    let host_is_mac = session.host.os == Os::MacOs;
-    let back = route.map(|route| {
-        Arc::new(Back {
-            route,
-            decoder: decoder(args.decoder),
-            latest: latest.clone(),
-            proxy: proxy.clone(),
-        })
-    });
-    let mut app = Viewer {
+    let mut viewers = Viewers {
         runtime,
-        session: Some(session),
-        endpoint: Some(endpoint),
-        latest,
-        back,
-        coming_back: None,
-        restart_confirm: None,
-        restart_sent: None,
-        transfer: None,
-        failure: None,
+        net,
+        decoder: decoder(args.decoder),
+        cmd_key: args.cmd_key,
+        ctrl_key: args.ctrl_key,
+        ui: args.report_to_ui,
         proxy,
-        window: None,
-        renderer: None,
-        command_key: match args.cmd_key {
-            // A Mac host understands Command itself.
-            _ if host_is_mac => CommandKey::Win,
-            CmdKey::Ctrl => CommandKey::Ctrl,
-            CmdKey::Win => CommandKey::Win,
-        },
-        swap_ctrl_and_super: host_is_mac
-            && !cfg!(target_os = "macos")
-            && args.ctrl_key == CtrlKey::Cmd,
-        modifiers: Modifiers::default(),
-        local_key: None,
-        cursor: None,
-        button: None,
-        button_hint: None,
-        button_pressed: false,
-        button_near: false,
-        handle: None,
-        displays: Displays::default(),
-        display_bar: None,
-        switching: None,
-        picture: None,
-        chat_link: args.report_to_ui,
-        chat_button: None,
-        last_title: Instant::now(),
+        sessions: HashMap::new(),
+        windows: HashMap::new(),
+        opening: HashMap::new(),
+        focused: Arc::default(),
+        resumed: false,
+        idle_since: None,
+        ui_gone: false,
+        closing: Vec::new(),
+        failure: None,
     };
-    event_loop.run_app(&mut app)?;
-    match app.failure.take() {
-        Some(e) => Err(e.context("não foi possível voltar à sessão")),
+    viewers.open(args.session, target, password);
+    event_loop.run_app(&mut viewers)?;
+    match viewers.failure.take() {
+        Some(e) => Err(e),
         None => Ok(()),
     }
 }
 
-struct Viewer {
+/// Every session of this viewer, each in its window.
+struct Viewers {
     runtime: tokio::runtime::Runtime,
+    net: Arc<Net>,
+    decoder: DecoderPreference,
+    cmd_key: CmdKey,
+    ctrl_key: CtrlKey,
+    /// Opened by the interface: it takes a line about each session, and may
+    /// ask for more.
+    ui: bool,
+    proxy: EventLoopProxy<UserEvent>,
+    sessions: HashMap<u64, Viewer>,
+    windows: HashMap<WindowId, u64>,
+    /// Sessions on their way: where their pictures will go, and how to give
+    /// up on them.
+    opening: HashMap<u64, (Latest, tokio::task::AbortHandle)>,
+    /// The session whose window had the focus last: the only one that trades
+    /// clipboards, or one customer's text could reach another.
+    focused: Arc<AtomicU64>,
+    /// Windows can be made (not before the loop starts).
+    resumed: bool,
+    /// With nothing open, since when.
+    idle_since: Option<Instant>,
+    /// The interface that opened this is gone.
+    ui_gone: bool,
+    /// Sessions closing, waited for before leaving.
+    closing: Vec<tokio::task::JoinHandle<()>>,
+    /// (Without the interface) why the last session could not open, or come
+    /// back: what this ends with.
+    failure: Option<anyhow::Error>,
+}
+
+impl Viewers {
+    /// Opens session `n` in the background.
+    fn open(&mut self, n: u64, target: Target, password: Option<Zeroizing<String>>) {
+        if self.sessions.contains_key(&n) || self.opening.contains_key(&n) {
+            return;
+        }
+        self.idle_since = None;
+        let latest = Latest::default();
+        let tell = Tell {
+            session: n,
+            proxy: self.proxy.clone(),
+        };
+        let (net, decoder, proxy) = (self.net.clone(), self.decoder, self.proxy.clone());
+        let pictures = latest.clone();
+        let task = self.runtime.spawn(async move {
+            let opened = open_session(net, target, password, decoder, pictures, tell).await;
+            let _ = proxy.send_event(UserEvent::Opened(n, Box::new(opened)));
+        });
+        self.opening.insert(n, (latest, task.abort_handle()));
+    }
+
+    /// Session `n` opened: its window comes up.
+    fn opened(&mut self, event_loop: &ActiveEventLoop, n: u64, started: Started) {
+        // (Given up on meanwhile: it closes as it drops.)
+        let Some((latest, _)) = self.opening.remove(&n) else {
+            return;
+        };
+        let Started { mut session, route } = started;
+        info!(
+            "conectado a {} ({:?}, v{})",
+            session.host.device_name, session.host.os, session.host.app_version
+        );
+        if !session.permissions.control {
+            info!("o host permitiu só ver a tela");
+        }
+        let tell = Tell {
+            session: n,
+            proxy: self.proxy.clone(),
+        };
+        let runtime = self.runtime.handle().clone();
+        runtime.spawn(end_of(&session, tell.clone()));
+        runtime.spawn(share_clipboard(&mut session, n, self.focused.clone()));
+        runtime.spawn(share_files(&mut session, tell.clone()));
+        runtime.spawn(hear_displays(&session, tell.clone()));
+        if self.ui {
+            runtime.spawn(hear_chat(&mut session, n));
+            let name = crate::signaling::shown_name(&session.host.device_name);
+            tell_ui(n, &format!("{} {name}", crate::ui_link::VIEWER_CONNECTED));
+        }
+        let host_is_mac = session.host.os == Os::MacOs;
+        let back = route.map(|route| {
+            Arc::new(Back {
+                route,
+                decoder: self.decoder,
+                latest: latest.clone(),
+                tell: tell.clone(),
+            })
+        });
+        let viewer = Viewer {
+            n,
+            runtime,
+            session: Some(session),
+            endpoint: self.net.endpoint.get().cloned(),
+            latest,
+            back,
+            coming_back: None,
+            restart_confirm: None,
+            restart_sent: None,
+            transfer: None,
+            closing: None,
+            focused: self.focused.clone(),
+            tell,
+            window: None,
+            renderer: None,
+            command_key: match self.cmd_key {
+                // A Mac host understands Command itself.
+                _ if host_is_mac => CommandKey::Win,
+                CmdKey::Ctrl => CommandKey::Ctrl,
+                CmdKey::Win => CommandKey::Win,
+            },
+            swap_ctrl_and_super: host_is_mac
+                && !cfg!(target_os = "macos")
+                && self.ctrl_key == CtrlKey::Cmd,
+            modifiers: Modifiers::default(),
+            local_key: None,
+            cursor: None,
+            button: None,
+            button_hint: None,
+            button_pressed: false,
+            button_near: false,
+            handle: None,
+            displays: Displays::default(),
+            display_bar: None,
+            switching: None,
+            picture: None,
+            chat_link: self.ui,
+            chat_button: None,
+            last_title: Instant::now(),
+        };
+        // The newest window is the one in use.
+        self.focused.store(n, Ordering::Relaxed);
+        self.sessions.insert(n, viewer);
+        if self.resumed {
+            self.make_window(event_loop, n);
+        }
+    }
+
+    fn make_window(&mut self, event_loop: &ActiveEventLoop, n: u64) {
+        if let Some(viewer) = self.sessions.get_mut(&n)
+            && let Some(id) = viewer.open_window(event_loop)
+        {
+            self.windows.insert(id, n);
+        }
+        self.settle(event_loop, n);
+    }
+
+    /// Session `n` could not open: says why.
+    fn failed(&mut self, event_loop: &ActiveEventLoop, n: u64, e: anyhow::Error) {
+        if self.opening.remove(&n).is_none() {
+            return;
+        }
+        self.report(n, Ending::Failed(e));
+        self.exit_if_done(event_loop);
+    }
+
+    /// Says how session `n` ended: to the interface, or as this viewer's
+    /// result.
+    fn report(&mut self, n: u64, ending: Ending) {
+        match (ending, self.ui) {
+            (Ending::Over, true) => tell_ui(n, crate::ui_link::VIEWER_ENDED),
+            (Ending::Failed(e), true) => {
+                let reason = format!("{e:#}").replace(['\r', '\n'], " ");
+                tell_ui(n, &format!("{} {reason}", crate::ui_link::VIEWER_ENDED));
+            }
+            (Ending::Over, false) => {}
+            (Ending::Failed(e), false) => self.failure = Some(e),
+        }
+    }
+
+    /// A session that is over goes, with its window.
+    fn settle(&mut self, event_loop: &ActiveEventLoop, n: u64) {
+        let Some(ending) = self.sessions.get_mut(&n).and_then(|v| v.closing.take()) else {
+            return;
+        };
+        let Some(mut viewer) = self.sessions.remove(&n) else {
+            return;
+        };
+        if let Some(window) = viewer.window.take() {
+            self.windows.remove(&window.id());
+        }
+        if let Some(session) = viewer.session.take() {
+            self.closing.push(self.runtime.spawn(async move {
+                if let Err(e) = session.close().await {
+                    warn!("encerrando: {e}");
+                }
+            }));
+        }
+        self.report(n, ending);
+        self.exit_if_done(event_loop);
+    }
+
+    /// With nothing open or opening, the viewer is done: at once, unless the
+    /// interface may still ask for more ([`IDLE_STAY`]).
+    fn exit_if_done(&mut self, event_loop: &ActiveEventLoop) {
+        if !(self.sessions.is_empty() && self.opening.is_empty()) {
+            return;
+        }
+        let stays = self.ui && !self.ui_gone;
+        let since = *self.idle_since.get_or_insert_with(Instant::now);
+        if !stays || since.elapsed() >= IDLE_STAY {
+            event_loop.exit();
+        }
+    }
+
+    /// What the interface asks for.
+    fn asked(&mut self, event_loop: &ActiveEventLoop, asked: ToViewer) {
+        match asked {
+            ToViewer::Open {
+                session,
+                id,
+                password,
+            } => self.open(session, Target::Id(id), password),
+            ToViewer::Focus(n) => {
+                if let Some(window) = self.sessions.get(&n).and_then(|v| v.window.as_ref()) {
+                    window.set_minimized(false);
+                    window.focus_window();
+                }
+            }
+            ToViewer::Close(n) => {
+                if let Some(viewer) = self.sessions.get_mut(&n) {
+                    viewer.closing = Some(Ending::Over);
+                    self.settle(event_loop, n);
+                } else if let Some((_, task)) = self.opening.remove(&n) {
+                    // Leaving the server takes the request back.
+                    task.abort();
+                    self.report(n, Ending::Over);
+                    self.exit_if_done(event_loop);
+                }
+            }
+            ToViewer::Chat(n, text) => match self.sessions.get_mut(&n) {
+                Some(viewer) => viewer.on_event(SessionEvent::ChatOut(text)),
+                None => tell_ui(n, crate::ui_link::VIEWER_CHAT_NO_ONE),
+            },
+        }
+    }
+}
+
+struct Viewer {
+    /// The session's number (the interface's).
+    n: u64,
+    runtime: tokio::runtime::Handle,
     /// `None` while coming back.
     session: Option<ClientHandle>,
-    /// Closed (gracefully, relay included) when the window closes.
+    /// Shared by every session: to come back by.
     endpoint: Option<Endpoint>,
     latest: Latest,
     /// How to open the session again; `None`: connected by IP.
@@ -237,9 +494,11 @@ struct Viewer {
     /// What the title says of the files, and until when (`None`: until the
     /// next news).
     transfer: Option<(String, Option<Instant>)>,
-    /// Why the session could not be opened again.
-    failure: Option<anyhow::Error>,
-    proxy: EventLoopProxy<UserEvent>,
+    /// The window is done, and how.
+    closing: Option<Ending>,
+    /// See [`Viewers::focused`].
+    focused: Arc<AtomicU64>,
+    tell: Tell,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     command_key: CommandKey,
@@ -360,7 +619,7 @@ impl Viewer {
         self.update_title();
         self.runtime.spawn(async move {
             let result = reconnect(&back, &endpoint, token, time).await;
-            let _ = back.proxy.send_event(UserEvent::Back(Box::new(result)));
+            back.tell.send(SessionEvent::Back(Box::new(result)));
         });
     }
 
@@ -622,10 +881,12 @@ impl Viewer {
     }
 }
 
-impl ApplicationHandler<UserEvent> for Viewer {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+/// The window's side, called by [`Viewers`].
+impl Viewer {
+    /// Makes the window, the first time; its ID.
+    fn open_window(&mut self, event_loop: &ActiveEventLoop) -> Option<WindowId> {
         if self.window.is_some() {
-            return;
+            return None;
         }
         let host = self
             .session
@@ -637,27 +898,27 @@ impl ApplicationHandler<UserEvent> for Viewer {
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(e) => {
-                warn!("janela: {e}");
-                event_loop.exit();
-                return;
+                self.closing = Some(Ending::Failed(anyhow::anyhow!("janela: {e}")));
+                return None;
             }
         };
         match Renderer::new(window.clone()) {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(e) => {
-                warn!("{e}");
-                event_loop.exit();
-                return;
+                self.closing = Some(Ending::Failed(e.into()));
+                return None;
             }
         }
+        let id = window.id();
         self.window = Some(window);
+        Some(id)
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn on_event(&mut self, event: SessionEvent) {
         match event {
             // Draw right away instead of waiting for a redraw request: lower latency.
-            UserEvent::Frame => self.draw(true),
-            UserEvent::SessionEnded => {
+            SessionEvent::Frame => self.draw(true),
+            SessionEvent::SessionEnded => {
                 let ending = self.session.as_ref().and_then(ClientHandle::comes_back);
                 match (ending, self.back.clone(), self.endpoint.clone()) {
                     (Some((token, time)), Some(back), Some(endpoint)) => {
@@ -665,22 +926,23 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     }
                     _ => {
                         info!("sessão encerrada pelo host");
-                        event_loop.exit();
+                        self.closing = Some(Ending::Over);
                     }
                 }
             }
-            UserEvent::Back(result) => match *result {
+            SessionEvent::Back(result) => match *result {
                 Ok(mut session) => {
                     info!("sessão retomada");
                     // (On the window's thread, outside the runtime.)
-                    self.runtime.spawn(end_of(&session, self.proxy.clone()));
-                    self.runtime.spawn(share_clipboard(&mut session));
+                    self.runtime.spawn(end_of(&session, self.tell.clone()));
                     self.runtime
-                        .spawn(share_files(&mut session, self.proxy.clone()));
+                        .spawn(share_clipboard(&mut session, self.n, self.focused.clone()));
                     self.runtime
-                        .spawn(hear_displays(&session, self.proxy.clone()));
+                        .spawn(share_files(&mut session, self.tell.clone()));
+                    self.runtime
+                        .spawn(hear_displays(&session, self.tell.clone()));
                     if self.chat_link {
-                        self.runtime.spawn(hear_chat(&mut session));
+                        self.runtime.spawn(hear_chat(&mut session, self.n));
                     }
                     // The host starts over on a display of its choosing: back
                     // to where this was. (If it is gone, nothing changes.)
@@ -694,22 +956,24 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     self.update_title();
                 }
                 Err(e) => {
-                    self.failure = Some(e);
-                    event_loop.exit();
+                    let e = e.context("não foi possível voltar à sessão");
+                    self.closing = Some(Ending::Failed(e));
                 }
             },
             // (Taken right after this, as after any event.)
-            UserEvent::Displays => {}
-            UserEvent::ChatOut(text) => match &self.session {
+            SessionEvent::Displays => {}
+            SessionEvent::ChatOut(text) => match &self.session {
                 Some(session) => session.send_chat(text),
-                None => tell_ui(crate::ui_link::VIEWER_CHAT_NO_ONE),
+                None => tell_ui(self.n, crate::ui_link::VIEWER_CHAT_NO_ONE),
             },
-            UserEvent::Transfer(transfer) => {
+            // (Only while opening: for [`Viewers`].)
+            SessionEvent::Locked => {}
+            SessionEvent::Transfer(transfer) => {
                 let until = (!matches!(transfer.stage, Stage::Going { .. }))
                     .then(|| Instant::now() + TRANSFER_SHOWN);
                 self.show_transfer(transfer.to_string(), until);
             }
-            UserEvent::AskFile { text, answer } => {
+            SessionEvent::AskFile { text, answer } => {
                 if let Some(window) = &self.window {
                     self.runtime.spawn(ask_file(window, text, answer));
                 }
@@ -717,9 +981,9 @@ impl ApplicationHandler<UserEvent> for Viewer {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn on_window(&mut self, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.closing = Some(Ending::Over),
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
@@ -733,6 +997,7 @@ impl ApplicationHandler<UserEvent> for Viewer {
                 self.local_key = None;
                 self.send(InputEvent::ReleaseAll);
             }
+            WindowEvent::Focused(true) => self.focused.store(self.n, Ordering::Relaxed),
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = None;
                 self.update_button();
@@ -757,7 +1022,7 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     }
                     if pressed && self.on_chat_button() {
                         self.button_pressed = true;
-                        tell_ui(crate::ui_link::VIEWER_CHAT_OPEN);
+                        tell_ui(self.n, crate::ui_link::VIEWER_CHAT_OPEN);
                         return;
                     }
                     if pressed && self.on_button() {
@@ -852,7 +1117,7 @@ impl ApplicationHandler<UserEvent> for Viewer {
                     && self.ctrl_alt()
                 {
                     self.local_key = Some(code);
-                    tell_ui(crate::ui_link::VIEWER_CHAT_OPEN);
+                    tell_ui(self.n, crate::ui_link::VIEWER_CHAT_OPEN);
                     return;
                 }
                 // Ctrl+Alt+Enter: full screen, and back.
@@ -879,7 +1144,8 @@ impl ApplicationHandler<UserEvent> for Viewer {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    /// Brings what changes with time up to date; when to come back for it.
+    fn wake_at(&mut self) -> Option<Instant> {
         self.update_displays();
         self.update_title();
         if self
@@ -916,9 +1182,74 @@ impl ApplicationHandler<UserEvent> for Viewer {
         let answer = self
             .restart_sent
             .map(|_| Instant::now() + Duration::from_secs(1));
-        let wake = [self.button_hint, self.restart_confirm, answer, shown_until]
+        [self.button_hint, self.restart_confirm, answer, shown_until]
             .into_iter()
             .flatten()
+            .min()
+    }
+}
+
+impl ApplicationHandler<UserEvent> for Viewers {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.resumed = true;
+        let waiting: Vec<u64> = self
+            .sessions
+            .iter()
+            .filter(|(_, v)| v.window.is_none())
+            .map(|(&n, _)| n)
+            .collect();
+        for n in waiting {
+            self.make_window(event_loop, n);
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Session(n, SessionEvent::Locked) => {
+                if self.ui {
+                    tell_ui(n, crate::ui_link::HOST_LOCKED);
+                } else {
+                    println!("{}", crate::ui_link::HOST_LOCKED);
+                }
+            }
+            UserEvent::Session(n, event) => {
+                if let Some(viewer) = self.sessions.get_mut(&n) {
+                    viewer.on_event(event);
+                    self.settle(event_loop, n);
+                }
+            }
+            UserEvent::Opened(n, opened) => match *opened {
+                Ok(started) => self.opened(event_loop, n, started),
+                Err(e) => self.failed(event_loop, n, e),
+            },
+            UserEvent::Ui(asked) => self.asked(event_loop, asked),
+            UserEvent::UiGone => {
+                self.ui_gone = true;
+                self.exit_if_done(event_loop);
+            }
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let Some(&n) = self.windows.get(&id) else {
+            return;
+        };
+        if let Some(viewer) = self.sessions.get_mut(&n) {
+            viewer.on_window(event);
+            self.settle(event_loop, n);
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.idle_since.is_some() {
+            self.exit_if_done(event_loop);
+        }
+        let leave = self.idle_since.map(|since| since + IDLE_STAY);
+        let wake = self
+            .sessions
+            .values_mut()
+            .filter_map(Viewer::wake_at)
+            .chain(leave)
             .min();
         event_loop.set_control_flow(match wake {
             Some(until) => ControlFlow::WaitUntil(until),
@@ -927,92 +1258,118 @@ impl ApplicationHandler<UserEvent> for Viewer {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(session) = self.session.take()
-            && let Err(e) = self.runtime.block_on(session.close())
-        {
-            warn!("encerrando: {e}");
+        for (_, mut viewer) in self.sessions.drain() {
+            if let Some(session) = viewer.session.take() {
+                self.closing.push(self.runtime.spawn(async move {
+                    if let Err(e) = session.close().await {
+                        warn!("encerrando: {e}");
+                    }
+                }));
+            }
         }
-        if let Some(endpoint) = self.endpoint.take() {
-            self.runtime.block_on(endpoint.close());
-        }
+        let closing = std::mem::take(&mut self.closing);
+        let net = self.net.clone();
+        self.runtime.block_on(async move {
+            for task in closing {
+                let _ = task.await;
+            }
+            // Gracefully, relay included.
+            if let Some(endpoint) = net.endpoint.get() {
+                endpoint.close().await;
+            }
+        });
     }
 }
 
 /// Hands decoded frames to the window.
-fn show_frames(
-    latest: Latest,
-    proxy: EventLoopProxy<UserEvent>,
-) -> impl FnMut(client::DecodedFrame) + Send + 'static {
+fn show_frames(latest: Latest, tell: Tell) -> impl FnMut(client::DecodedFrame) + Send + 'static {
     move |frame| {
         *latest.lock().expect("lock") = Some((frame.yuv, frame.display));
-        let _ = proxy.send_event(UserEvent::Frame);
+        tell.send(SessionEvent::Frame);
     }
 }
 
 /// Wakes the window at each news of the host's displays: a still screen
 /// brings no event of its own.
-fn hear_displays(
-    session: &ClientHandle,
-    proxy: EventLoopProxy<UserEvent>,
-) -> impl Future<Output = ()> + Send + 'static {
+fn hear_displays(session: &ClientHandle, tell: Tell) -> impl Future<Output = ()> + Send + 'static {
     let mut displays = session.displays_changed();
     async move {
         while displays.changed().await.is_ok() {
-            let _ = proxy.send_event(UserEvent::Displays);
+            tell.send(SessionEvent::Displays);
         }
     }
 }
 
-/// Hands the interface what the chat brings, for as long as the session lasts.
-fn hear_chat(session: &mut ClientHandle) -> impl Future<Output = ()> + Send + 'static {
+/// Hands the interface what the chat of session `n` brings, for as long as
+/// it lasts.
+fn hear_chat(session: &mut ClientHandle, n: u64) -> impl Future<Output = ()> + Send + 'static {
     let chat = session.chat();
     async move {
         let Some(mut chat) = chat else { return };
         while let Some(news) = chat.recv().await {
             match news {
                 client::ChatNews::Text(text) => {
-                    tell_ui(&crate::ui_link::viewer_chat_line(&text));
+                    tell_ui(n, &crate::ui_link::viewer_chat_line(&text));
                 }
-                client::ChatNews::NoOne => tell_ui(crate::ui_link::VIEWER_CHAT_NO_ONE),
+                client::ChatNews::NoOne => tell_ui(n, crate::ui_link::VIEWER_CHAT_NO_ONE),
             }
         }
     }
 }
 
-/// A line for the interface that opened this viewer. If it is gone, nobody
-/// is waiting: the session goes on. (`println!` would stop it right there.)
-fn tell_ui(line: &str) {
+/// A line about session `n` for the interface that opened this viewer. If
+/// it is gone, nobody is waiting: the session goes on. (`println!` would stop
+/// it right there.)
+fn tell_ui(n: u64, line: &str) {
+    let line = crate::ui_link::session_line(n, line);
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{line}").and_then(|()| out.flush());
 }
 
-/// Takes what the person writes in the interface's chat window, on a thread
-/// that may wait for as long as the interface stays quiet.
+/// Takes what the interface asks for (another computer, what the person
+/// writes in a chat window...), on a thread that may wait for as long as the
+/// interface stays quiet.
 fn listen_to_ui(proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
-        for line in std::io::stdin().lines().map_while(std::result::Result::ok) {
-            if let Some(text) = crate::ui_link::chat_of_json(&line) {
-                let _ = proxy.send_event(UserEvent::ChatOut(text));
+        let mut stdin = std::io::stdin().lock();
+        loop {
+            // (Zeroed after: it may hold a password.)
+            let mut line = Zeroizing::new(String::new());
+            match std::io::BufRead::read_line(&mut stdin, &mut line) {
+                Ok(0) | Err(_) => {
+                    let _ = proxy.send_event(UserEvent::UiGone);
+                    break;
+                }
+                Ok(_) => {}
+            }
+            let end = line.trim_end_matches(['\r', '\n']).len();
+            line.truncate(end);
+            if let Some(asked) = ToViewer::parse(&line)
+                && proxy.send_event(UserEvent::Ui(asked)).is_err()
+            {
+                break;
             }
         }
     });
 }
 
 /// Tells the window when this session's connection ends.
-fn end_of(
-    session: &ClientHandle,
-    proxy: EventLoopProxy<UserEvent>,
-) -> impl Future<Output = ()> + Send + 'static {
+fn end_of(session: &ClientHandle, tell: Tell) -> impl Future<Output = ()> + Send + 'static {
     let closed = session.closed();
     async move {
         closed.await;
-        let _ = proxy.send_event(UserEvent::SessionEnded);
+        tell.send(SessionEvent::SessionEnded);
     }
 }
 
 /// Keeps this computer's clipboard and the host's in step, for as long as
-/// the session lasts and if it may.
-fn share_clipboard(session: &mut ClientHandle) -> impl Future<Output = ()> + Send + 'static {
+/// session `n` lasts and if it may: only while its window is the one in use
+/// (the last to have the focus), or a text from one host could reach another.
+fn share_clipboard(
+    session: &mut ClientHandle,
+    n: u64,
+    focused: Arc<AtomicU64>,
+) -> impl Future<Output = ()> + Send + 'static {
     let link = session
         .clipboard()
         .filter(|_| session.permissions.clipboard);
@@ -1020,13 +1377,22 @@ fn share_clipboard(session: &mut ClientHandle) -> impl Future<Output = ()> + Sen
         let Some((outgoing, mut incoming)) = link else {
             return;
         };
+        let in_use = {
+            let focused = focused.clone();
+            move || focused.load(Ordering::Relaxed) == n
+        };
+        let watching = in_use.clone();
         let watched = Clipboard::watch(move |text| {
-            let _ = outgoing.send(text);
+            if watching() {
+                let _ = outgoing.send(text);
+            }
         });
         match watched {
             Ok(clipboard) => {
                 while let Some(text) = incoming.recv().await {
-                    clipboard.set(text);
+                    if in_use() {
+                        clipboard.set(text);
+                    }
                 }
             }
             Err(e) => warn!("área de transferência: {e}"),
@@ -1078,10 +1444,10 @@ fn ask_file(
 /// sends, if this user says yes, goes to their Downloads.
 fn share_files(
     session: &mut ClientHandle,
-    proxy: EventLoopProxy<UserEvent>,
+    tell: Tell,
 ) -> impl Future<Output = ()> + Send + 'static {
     let host = session.host.device_name.clone();
-    let asking = proxy.clone();
+    let asking = tell.clone();
     let confirm: Confirm = Arc::new(move |name, size| {
         let text = format!(
             "{host} quer enviar um arquivo para este computador:\n\n{name} ({})\n\n\
@@ -1089,14 +1455,12 @@ fn share_files(
             size_text(size)
         );
         let (answer, said) = oneshot::channel();
-        let _ = asking.send_event(UserEvent::AskFile { text, answer });
+        asking.send(SessionEvent::AskFile { text, answer });
         Box::pin(async move { said.await.unwrap_or(false) })
     });
     session.files(
         Arc::new(OwnFiles(crate::downloads())),
-        Arc::new(move |transfer| {
-            let _ = proxy.send_event(UserEvent::Transfer(transfer));
-        }),
+        Arc::new(move |transfer| tell.send(SessionEvent::Transfer(transfer))),
         confirm,
     )
 }
@@ -1123,16 +1487,18 @@ async fn reconnect(
 }
 
 async fn try_back(back: &Back, endpoint: &Endpoint, token: ResumeToken) -> Result<ClientHandle> {
-    let route = &back.route;
-    let client = crate::signaling::login(&route.server, &route.key, &device_name()).await?;
-    let (conn, code) =
-        crate::signaling::connect(client, route.id, &route.known, endpoint, true).await?;
+    let (net, id) = (&back.route.net, back.route.id);
+    let (Some(server), Some(known)) = (&net.server, &net.known) else {
+        bail!("sem o servidor de sinalização");
+    };
+    let client = crate::signaling::login(server, &net.key, &device_name()).await?;
+    let (conn, code) = crate::signaling::connect(client, id, known, endpoint, true, || {}).await?;
     let hello = Hello {
         peer: PeerInfo::local(APP_VERSION, device_name()),
         access_code: code,
         resume: Some(token),
     };
-    let frames = show_frames(back.latest.clone(), back.proxy.clone());
+    let frames = show_frames(back.latest.clone(), back.tell.clone());
     Ok(client::start(conn, hello, None, back.decoder, frames).await?)
 }
 
@@ -1245,60 +1611,68 @@ fn explain(e: SessionError) -> anyhow::Error {
     anyhow::anyhow!(reason)
 }
 
-/// Connects to the host: by ID through the server (`--server`), or by IP
-/// with the access code and the host's key. `unattended`: with the password.
-async fn open(args: &ViewArgs, unattended: bool) -> Result<Opened> {
-    // The arguments first, before any network.
-    let target = target(args)?;
-    if unattended && !matches!(target, Target::Id { .. }) {
-        bail!("a senha de acesso não assistido só vale conectando pelo ID");
-    }
-    let key = crate::device_key(args.device_key.as_deref())?;
-    let viewer = key.public_key();
-    let (endpoint, connected, route) = match target {
-        Target::Id { id, server } => {
-            // Logged in (and so registered, which the default relay
-            // requires) before the endpoint reaches the relay.
-            let client = crate::signaling::login(server, &key, &device_name()).await?;
-            let endpoint = bind(&key, crate::relay_for(&args.relay, Some(server))?).await?;
-            // Next to the key, so each key (profile) has its own.
-            let known = match &args.device_key {
-                Some(path) => KnownHosts::new(path.with_file_name("known_hosts")),
-                None => KnownHosts::default_location()?,
+/// Reaches the host: by ID through the server, or by IP with the access code
+/// and the host's key. The connection, the code to present, and how to come
+/// back (by ID). `unattended`: with the password. `on_waiting` runs if the
+/// host says its screen is locked.
+async fn reach(
+    net: &Arc<Net>,
+    target: Target,
+    unattended: bool,
+    on_waiting: impl FnMut() + Send,
+) -> Result<(Connection, String, Option<Route>)> {
+    match target {
+        Target::Id(id) => {
+            let (Some(server), Some(known)) = (&net.server, &net.known) else {
+                bail!("para conectar pelo ID é preciso o servidor de sinalização (--server)");
             };
-            let connected =
-                crate::signaling::connect(client, id, &known, &endpoint, unattended).await;
+            // Logged in (and so registered, which the default relay requires)
+            // before the endpoint reaches the relay.
+            let client = crate::signaling::login(server, &net.key, &device_name()).await?;
+            let endpoint = net.endpoint().await?;
+            let (conn, code) =
+                crate::signaling::connect(client, id, known, endpoint, unattended, on_waiting)
+                    .await?;
             let route = Route {
-                server: server.to_owned(),
+                net: net.clone(),
                 id,
-                key,
-                known,
             };
-            (endpoint, connected, Some(route))
+            Ok((conn, code, Some(route)))
         }
         Target::Ip { addr, host, code } => {
-            // Not registered through a server: no default relay.
-            let endpoint = bind(&key, crate::relay_for(&args.relay, None)?).await?;
-            let connected = hext_net::connect(&endpoint, host)
+            let endpoint = net.endpoint().await?;
+            let conn = hext_net::connect(endpoint, host)
                 .await
-                .with_context(|| format!("falha ao conectar em {addr}"))
-                .map(|conn| (conn, code));
-            (endpoint, connected, None)
-        }
-    };
-    match connected {
-        Ok((conn, code)) => Ok(Opened {
-            endpoint,
-            conn,
-            code,
-            viewer,
-            route,
-        }),
-        Err(e) => {
-            endpoint.close().await;
-            Err(e)
+                .with_context(|| format!("falha ao conectar em {addr}"))?;
+            Ok((conn, code, None))
         }
     }
+}
+
+/// Opens a session: reaches the host and gets in. Its pictures go to
+/// `latest`, and its news to `tell`.
+async fn open_session(
+    net: Arc<Net>,
+    target: Target,
+    password: Option<Zeroizing<String>>,
+    decoder: DecoderPreference,
+    latest: Latest,
+    tell: Tell,
+) -> Result<Started> {
+    let waiting = tell.clone();
+    let on_waiting = move || waiting.send(SessionEvent::Locked);
+    let (conn, code, route) = reach(&net, target, password.is_some(), on_waiting).await?;
+    let viewer = net.key.public_key();
+    let password = password.map(|password| PasswordLogin { password, viewer });
+    let hello = Hello {
+        peer: PeerInfo::local(APP_VERSION, device_name()),
+        access_code: code,
+        resume: None,
+    };
+    let session = client::start(conn, hello, password, decoder, show_frames(latest, tell))
+        .await
+        .map_err(explain)?;
+    Ok(Started { session, route })
 }
 
 /// The viewer's endpoint (it connects; it does not accept).
@@ -1311,9 +1685,9 @@ async fn bind(key: &hext_crypto::DeviceKey, relay: Option<hext_net::RelayUrl>) -
 }
 
 /// Who to connect to, and how.
-enum Target<'a> {
+enum Target {
     /// By ID, through the signaling server.
-    Id { id: DeviceId, server: &'a str },
+    Id(DeviceId),
     /// By IP, with the access code and the host's key.
     Ip {
         addr: std::net::SocketAddr,
@@ -1322,19 +1696,19 @@ enum Target<'a> {
     },
 }
 
-fn target(args: &ViewArgs) -> Result<Target<'_>> {
+fn target(args: &ViewArgs) -> Result<Target> {
     // An address first: "192.168.0.10" must never be taken for an ID.
     let addr = parse_addr(&args.target);
     if let (Err(_), Ok(id)) = (&addr, args.target.parse::<DeviceId>()) {
-        let Some(server) = crate::server(&args.server) else {
+        if crate::server(&args.server).is_none() {
             bail!("para conectar pelo ID é preciso o servidor de sinalização (--server)");
-        };
+        }
         if args.code.is_some() || args.key.is_some() {
             warn!(
                 "pelo ID, --code e --key não são usados: o host aceita o pedido e a chave dele vem do servidor"
             );
         }
-        return Ok(Target::Id { id, server });
+        return Ok(Target::Id(id));
     }
     let addr = addr?;
     let (Some(code), Some(host_key)) = (args.code.clone(), args.key) else {
@@ -1348,12 +1722,20 @@ fn target(args: &ViewArgs) -> Result<Target<'_>> {
 
 /// Receives and decodes without a window, printing stats every second.
 async fn headless(
-    endpoint: Endpoint,
-    conn: Connection,
-    args: ViewArgs,
-    hello: Hello,
-    password: Option<PasswordLogin>,
+    net: Arc<Net>,
+    target: Target,
+    args: &ViewArgs,
+    password: Option<Zeroizing<String>>,
 ) -> Result<()> {
+    let on_waiting = || println!("{}", crate::ui_link::HOST_LOCKED);
+    let (conn, code, _) = reach(&net, target, password.is_some(), on_waiting).await?;
+    let viewer = net.key.public_key();
+    let password = password.map(|password| PasswordLogin { password, viewer });
+    let hello = Hello {
+        peer: PeerInfo::local(APP_VERSION, device_name()),
+        access_code: code,
+        resume: None,
+    };
     let session = client::start(conn, hello, password, decoder(args.decoder), |_| {})
         .await
         .map_err(explain)?;
@@ -1378,7 +1760,9 @@ async fn headless(
         }
     }
     session.close().await?;
-    endpoint.close().await;
+    if let Some(endpoint) = net.endpoint.get() {
+        endpoint.close().await;
+    }
     Ok(())
 }
 

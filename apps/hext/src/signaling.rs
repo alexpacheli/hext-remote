@@ -19,7 +19,6 @@ use tokio::sync::{Semaphore, mpsc};
 use tracing::{info, warn};
 
 use crate::APP_VERSION;
-use crate::ui_link::HOST_LOCKED;
 
 /// How long the host's user has to answer (the server gives up at 60 s).
 pub const ANSWER_TIME: Duration = Duration::from_secs(55);
@@ -339,20 +338,20 @@ pub async fn login(server: &str, key: &DeviceKey, name: &str) -> Result<Client> 
 /// checks its key against the one remembered for that ID, and connects from
 /// `endpoint` (directly or through the relay). Returns the connection and
 /// the one-time code to present. `unattended`: with the password, so nobody
-/// is asked.
+/// is asked. `on_waiting` runs if the host says its screen is locked.
 pub async fn connect(
     mut client: Client,
     id: DeviceId,
     known: &KnownHosts,
     endpoint: &Endpoint,
     unattended: bool,
+    on_waiting: impl FnMut() + Send,
 ) -> Result<(Connection, String)> {
     if unattended {
         println!("Conectando a {id} com a senha...");
     } else {
         println!("Pedindo acesso a {id}... aguardando o outro computador aceitar.");
     }
-    let on_waiting = || println!("{HOST_LOCKED}");
     let access = match client.request_access(id, unattended, on_waiting).await? {
         Ok(access) => access,
         Err(reason) => bail!("{}", rejection(reason)),

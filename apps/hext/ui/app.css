@@ -417,6 +417,27 @@ input[type="password"] {
   cursor: pointer;
 }
 
+.sessions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sessions li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 0;
+}
+
+.sessions .who {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .recent .dot {
   display: inline-block;
   width: 8px;

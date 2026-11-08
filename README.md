@@ -157,6 +157,11 @@ nunca a senha. Uma bolinha ao lado de cada um mostra se ele está online (verde)
 serviço instalado ou com o app aberto à mão. Ela só aparece para os computadores que aceitaram você, ou em
 que você entrou com a senha, nos últimos 90 dias.
 
+Dá para atender vários computadores ao mesmo tempo (até 8), cada um na sua janela: conecte em um e depois em
+outro, pela mesma tela inicial. A seção **Sessões abertas** lista cada um, com **Mostrar** (traz a janela para
+a frente) e **Encerrar** (ou **Cancelar**, enquanto o outro lado ainda não aceitou). A área de transferência
+vale só para a janela usada por último, para que o texto de um cliente nunca chegue a outro.
+
 Na janela do visualizador, **Ctrl+Alt+Enter** entra e sai da tela cheia, com a imagem ocupando a tela
 inteira sem distorcer. Na borda esquerda da janela, no meio da altura, fica sempre uma faixa fina: passar o mouse
 nela abre os botões ao lado dela, que recolhem pouco depois de o mouse sair. (A borda de cima fica para a barra
