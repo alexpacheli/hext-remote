@@ -60,6 +60,10 @@ struct Inner {
     server: String,
     /// What the file says, checked (`None`: not bound, or it does not hold).
     checked: Mutex<Option<Checked>>,
+    /// One fetch and write at a time.
+    busy: tokio::sync::Mutex<()>,
+    /// When the chains were last fetched.
+    fetched: Mutex<Option<std::time::Instant>>,
 }
 
 impl Owners {
@@ -70,6 +74,8 @@ impl Owners {
             key,
             server,
             checked: Mutex::new(None),
+            busy: tokio::sync::Mutex::new(()),
+            fetched: Mutex::new(None),
         }));
         owners.load();
         owners
@@ -153,6 +159,7 @@ impl Owners {
     /// Binds this computer to chain `id` (from the app of a device in it):
     /// fetched, checked, and with this computer on its list.
     pub async fn bind(&self, id: ChainId) -> Result<Chain> {
+        let _busy = self.0.busy.lock().await;
         let chains = self.fetch(&[id]).await?;
         let own = chains
             .iter()
@@ -167,7 +174,7 @@ impl Owners {
         let stored = Stored {
             chain: id,
             entries: own.1.clone(),
-            shared: shared_of(&own.0, &self.host(), &chains),
+            shared: shared_of(&own.0, &self.host(), &chains, &[]),
         };
         self.store(&stored)?;
         self.load();
@@ -189,6 +196,8 @@ impl Owners {
     /// in. A chain older than the one kept, or none, is refused: the one kept
     /// stays, but the server is not believed (logged).
     pub async fn refresh(&self) -> Result<()> {
+        let _busy = self.0.busy.lock().await;
+        *self.0.fetched.lock().expect("lock") = Some(std::time::Instant::now());
         let Some(stored) = self.stored() else {
             return Ok(());
         };
@@ -207,12 +216,19 @@ impl Owners {
         {
             bail!("a lista da conta veio mais velha que a guardada: ignorada");
         }
-        let shared = shared_of(own, &self.host(), &chains);
+        let kept_shared = verified(&stored.shared);
+        let shared = shared_of(own, &self.host(), &chains, &kept_shared);
         let fresh = Stored {
             chain: stored.chain,
             entries: entries.clone(),
             shared,
         };
+        // Unbound (or bound again) from the command line meanwhile: that
+        // stands.
+        if self.stored().is_none_or(|now| now.chain != stored.chain) {
+            self.load();
+            bail!("a conta vinculada mudou enquanto a lista era conferida");
+        }
         if fresh.entries != stored.entries || fresh.shared != stored.shared {
             self.store(&fresh)?;
         }
@@ -220,9 +236,23 @@ impl Owners {
         Ok(())
     }
 
+    /// [`Self::refresh`], unless the chains were fetched less than `age`
+    /// ago.
+    pub async fn refresh_if_stale(&self, age: Duration) -> Result<()> {
+        let fresh = self
+            .0
+            .fetched
+            .lock()
+            .expect("lock")
+            .is_some_and(|at| at.elapsed() < age);
+        if fresh { Ok(()) } else { self.refresh().await }
+    }
+
     fn store(&self, stored: &Stored) -> Result<()> {
         let text = serde_json::to_string(stored)?;
-        std::fs::write(&self.0.file, text).with_context(|| self.0.file.display().to_string())
+        let next = self.0.file.with_extension("new");
+        std::fs::write(&next, text).with_context(|| next.display().to_string())?;
+        std::fs::rename(&next, &self.0.file).with_context(|| self.0.file.display().to_string())
     }
 
     /// The chains the server has for this computer (and `known`), each
@@ -252,6 +282,7 @@ impl Owners {
         for chunk in events.chunks(hext_signal::account::MAX_EVENTS) {
             let call = AccountCall::HostEvents {
                 events: chunk.to_vec(),
+                chain: self.bound().map(|(id, _)| id),
             };
             if let Err(e) = client.account(call).await {
                 result = Err(e.into());
@@ -292,6 +323,8 @@ impl Owners {
 
 impl hext_session::host::Owners for Owners {
     fn still(&self, viewer: &PublicKey) -> bool {
+        // The file as it is now: unbound from the command line, nobody stays.
+        self.load();
         self.way(viewer).is_some()
     }
 }
@@ -345,14 +378,56 @@ pub async fn report_activity(
     }
 }
 
-/// The chains of the accounts `own` shares computer `host` with, as found
-/// among `chains`.
-fn shared_of(own: &Chain, host: &PublicKey, chains: &[(Chain, Vec<Entry>)]) -> Vec<Vec<Entry>> {
+/// The chains of the accounts `own` shares computer `host` with, one for
+/// each, as found among `chains`: the longest version, if every other one
+/// the server sent and the one `kept` are its start. Otherwise (a fork, an
+/// older one) the one kept stays.
+fn shared_of(
+    own: &Chain,
+    host: &PublicKey,
+    chains: &[(Chain, Vec<Entry>)],
+    kept: &[(Chain, Vec<Entry>)],
+) -> Vec<Vec<Entry>> {
     let shares = own.shares_of(host, 0);
-    chains
+    let mut out = Vec::new();
+    for id in shares.keys() {
+        if *id == own.id {
+            continue;
+        }
+        let versions: Vec<_> = chains.iter().filter(|(c, _)| c.id == *id).collect();
+        let before = kept.iter().find(|(c, _)| c.id == *id);
+        let chosen = versions
+            .iter()
+            .max_by_key(|(c, _)| c.len)
+            .filter(|(c, entries)| {
+                versions
+                    .iter()
+                    .all(|(other, _)| c.extends(entries, other.len, &other.head))
+                    && before.is_none_or(|(k, _)| c.extends(entries, k.len, &k.head))
+            });
+        match (chosen, before) {
+            (Some((_, entries)), _) => out.push(entries.clone()),
+            (None, Some((_, entries))) => {
+                if !versions.is_empty() {
+                    warn!("lista compartilhada mais velha ou bifurcada: fica a guardada");
+                }
+                out.push(entries.clone());
+            }
+            (None, None) => {
+                if !versions.is_empty() {
+                    warn!("lista compartilhada em versões que não batem: recusada");
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The chains in `lists` that hold, with their entries.
+fn verified(lists: &[Vec<Entry>]) -> Vec<(Chain, Vec<Entry>)> {
+    lists
         .iter()
-        .filter(|(chain, _)| chain.id != own.id && shares.contains_key(&chain.id))
-        .map(|(_, entries)| entries.clone())
+        .filter_map(|entries| Some((Chain::verify(entries).ok()?, entries.clone())))
         .collect()
 }
 
@@ -361,11 +436,13 @@ fn check(stored: &Stored) -> Result<Checked> {
     if own.id != stored.chain {
         bail!("a lista guardada não é a da conta vinculada");
     }
-    let shared = stored
-        .shared
-        .iter()
-        .filter_map(|entries| Chain::verify(entries).ok())
-        .collect();
+    // (One of each: a second one with the same ID is left out.)
+    let mut shared: Vec<Chain> = Vec::new();
+    for (chain, _) in verified(&stored.shared) {
+        if !shared.iter().any(|c| c.id == chain.id) {
+            shared.push(chain);
+        }
+    }
     Ok(Checked { own, shared })
 }
 
@@ -413,5 +490,99 @@ mod hex_id {
         let mut out = [0; 32];
         hex::decode_to_slice(text, &mut out).map_err(D::Error::custom)?;
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hext_signal::chain::{Allowed, Op};
+
+    use super::*;
+
+    fn key() -> DeviceKey {
+        DeviceKey::generate().unwrap()
+    }
+
+    /// `entries` and one more, signed by `by`.
+    fn push(entries: &[Entry], op: Op, by: &DeviceKey) -> (Chain, Vec<Entry>) {
+        let mut entries = entries.to_vec();
+        entries.push(Chain::verify(&entries).unwrap().sign(op, by));
+        (Chain::verify(&entries).unwrap(), entries)
+    }
+
+    fn add(name: &str) -> Op {
+        Op::AddDevice {
+            device: key().public_key(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn a_shared_list_never_goes_back_nor_forks() {
+        // The other account: its list, then one more device; and a fork of
+        // the first one (signed by a device it had then).
+        let theirs = key();
+        let v1 = vec![Entry::create(&theirs, "Técnico", key().public_key())];
+        let first = (Chain::verify(&v1).unwrap(), v1.clone());
+        let second = push(&v1, add("Notebook"), &theirs);
+        let fork = push(&v1, add("Intruso"), &theirs);
+
+        // This account shares the computer with it.
+        let mine = key();
+        let host = key().public_key();
+        let own = vec![Entry::create(&mine, "Dono", key().public_key())];
+        let (_, own) = push(
+            &own,
+            Op::AddComputer {
+                host,
+                id: "123456789".parse().unwrap(),
+                name: "Escritório".into(),
+            },
+            &mine,
+        );
+        let (own, _) = push(
+            &own,
+            Op::Share {
+                host,
+                with: first.0.id,
+                name: "tecnico@example.com".into(),
+                allowed: Allowed::default(),
+                until: None,
+            },
+            &mine,
+        );
+
+        let one = |chains: &[(Chain, Vec<Entry>)], kept: &[(Chain, Vec<Entry>)]| {
+            shared_of(&own, &host, chains, kept)
+        };
+        // Newer: taken.
+        assert_eq!(
+            one(std::slice::from_ref(&second), std::slice::from_ref(&first)),
+            vec![second.1.clone()]
+        );
+        // Older, a fork, or missing: the one kept stays.
+        assert_eq!(
+            one(std::slice::from_ref(&first), std::slice::from_ref(&second)),
+            vec![second.1.clone()]
+        );
+        assert_eq!(
+            one(std::slice::from_ref(&fork), std::slice::from_ref(&second)),
+            vec![second.1.clone()]
+        );
+        assert_eq!(
+            one(&[], std::slice::from_ref(&second)),
+            vec![second.1.clone()]
+        );
+        // Two versions that do not agree, nothing kept: neither.
+        assert!(one(&[second.clone(), fork.clone()], &[]).is_empty());
+        // Two that agree: the longer.
+        assert_eq!(
+            one(&[first.clone(), second.clone()], &[]),
+            vec![second.1.clone()]
+        );
+        // A list it is not shared with: left out.
+        let stranger = vec![Entry::create(&key(), "X", key().public_key())];
+        let stranger = (Chain::verify(&stranger).unwrap(), stranger);
+        assert!(one(&[stranger], &[]).is_empty());
     }
 }

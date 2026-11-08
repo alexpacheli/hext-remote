@@ -1362,6 +1362,20 @@ mod tests {
         // Another account sees none of it.
         let other = other_account(&mut world, "outro@example.com").await;
         assert!(other.activity().await.unwrap().is_empty());
+        // Nor by naming this computer's ID (with another key) in its list:
+        // no activity, no presence.
+        let forged = DeviceKey::generate().unwrap().public_key().to_string();
+        other
+            .add_computer(&forged, &host.id().to_string(), "Alheio")
+            .await
+            .unwrap();
+        owners.send_events(&["depois".into()]).await.unwrap();
+        assert!(other.activity().await.unwrap().is_empty());
+        let mut spy = Client::connect(&world.server, &other.key().unwrap(), "S", "t", Role::Viewer)
+            .await
+            .unwrap();
+        assert_eq!(spy.presence(&[host.id()]).await.unwrap(), vec![]);
+        assert_eq!(first.activity().await.unwrap().len(), 26);
         drop(host);
     }
 
