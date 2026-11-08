@@ -37,8 +37,9 @@ impl UnattendedPassword for Kept {
         self.audit.lock().unwrap().push(entry.to_owned());
     }
 
-    fn bind(&self, viewer: &PublicKey, grant: &Grant) {
+    fn bind(&self, viewer: &PublicKey, grant: &Grant) -> bool {
         self.bound.lock().unwrap().push((*viewer, grant.id.clone()));
+        true
     }
 }
 

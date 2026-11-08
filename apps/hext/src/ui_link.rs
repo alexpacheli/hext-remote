@@ -271,6 +271,8 @@ struct State {
     /// The technicians trusted without the password, and how a revocation
     /// is written down; `None`: no such list here.
     technicians: Option<(crate::technicians::Technicians, Audit)>,
+    /// The list as the interface last got it.
+    technicians_shown: Vec<crate::technicians::Technician>,
     /// The request on screen, waiting for its answer.
     asking: Option<(u64, oneshot::Sender<Option<Permissions>>)>,
     next_ask: u64,
@@ -280,6 +282,19 @@ impl State {
     fn send(&self, msg: ToUi) {
         if let Some((_, ui)) = &self.ui {
             let _ = ui.send(msg);
+        }
+    }
+
+    /// Shows the technicians as kept now, if that is not what the interface
+    /// has already.
+    fn show_technicians(&mut self) {
+        let Some((technicians, _)) = &self.technicians else {
+            return;
+        };
+        let list = technicians.list();
+        if list != self.technicians_shown {
+            self.technicians_shown = list.clone();
+            self.send(ToUi::Technicians(list));
         }
     }
 }
@@ -307,8 +322,8 @@ impl UiHub {
             if let Some(notice) = &state.notice {
                 let _ = tx.send(ToUi::Notice(notice.clone()));
             }
-            if let Some((technicians, _)) = &state.technicians {
-                let _ = tx.send(ToUi::Technicians(technicians.list()));
+            if state.technicians.is_some() {
+                let _ = tx.send(ToUi::Technicians(state.technicians_shown.clone()));
             }
             if let Some((session, _)) = &state.session {
                 let _ = tx.send(ToUi::SessionStarted(session.clone()));
@@ -380,8 +395,7 @@ impl UiHub {
                     }
                     Err(e) => warn!("{}: {e}", technicians.path().display()),
                 }
-                let list = technicians.list();
-                state.send(ToUi::Technicians(list));
+                state.show_technicians();
             }
             FromUi::Rename(typed) => {
                 let Some(dir) = state.name_dir.clone() else {
@@ -442,17 +456,17 @@ impl UiHub {
     #[cfg_attr(not(windows), allow(dead_code))]
     pub fn set_technicians(&self, technicians: crate::technicians::Technicians, audit: Audit) {
         let mut state = self.0.lock().expect("lock");
-        state.send(ToUi::Technicians(technicians.list()));
+        let list = technicians.list();
+        state.send(ToUi::Technicians(list.clone()));
+        state.technicians_shown = list;
         state.technicians = Some((technicians, audit));
     }
 
-    /// The list of technicians changed: the interface shows it again.
+    /// The list of technicians may have changed (here, or on the command
+    /// line): the interface shows it again if it did.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub fn technicians_changed(&self) {
-        let state = self.0.lock().expect("lock");
-        if let Some((technicians, _)) = &state.technicians {
-            state.send(ToUi::Technicians(technicians.list()));
-        }
+        self.0.lock().expect("lock").show_technicians();
     }
 
     pub fn set_notice(&self, notice: String) {
@@ -741,6 +755,43 @@ mod tests {
             permissions: Permissions::CONTROL,
             unattended: false,
         }
+    }
+
+    #[tokio::test]
+    async fn the_technicians_on_screen_follow_the_file_and_revoke() {
+        let dir = std::env::temp_dir().join(format!("hext-hub-technicians-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::technicians::Technicians::new(dir.join("technicians.json"));
+        let key = hext_crypto::PublicKey::from_bytes([7; 32]);
+        store.bind(&key, "482 913 557", "Técnico").unwrap();
+
+        let hub = UiHub::default();
+        hub.set_technicians(store.clone(), |_| {});
+        let (mut ui, _attached) = connect(&hub);
+        let ToUi::Technicians(list) = next(&mut ui).await else {
+            panic!("the list first");
+        };
+        assert_eq!(list.len(), 1);
+
+        // Revoked on the command line: shown once the check sees it, and
+        // nothing is sent while it stays the same.
+        store.revoke("482913557").unwrap();
+        hub.technicians_changed();
+        hub.technicians_changed();
+        assert_eq!(next(&mut ui).await, ToUi::Technicians(Vec::new()));
+
+        // Revogar on the screen.
+        store.bind(&key, "482 913 557", "Técnico").unwrap();
+        hub.technicians_changed();
+        let ToUi::Technicians(list) = next(&mut ui).await else {
+            panic!("the list again");
+        };
+        write_msg(&mut ui, &FromUi::Revoke(list[0].key.clone()))
+            .await
+            .unwrap();
+        assert_eq!(next(&mut ui).await, ToUi::Technicians(Vec::new()));
+        assert!(!store.bound(&key));
     }
 
     #[tokio::test]

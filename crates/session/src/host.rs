@@ -96,9 +96,11 @@ pub trait UnattendedPassword: Send + Sync {
     fn audit(&self, entry: &str);
     /// `viewer` got in with the password and asked to be remembered: from
     /// now on it is trusted without the password, until revoked or the
-    /// password changes. Nothing of the password is kept. Where this is not
-    /// kept, nothing happens.
-    fn bind(&self, _viewer: &PublicKey, _grant: &crate::Grant) {}
+    /// password changes. Nothing of the password is kept. Whether it was
+    /// kept (where there is no such list, it is not).
+    fn bind(&self, _viewer: &PublicKey, _grant: &crate::Grant) -> bool {
+        false
+    }
 }
 
 /// The session going on, as the host's user is shown it.
@@ -571,8 +573,9 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         (Ok(done), Some(access)) => {
             access.lockout.succeeded(&viewer);
             report(access, grant.as_ref(), true);
-            if let Some(grant) = grant.as_ref().filter(|grant| grant.remember && !resumed) {
-                access.password.bind(&viewer, grant);
+            if let Some(grant) = grant.as_ref().filter(|grant| grant.remember && !resumed)
+                && access.password.bind(&viewer, grant)
+            {
                 access
                     .password
                     .audit(&format!("técnico vinculado: {}", who(grant)));
