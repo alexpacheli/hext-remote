@@ -188,6 +188,12 @@ async fn get(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
 /// The latest release, if it is newer than this program and signed by the
 /// key built in. `None`: up to date.
 pub async fn check() -> Result<Option<Manifest>> {
+    let manifest = latest().await?;
+    Ok(newer(&manifest.version, crate::APP_VERSION).then_some(manifest))
+}
+
+/// The latest release's list, signed by the key built in.
+pub async fn latest() -> Result<Manifest> {
     let Some(key) = KEY else {
         bail!("esta versão não se atualiza sozinha (feita fora do pipeline de release)");
     };
@@ -196,8 +202,7 @@ pub async fn check() -> Result<Option<Manifest>> {
     let manifest_url = format!("{RELEASES}/latest/download/latest.json");
     let bytes = get(&client, &manifest_url).await?;
     let signature = get(&client, &format!("{manifest_url}.sig")).await?;
-    let manifest = verify(&bytes, &String::from_utf8_lossy(&signature), &key)?;
-    Ok(newer(&manifest.version, crate::APP_VERSION).then_some(manifest))
+    verify(&bytes, &String::from_utf8_lossy(&signature), &key)
 }
 
 /// Downloads the file of `kind` into `dir`, checked against the manifest.
