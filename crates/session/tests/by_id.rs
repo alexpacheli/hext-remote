@@ -85,6 +85,8 @@ async fn accepted_by_id_then_streams() {
                         name: from_name,
                         id: "482 913 557".into(),
                         needs_password: false,
+                        remember: false,
+                        bound: false,
                     },
                 ),
             })
@@ -99,7 +101,7 @@ async fn accepted_by_id_then_streams() {
         .await
         .unwrap();
     let access = viewer_signal
-        .request_access(host_id, false, || {})
+        .request_access(host_id, (false, false), || {})
         .await
         .unwrap()
         .unwrap();

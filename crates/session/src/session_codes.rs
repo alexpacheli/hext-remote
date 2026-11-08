@@ -23,6 +23,12 @@ pub struct Grant {
     pub id: String,
     /// Nobody accepted: the viewer must also know the unattended password.
     pub needs_password: bool,
+    /// With the password: the viewer asks to be trusted from then on,
+    /// without it ([`crate::host::UnattendedPassword::bind`]).
+    pub remember: bool,
+    /// Nobody accepted: the viewer is a technician this computer trusts
+    /// (it once came in with the password, and asked to be remembered).
+    pub bound: bool,
 }
 
 /// A code, the viewer it was issued to, when, and what it grants.
@@ -85,6 +91,8 @@ mod tests {
             name: "Técnico".into(),
             id: "482 913 557".into(),
             needs_password: false,
+            remember: false,
+            bound: false,
         }
     }
 

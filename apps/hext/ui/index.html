@@ -53,6 +53,10 @@
             placeholder="Senha, para entrar sem ninguém aceitar (opcional)"
             aria-label="Senha de acesso não assistido (opcional)"
           />
+          <label class="wide hint" id="remember-line" hidden>
+            <input type="checkbox" id="remember" />
+            Entrar sem senha da próxima vez (o outro computador pode revogar)
+          </label>
         </form>
         <p class="status" id="status" role="status"></p>
       </section>
@@ -60,6 +64,15 @@
       <section id="sessions-section" hidden>
         <h2>Sessões abertas</h2>
         <ul class="sessions" id="sessions"></ul>
+      </section>
+
+      <section id="technicians-section" hidden>
+        <h2>Técnicos que entram sem senha</h2>
+        <p class="hint">
+          Entraram uma vez com a senha e pediram para não precisar dela de novo. Trocar a senha
+          revoga todos.
+        </p>
+        <ul class="sessions" id="technicians"></ul>
       </section>
 
       <section id="recent-section" hidden>

@@ -157,6 +157,21 @@ nunca a senha. Uma bolinha ao lado de cada um mostra se ele está online (verde)
 serviço instalado ou com o app aberto à mão. Ela só aparece para os computadores que aceitaram você, ou em
 que você entrou com a senha, nos últimos 90 dias.
 
+**Técnico vinculado.** Ao entrar com a senha, o técnico pode marcar **Entrar sem senha da próxima vez** (ou
+usar `view <ID> --password-stdin --remember`). Se a senha estiver certa, o computador passa a confiar na
+chave daquele técnico: nas próximas vezes ele conecta pelo ID, sem senha e sem ninguém aceitar. Nenhuma senha
+fica guardada, só a chave do técnico. Na tela inicial do computador, **Técnicos que entram sem senha** lista
+cada um com **Revogar**, e o dono também pode usar:
+
+```sh
+HextRemote.exe service technicians                  # lista
+HextRemote.exe service technicians --revoke <ID>    # revoga um
+HextRemote.exe service technicians --revoke-all     # revoga todos
+```
+
+Trocar ou desligar a senha revoga todos. Com a senha desligada, ninguém entra sem aceite, nem os vinculados.
+Cada vínculo, entrada e revogação vai para o `audit.log`.
+
 Dá para atender vários computadores ao mesmo tempo (até 8), cada um na sua janela: conecte em um e depois em
 outro, pela mesma tela inicial. A seção **Sessões abertas** lista cada um, com **Mostrar** (traz a janela para
 a frente) e **Encerrar** (ou **Cancelar**, enquanto o outro lado ainda não aceitou). A área de transferência

@@ -67,6 +67,23 @@ pub trait Ask: Send {
     fn locked(&self) -> bool {
         false
     }
+
+    /// Whether the device with `key` is a technician this computer trusts
+    /// without the password (F4 marco 12). Only asked while the password is
+    /// on.
+    fn bound(&self, _key: &PublicKey) -> bool {
+        false
+    }
+}
+
+/// What a session nobody accepted may do: all a technician needs.
+fn unattended_permissions() -> Permissions {
+    Permissions {
+        clipboard: true,
+        files: true,
+        restart: true,
+        ..Permissions::CONTROL
+    }
 }
 
 /// Asks on the terminal.
@@ -194,6 +211,7 @@ async fn serve(
             from_key,
             from_name,
             unattended,
+            remember,
         } = msg
         else {
             continue;
@@ -220,15 +238,12 @@ async fn serve(
             let answer = if back || ask.unattended() {
                 info!("pedido de {from_name} ({from}) com a senha de acesso não assistido");
                 let grant = Grant {
-                    permissions: Permissions {
-                        clipboard: true,
-                        files: true,
-                        restart: true,
-                        ..Permissions::CONTROL
-                    },
+                    permissions: unattended_permissions(),
                     name: from_name,
                     id: from.to_string(),
                     needs_password: true,
+                    remember,
+                    bound: false,
                 };
                 accept(request, from_key, grant, (endpoint, has_relay), codes).await
             } else {
@@ -237,6 +252,22 @@ async fn serve(
                 );
                 ClientMsg::NoUnattended { request }
             };
+            client.send(&answer).await?;
+            continue;
+        }
+        // A technician trusted here: nobody to ask, and no password. The code
+        // is good only from the device holding that key.
+        if ask.unattended() && ask.bound(&from_key) {
+            info!("pedido de {from_name} ({from}), técnico vinculado: aceito sem senha");
+            let grant = Grant {
+                permissions: unattended_permissions(),
+                name: from_name,
+                id: from.to_string(),
+                needs_password: false,
+                remember: false,
+                bound: true,
+            };
+            let answer = accept(request, from_key, grant, (endpoint, has_relay), codes).await;
             client.send(&answer).await?;
             continue;
         }
@@ -281,6 +312,8 @@ async fn serve(
                 name: from_name.clone(),
                 id: from.to_string(),
                 needs_password: false,
+                remember: false,
+                bound: false,
             };
             accept(request, from_key, grant, (endpoint, has_relay), codes).await
         } else {
@@ -338,13 +371,14 @@ pub async fn login(server: &str, key: &DeviceKey, name: &str) -> Result<Client> 
 /// checks its key against the one remembered for that ID, and connects from
 /// `endpoint` (directly or through the relay). Returns the connection and
 /// the one-time code to present. `unattended`: with the password, so nobody
-/// is asked. `on_waiting` runs if the host says its screen is locked.
+/// is asked; `remember`: and asking to be trusted from then on, without it.
+/// `on_waiting` runs if the host says its screen is locked.
 pub async fn connect(
     mut client: Client,
     id: DeviceId,
     known: &KnownHosts,
     endpoint: &Endpoint,
-    unattended: bool,
+    (unattended, remember): (bool, bool),
     on_waiting: impl FnMut() + Send,
 ) -> Result<(Connection, String)> {
     if unattended {
@@ -352,7 +386,10 @@ pub async fn connect(
     } else {
         println!("Pedindo acesso a {id}... aguardando o outro computador aceitar.");
     }
-    let access = match client.request_access(id, unattended, on_waiting).await? {
+    let access = match client
+        .request_access(id, (unattended, remember), on_waiting)
+        .await?
+    {
         Ok(access) => access,
         Err(reason) => bail!("{}", rejection(reason)),
     };
@@ -463,6 +500,7 @@ mod tests {
                 request: 1,
                 to,
                 unattended: true,
+                remember: false,
             };
             viewer.send(&request).await.unwrap();
             let answer = viewer.recv().await.unwrap();
@@ -491,6 +529,121 @@ mod tests {
                 &slot,
             ) => panic!("the host left: {end:?}"),
         }
+    }
+
+    /// Trusts `bound` without the password (on or off: `on`); asking the
+    /// user is a no, and counted.
+    struct Trusting {
+        bound: PublicKey,
+        on: bool,
+        asked: usize,
+    }
+
+    impl Ask for Trusting {
+        fn ask<'a>(&'a mut self, _: &'a str, _: DeviceId) -> BoxFuture<'a, Option<Permissions>> {
+            self.asked += 1;
+            Box::pin(async { None })
+        }
+
+        fn show_id(&mut self, _: DeviceId) {}
+
+        fn unattended(&self) -> bool {
+            self.on
+        }
+
+        fn bound(&self, key: &PublicKey) -> bool {
+            *key == self.bound
+        }
+    }
+
+    /// Sends `request` as a technician to a host that trusts it (with the
+    /// password `on` or off): the answer, how many times the user was asked,
+    /// and what the code grants (if one came).
+    async fn as_technician(request: (bool, bool), on: bool) -> (ServerMsg, usize, Option<Grant>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let db = hext_server::Db::in_memory().unwrap();
+        let state = Arc::new(hext_server::State::new(db));
+        tokio::spawn(hext_server::serve(
+            listener,
+            state,
+            hext_server::Config::default(),
+        ));
+        let host_key = DeviceKey::generate().unwrap();
+        let viewer_key = DeviceKey::generate().unwrap();
+        let mut host = Client::connect(&url, &host_key, "Host", "t", Role::Host)
+            .await
+            .unwrap();
+        let mut viewer = Client::connect(&url, &viewer_key, "Técnico", "t", Role::Viewer)
+            .await
+            .unwrap();
+        let to = host.id();
+        let endpoint = hext_net::bind(&host_key, &hext_net::EndpointConfig::default())
+            .await
+            .unwrap();
+        let (codes, resumes) = (SessionCodes::default(), ResumeTokens::default());
+        let slot = Semaphore::new(1);
+        let mut outcomes = no_attempts();
+        let mut ask = Trusting {
+            bound: viewer_key.public_key(),
+            on,
+            asked: 0,
+        };
+        let (unattended, remember) = request;
+        let technician = async {
+            let request = ClientMsg::Connect {
+                request: 1,
+                to,
+                unattended,
+                remember,
+            };
+            viewer.send(&request).await.unwrap();
+            viewer.recv().await.unwrap()
+        };
+        let answer = tokio::select! {
+            answer = technician => answer,
+            end = serve(
+                &mut host,
+                &mut ask,
+                (&endpoint, false),
+                (&codes, &resumes),
+                &mut outcomes,
+                &slot,
+            ) => panic!("the host left: {end:?}"),
+        };
+        let grant = match &answer {
+            ServerMsg::Accepted { session_code, .. } => {
+                codes.redeem(session_code, &viewer_key.public_key())
+            }
+            _ => None,
+        };
+        (answer, ask.asked, grant)
+    }
+
+    #[tokio::test]
+    async fn a_bound_technician_is_let_in_without_anyone_asked() {
+        let (answer, asked, grant) = as_technician((false, false), true).await;
+        assert!(matches!(answer, ServerMsg::Accepted { .. }), "{answer:?}");
+        assert_eq!(asked, 0);
+        let grant = grant.expect("a code for the technician's device");
+        assert!(grant.bound && !grant.needs_password, "{grant:?}");
+        assert!(grant.permissions.restart && grant.permissions.files);
+    }
+
+    #[tokio::test]
+    async fn with_the_password_off_a_bound_technician_waits_for_a_yes() {
+        let (answer, asked, _) = as_technician((false, false), false).await;
+        assert!(matches!(answer, ServerMsg::Rejected { .. }), "{answer:?}");
+        assert_eq!(asked, 1);
+    }
+
+    #[tokio::test]
+    async fn asking_to_be_remembered_reaches_the_session() {
+        let (_, _, grant) = as_technician((true, true), true).await;
+        let grant = grant.expect("a code");
+        assert!(grant.needs_password && grant.remember && !grant.bound);
+        let (_, _, grant) = as_technician((true, false), true).await;
+        assert!(!grant.expect("a code").remember);
     }
 
     #[test]

@@ -39,12 +39,19 @@ const pages = {
           await invoke("connect", {
             id: $("target").value,
             password: $("password").value || null,
+            remember: $("remember").checked,
           });
         } catch (message) {
           showStatus(String(message), true);
         } finally {
           $("password").value = "";
+          $("remember").checked = false;
+          $("remember-line").hidden = true;
         }
+      });
+      // Only with a password is there something to remember it by.
+      $("password").addEventListener("input", () => {
+        $("remember-line").hidden = $("password").value === "";
       });
     },
     show(view) {
@@ -58,6 +65,7 @@ const pages = {
 
       showRecent(view.recent, view.online);
       showSessions(view.viewers);
+      showTechnicians(view.technicians);
       if (view.viewer_failure) {
         showStatus(view.viewer_failure, true);
       } else {
@@ -243,6 +251,30 @@ function showSessions(viewers) {
       close.addEventListener("click", () => invoke("viewer_close", { session: viewer.session }));
       const item = document.createElement("li");
       item.append(label, show, close);
+      return item;
+    }),
+  );
+}
+
+/** The technicians trusted here without the password, each with Revogar. */
+function showTechnicians(technicians) {
+  $("technicians-section").hidden = technicians.length === 0;
+  $("technicians").replaceChildren(
+    ...technicians.map((technician) => {
+      const label = document.createElement("span");
+      label.className = "who";
+      const since = new Date(technician.since * 1000).toLocaleDateString();
+      label.textContent = `${technician.name} (${technician.id}), desde ${since}`;
+      label.title = label.textContent;
+      const revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.className = "link";
+      revoke.textContent = "Revogar";
+      revoke.addEventListener("click", () =>
+        invoke("revoke_technician", { key: technician.key }),
+      );
+      const item = document.createElement("li");
+      item.append(label, revoke);
       return item;
     }),
   );

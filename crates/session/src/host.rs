@@ -94,6 +94,13 @@ pub trait UnattendedPassword: Send + Sync {
     fn verifier(&self) -> Option<Verifier>;
     /// Writes down something that happened, for the owner of the computer.
     fn audit(&self, entry: &str);
+    /// `viewer` got in with the password and asked to be remembered: from
+    /// now on it is trusted without the password, until revoked or the
+    /// password changes. Nothing of the password is kept. Whether it was
+    /// kept (where there is no such list, it is not).
+    fn bind(&self, _viewer: &PublicKey, _grant: &crate::Grant) -> bool {
+        false
+    }
 }
 
 /// The session going on, as the host's user is shown it.
@@ -566,6 +573,13 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         (Ok(done), Some(access)) => {
             access.lockout.succeeded(&viewer);
             report(access, grant.as_ref(), true);
+            if let Some(grant) = grant.as_ref().filter(|grant| grant.remember && !resumed)
+                && access.password.bind(&viewer, grant)
+            {
+                access
+                    .password
+                    .audit(&format!("técnico vinculado: {}", who(grant)));
+            }
             done
         }
         (Err(e), Some(access)) => {
@@ -583,10 +597,12 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         (handshake, None) => handshake?,
     };
     let client = hello.peer;
+    // A trusted technician is audited like the password.
+    let bound = grant.as_ref().is_some_and(|grant| grant.bound);
     let audit = config
         .unattended
         .as_ref()
-        .filter(|_| resumed)
+        .filter(|_| resumed || bound)
         .or(unattended)
         .map(|access| access.password.clone());
     if let (true, Some(access), Some(grant)) = (resumed, &config.unattended, &grant) {
@@ -598,10 +614,15 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     let session = match grant {
         Some(grant) => {
             if let Some(audit) = audit.as_ref().filter(|_| !resumed) {
-                audit.audit(&format!("sessão iniciada: {}", who(&grant)));
+                let how = if grant.bound {
+                    " (técnico vinculado, sem senha)"
+                } else {
+                    ""
+                };
+                audit.audit(&format!("sessão iniciada{how}: {}", who(&grant)));
             }
             ActiveSession {
-                unattended: grant.needs_password,
+                unattended: grant.needs_password || grant.bound,
                 name: grant.name,
                 id: Some(grant.id),
                 permissions: grant.permissions,

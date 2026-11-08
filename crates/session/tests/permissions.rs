@@ -183,6 +183,8 @@ async fn session_with(permissions: Permissions) -> Running {
             name: "Técnico".into(),
             id: "482 913 557".into(),
             needs_password: false,
+            remember: false,
+            bound: false,
         },
     );
     let desktop = Counting::default();

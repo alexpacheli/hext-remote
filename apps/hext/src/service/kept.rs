@@ -20,6 +20,9 @@ struct KeptFile {
     name: String,
     id: String,
     needs_password: bool,
+    /// Came in as a trusted technician (older files: no).
+    #[serde(default)]
+    bound: bool,
     /// Seconds since 1970 (nothing else counts across a restart).
     until: u64,
 }
@@ -43,6 +46,7 @@ pub fn keep(dir: &Path, kept: &KeptResume) -> Result<(), String> {
         name: kept.grant.name.clone(),
         id: kept.grant.id.clone(),
         needs_password: kept.grant.needs_password,
+        bound: kept.grant.bound,
         until: unix_now() + RESTART_LIFETIME.as_secs(),
     };
     let path = kept_file(dir);
@@ -104,6 +108,8 @@ pub fn restore(dir: &Path, resumes: &ResumeTokens) {
                 name: kept.name,
                 id: kept.id,
                 needs_password: kept.needs_password,
+                remember: false,
+                bound: kept.bound,
             },
         },
         Duration::from_secs(left),
@@ -161,6 +167,8 @@ mod tests {
             name: "Ana".into(),
             id: "123456789".into(),
             needs_password: false,
+            remember: false,
+            bound: false,
         }
     }
 

@@ -269,7 +269,7 @@ struct Viewers {
 
 impl Viewers {
     /// Opens session `n` in the background.
-    fn open(&mut self, n: u64, target: Target, password: Option<Zeroizing<String>>) {
+    fn open(&mut self, n: u64, target: Target, password: Option<Login>) {
         if self.sessions.contains_key(&n) || self.opening.contains_key(&n) {
             return;
         }
@@ -448,7 +448,11 @@ impl Viewers {
                 session,
                 id,
                 password,
-            } => self.open(session, Target::Id(id), password),
+                remember,
+            } => {
+                let login = password.map(|password| Login { password, remember });
+                self.open(session, Target::Id(id), login);
+            }
             ToViewer::Focus(n) => {
                 if let Some(window) = self.sessions.get(&n).and_then(|v| v.window.as_ref()) {
                     window.set_minimized(false);
@@ -1492,7 +1496,8 @@ async fn try_back(back: &Back, endpoint: &Endpoint, token: ResumeToken) -> Resul
         bail!("sem o servidor de sinalização");
     };
     let client = crate::signaling::login(server, &net.key, &device_name()).await?;
-    let (conn, code) = crate::signaling::connect(client, id, known, endpoint, true, || {}).await?;
+    let (conn, code) =
+        crate::signaling::connect(client, id, known, endpoint, (true, false), || {}).await?;
     let hello = Hello {
         peer: PeerInfo::local(APP_VERSION, device_name()),
         access_code: code,
@@ -1575,7 +1580,7 @@ fn button_called(rect: VideoRect, handle: VideoRect, shown: bool, x: f64, y: f64
 /// The unattended password, if asked for: from the terminal, unseen, or from
 /// standard input (never an argument: others could read it in the process
 /// list).
-fn read_password(args: &ViewArgs) -> Result<Option<Zeroizing<String>>> {
+fn read_password(args: &ViewArgs) -> Result<Option<Login>> {
     if !args.password_stdin {
         return Ok(None);
     }
@@ -1592,7 +1597,25 @@ fn read_password(args: &ViewArgs) -> Result<Option<Zeroizing<String>>> {
     if password.is_empty() {
         bail!("a senha está vazia");
     }
-    Ok(Some(password))
+    Ok(Some(Login {
+        password,
+        remember: args.remember,
+    }))
+}
+
+/// The unattended password, and whether to ask to be trusted from then on,
+/// without it.
+struct Login {
+    password: Zeroizing<String>,
+    remember: bool,
+}
+
+impl Login {
+    /// What to ask the server for: with the password, and whether to be
+    /// remembered.
+    fn asks(login: Option<&Login>) -> (bool, bool) {
+        login.map_or((false, false), |login| (true, login.remember))
+    }
 }
 
 /// What to tell the user when a session does not open.
@@ -1613,12 +1636,13 @@ fn explain(e: SessionError) -> anyhow::Error {
 
 /// Reaches the host: by ID through the server, or by IP with the access code
 /// and the host's key. The connection, the code to present, and how to come
-/// back (by ID). `unattended`: with the password. `on_waiting` runs if the
-/// host says its screen is locked.
+/// back (by ID). `asks`: with the password, and asking to be remembered
+/// ([`Login::asks`]). `on_waiting` runs if the host says its screen is
+/// locked.
 async fn reach(
     net: &Arc<Net>,
     target: Target,
-    unattended: bool,
+    asks: (bool, bool),
     on_waiting: impl FnMut() + Send,
 ) -> Result<(Connection, String, Option<Route>)> {
     match target {
@@ -1631,8 +1655,7 @@ async fn reach(
             let client = crate::signaling::login(server, &net.key, &device_name()).await?;
             let endpoint = net.endpoint().await?;
             let (conn, code) =
-                crate::signaling::connect(client, id, known, endpoint, unattended, on_waiting)
-                    .await?;
+                crate::signaling::connect(client, id, known, endpoint, asks, on_waiting).await?;
             let route = Route {
                 net: net.clone(),
                 id,
@@ -1654,16 +1677,20 @@ async fn reach(
 async fn open_session(
     net: Arc<Net>,
     target: Target,
-    password: Option<Zeroizing<String>>,
+    login: Option<Login>,
     decoder: DecoderPreference,
     latest: Latest,
     tell: Tell,
 ) -> Result<Started> {
     let waiting = tell.clone();
     let on_waiting = move || waiting.send(SessionEvent::Locked);
-    let (conn, code, route) = reach(&net, target, password.is_some(), on_waiting).await?;
+    let asks = Login::asks(login.as_ref());
+    let (conn, code, route) = reach(&net, target, asks, on_waiting).await?;
     let viewer = net.key.public_key();
-    let password = password.map(|password| PasswordLogin { password, viewer });
+    let password = login.map(|login| PasswordLogin {
+        password: login.password,
+        viewer,
+    });
     let hello = Hello {
         peer: PeerInfo::local(APP_VERSION, device_name()),
         access_code: code,
@@ -1725,12 +1752,15 @@ async fn headless(
     net: Arc<Net>,
     target: Target,
     args: &ViewArgs,
-    password: Option<Zeroizing<String>>,
+    login: Option<Login>,
 ) -> Result<()> {
     let on_waiting = || println!("{}", crate::ui_link::HOST_LOCKED);
-    let (conn, code, _) = reach(&net, target, password.is_some(), on_waiting).await?;
+    let (conn, code, _) = reach(&net, target, Login::asks(login.as_ref()), on_waiting).await?;
     let viewer = net.key.public_key();
-    let password = password.map(|password| PasswordLogin { password, viewer });
+    let password = login.map(|login| PasswordLogin {
+        password: login.password,
+        viewer,
+    });
     let hello = Hello {
         peer: PeerInfo::local(APP_VERSION, device_name()),
         access_code: code,
