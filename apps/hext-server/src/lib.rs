@@ -10,6 +10,7 @@
 pub mod accounts;
 pub mod db;
 mod limits;
+pub mod mail;
 pub mod signal;
 
 use std::net::{IpAddr, SocketAddr};
