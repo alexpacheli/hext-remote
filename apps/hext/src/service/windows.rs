@@ -917,6 +917,7 @@ async fn serve() -> Result<()> {
         warn!("Ctrl+Alt+Del remoto: {e:#}");
     }
     let ui = UiHub::default();
+    ui.set_key(&key.public_key());
     // (Changed with `service name`, as an administrator.)
     ui.set_name(name.clone(), None);
     match technicians_store() {

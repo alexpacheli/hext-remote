@@ -312,6 +312,7 @@ impl State {
                 for id in online {
                     if db.accepted_within(id, viewer, secs)?
                         || db.entered_within(id, viewer, secs)?
+                        || db.same_account(id, viewer)?
                     {
                         known.push(id);
                     }

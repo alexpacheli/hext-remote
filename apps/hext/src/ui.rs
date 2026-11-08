@@ -129,6 +129,11 @@ struct View {
     technicians: Vec<crate::technicians::Technician>,
     /// The account logged in here (F5), once the server said so.
     account: Option<AccountView>,
+    /// This computer's host key (to put it in the account).
+    #[serde(skip)]
+    host_key: Option<String>,
+    /// The account's computers (marco 4), as its list says.
+    computers: Vec<Computer>,
 }
 
 struct Shared {
@@ -371,6 +376,7 @@ fn received(app: &AppHandle, msg: ToUi) {
     match msg {
         ToUi::Id(id) => view.id = Some(id),
         ToUi::Name(name) => view.name = Some(name),
+        ToUi::Key(key) => view.host_key = Some(key),
         ToUi::Notice(notice) => {
             view.notice = Some(notice);
             // Started at login with no window: something to be seen (a
@@ -919,10 +925,58 @@ fn the_account(shared: &Shared) -> Result<Arc<Account>, String> {
         .ok_or_else(|| "Sem uma pasta para guardar a conta neste computador.".to_owned())
 }
 
-/// The account's devices (marco 3).
+/// The account's devices and computers (marcos 3 and 4). The home screen
+/// lists the computers.
 #[tauri::command]
-async fn account_devices(shared: State<'_, Shared>) -> Result<crate::account::DevicesView, String> {
-    the_account(&shared)?.devices().await
+async fn account_devices(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+) -> Result<crate::account::DevicesView, String> {
+    let host = shared.view.lock().expect("lock").host_key.clone();
+    let devices = the_account(&shared)?.devices(host.as_deref()).await;
+    let computers = devices
+        .as_ref()
+        .map(|d| {
+            d.computers
+                .iter()
+                .map(|c| Computer {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let changed_now = {
+        let mut view = shared.view.lock().expect("lock");
+        let before = std::mem::replace(&mut view.computers, computers);
+        before != view.computers
+    };
+    if changed_now {
+        changed(&app);
+        shared.presence.notify_one();
+    }
+    devices
+}
+
+/// Puts this computer in the account's list (marco 4): the account's
+/// devices see it in Meus computadores.
+#[tauri::command]
+async fn computer_add(shared: State<'_, Shared>) -> Result<(), String> {
+    let (key, id, name) = {
+        let view = shared.view.lock().expect("lock");
+        (view.host_key.clone(), view.id.clone(), view.name.clone())
+    };
+    let (Some(key), Some(id)) = (key, id) else {
+        return Err("Este computador ainda não tem um ID.".into());
+    };
+    let name = name.unwrap_or_else(crate::device_name);
+    the_account(&shared)?.add_computer(&key, &id, &name).await
+}
+
+/// Takes a computer out of the account's list.
+#[tauri::command]
+async fn computer_remove(shared: State<'_, Shared>, host: String) -> Result<(), String> {
+    the_account(&shared)?.remove_computer(&host).await
 }
 
 /// Starts the account's list of devices with this one; the recovery code.
@@ -1001,6 +1055,7 @@ fn watch_presence(app: AppHandle) {
         let view = shared.view.lock().expect("lock");
         view.recent
             .iter()
+            .chain(&view.computers)
             .filter_map(|c| c.id.parse().ok())
             .collect()
     };
@@ -1010,6 +1065,7 @@ fn watch_presence(app: AppHandle) {
         let online = online.map(|online| {
             view.recent
                 .iter()
+                .chain(&view.computers)
                 .filter(|c| c.id.parse().is_ok_and(|id: DeviceId| online.contains(&id)))
                 .map(|c| c.id.clone())
                 .collect()
@@ -1341,7 +1397,9 @@ pub fn run(link: Link) -> Result<()> {
             chain_approve,
             chain_join,
             chain_recover,
-            chain_remove
+            chain_remove,
+            computer_add,
+            computer_remove
         ])
         .on_window_event(move |window, event| {
             // Back on the home screen: who is online now.

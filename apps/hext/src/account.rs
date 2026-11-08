@@ -33,6 +33,18 @@ pub struct DevicesView {
     /// on it; `member`: it is.
     pub state: &'static str,
     pub devices: Vec<DeviceItem>,
+    pub computers: Vec<ComputerItem>,
+    /// This computer is on the list as a computer.
+    pub listed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ComputerItem {
+    pub host: String,
+    pub id: String,
+    pub name: String,
+    /// This computer.
+    pub me: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -162,8 +174,9 @@ impl Account {
         Ok(Some((entries, chain)))
     }
 
-    /// The devices of the account, for the home screen.
-    pub async fn devices(&self) -> Result<DevicesView, String> {
+    /// The devices and computers of the account, for the home screen.
+    /// `host`: this computer's host key, if known.
+    pub async fn devices(&self, host: Option<&str>) -> Result<DevicesView, String> {
         let me = self.key()?.public_key();
         let mut link = self.link();
         let found = self.chain(&mut link).await;
@@ -172,6 +185,8 @@ impl Account {
             return Ok(DevicesView {
                 state: "none",
                 devices: Vec::new(),
+                computers: Vec::new(),
+                listed: false,
             });
         };
         let devices = chain
@@ -188,7 +203,39 @@ impl Account {
         } else {
             "outside"
         };
-        Ok(DevicesView { state, devices })
+        let computers: Vec<ComputerItem> = chain
+            .computers()
+            .iter()
+            .map(|c| ComputerItem {
+                host: c.host.to_string(),
+                id: c.id.to_string(),
+                name: c.name.clone(),
+                me: Some(c.host.to_string().as_str()) == host,
+            })
+            .collect();
+        let listed = computers.iter().any(|c| c.me);
+        Ok(DevicesView {
+            state,
+            devices,
+            computers,
+            listed,
+        })
+    }
+
+    /// Puts computer `host` (its host key), with ID `id`, in the list.
+    pub async fn add_computer(&self, host: &str, id: &str, name: &str) -> Result<(), String> {
+        let host: PublicKey = host.parse().map_err(|_| "chave inválida".to_owned())?;
+        let id = id.parse().map_err(|e| format!("{e}"))?;
+        let name: String = name.chars().take(chain::MAX_NAME).collect();
+        self.sign(Op::AddComputer { host, id, name })
+            .await
+            .map(drop)
+    }
+
+    /// Takes computer `host` out of the list (and its shares with it).
+    pub async fn remove_computer(&self, host: &str) -> Result<(), String> {
+        let host: PublicKey = host.parse().map_err(|_| "chave inválida".to_owned())?;
+        self.sign(Op::RemoveComputer { host }).await.map(drop)
     }
 
     /// Adds `op` at the end of the chain, signed by `signer`. Once more if
@@ -740,16 +787,16 @@ mod tests {
     #[tokio::test]
     async fn a_computer_joins_with_the_code_shown_on_another() {
         let (mut world, first) = World::new().await;
-        assert_eq!(first.devices().await.unwrap().state, "none");
+        assert_eq!(first.devices(None).await.unwrap().state, "none");
         let recovery = first.create_chain().await.unwrap();
         assert_eq!(recovery.len(), chain::RECOVERY_CODE_LEN + 4);
-        let view = first.devices().await.unwrap();
+        let view = first.devices(None).await.unwrap();
         assert_eq!(view.state, "member");
         assert!(view.devices[0].me);
         assert!(first.create_chain().await.is_err(), "only once");
 
         let notebook = world.second().await;
-        assert_eq!(notebook.devices().await.unwrap().state, "outside");
+        assert_eq!(notebook.devices(None).await.unwrap().state, "outside");
         let code = chain::new_code(chain::JOIN_CODE_LEN);
         // A wrong code is not let in.
         notebook
@@ -763,20 +810,20 @@ mod tests {
             .await
             .unwrap();
         assert!(first.approve(&code).await.unwrap().is_some());
-        let view = notebook.devices().await.unwrap();
+        let view = notebook.devices(None).await.unwrap();
         assert_eq!(view.state, "member");
         assert_eq!(view.devices.len(), 2);
 
         // The notebook takes the first one out; the list goes on there too.
         let first_key = first.key().unwrap().public_key().to_string();
         notebook.remove(&first_key).await.unwrap();
-        assert_eq!(first.devices().await.unwrap().state, "outside");
-        assert_eq!(notebook.devices().await.unwrap().devices.len(), 1);
+        assert_eq!(first.devices(None).await.unwrap().state, "outside");
+        assert_eq!(notebook.devices(None).await.unwrap().devices.len(), 1);
 
         // With the recovery key, the first one comes back by itself.
         assert!(first.recover(&chain::new_code(20)).await.is_err());
         first.recover(&recovery).await.unwrap();
-        assert_eq!(first.devices().await.unwrap().state, "member");
+        assert_eq!(first.devices(None).await.unwrap().state, "member");
     }
 
     #[tokio::test]
@@ -787,7 +834,7 @@ mod tests {
         let code = chain::new_code(chain::JOIN_CODE_LEN);
         notebook.join(&code).await.unwrap();
         first.approve(&code).await.unwrap().unwrap();
-        assert_eq!(notebook.devices().await.unwrap().state, "member");
+        assert_eq!(notebook.devices(None).await.unwrap().state, "member");
 
         // The server hides the latest entry (the notebook coming in), as if
         // a removal had never happened: both computers saw it, so both see
@@ -797,8 +844,8 @@ mod tests {
             .db
             .tamper("DELETE FROM account_chain WHERE seq = 1")
             .unwrap();
-        assert_eq!(first.devices().await, Err(TAMPERED.to_owned()));
-        assert_eq!(notebook.devices().await, Err(TAMPERED.to_owned()));
+        assert_eq!(first.devices(None).await, Err(TAMPERED.to_owned()));
+        assert_eq!(notebook.devices(None).await, Err(TAMPERED.to_owned()));
 
         // Or puts in a device of its own, signed with its own key.
         let intruder = DeviceKey::generate().unwrap();
@@ -814,13 +861,59 @@ mod tests {
                 "DELETE FROM account_chain; INSERT INTO account_chain VALUES (1, 0, '{forged}');"
             ))
             .unwrap();
-        assert!(first.devices().await.unwrap_err().starts_with(TAMPERED));
+        assert!(first.devices(None).await.unwrap_err().starts_with(TAMPERED));
         // Even a computer that never saw the list does not take a forged
         // one: the recovery key is not the intruder's to name... but a
         // whole new chain looks like a new account, so it is the first one
         // seen; what holds it is that nobody's key is in it.
         let newcomer = world.second().await;
-        assert_eq!(newcomer.devices().await.unwrap().state, "outside");
+        assert_eq!(newcomer.devices(None).await.unwrap().state, "outside");
+    }
+
+    #[tokio::test]
+    async fn the_accounts_computers_show_online_to_its_devices() {
+        use hext_signal::{Client, Role};
+        let (world, first) = World::new().await;
+        first.create_chain().await.unwrap();
+        // A computer, logged in as a host.
+        let host_key = DeviceKey::generate().unwrap();
+        let host = Client::connect(&world.server, &host_key, "Escritório", "t", Role::Host)
+            .await
+            .unwrap();
+        let id = host.id();
+        let viewer_key = first.key().unwrap();
+        let mut viewer = Client::connect(&world.server, &viewer_key, "Notebook", "t", Role::Viewer)
+            .await
+            .unwrap();
+        assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![], "not yet");
+        first
+            .add_computer(
+                &host_key.public_key().to_string(),
+                &id.to_string(),
+                "Escritório",
+            )
+            .await
+            .unwrap();
+        let view = first
+            .devices(Some(&host_key.public_key().to_string()))
+            .await
+            .unwrap();
+        assert_eq!(view.computers.len(), 1);
+        assert!(view.listed && view.computers[0].me);
+        assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![id]);
+        // A device of no account sees nothing.
+        let stranger = DeviceKey::generate().unwrap();
+        let mut stranger = Client::connect(&world.server, &stranger, "X", "t", Role::Viewer)
+            .await
+            .unwrap();
+        assert_eq!(stranger.presence(&[id]).await.unwrap(), vec![]);
+        // Out of the list, out of sight.
+        first
+            .remove_computer(&host_key.public_key().to_string())
+            .await
+            .unwrap();
+        assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![]);
+        drop(host);
     }
 
     #[test]

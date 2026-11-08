@@ -65,7 +65,11 @@ const pages = {
       notice.textContent = view.notice ?? "";
 
       showAccount(view.account);
-      showRecent(view.recent, view.online);
+      showComputers(view.computers, view.online);
+      showRecent(
+        view.recent.filter((r) => !view.computers.some((c) => c.id === r.id)),
+        view.online,
+      );
       showSessions(view.viewers);
       showTechnicians(view.technicians);
       if (view.viewer_failure) {
@@ -442,6 +446,15 @@ function startAccount() {
     };
     setTimeout(ask, 5000);
   });
+  on("computer-add", async () => {
+    try {
+      await invoke("computer_add");
+      accountStatus("Este computador está em Meus computadores, nos dispositivos da conta.");
+      loadDevices();
+    } catch (message) {
+      accountStatus(String(message), true);
+    }
+  });
   on("devices-open-join", () => {
     $("join-code").value = "";
     accountPanel("join");
@@ -616,6 +629,35 @@ async function loadDevices() {
   $("devices-create").hidden = devices.state !== "none" || !account.view.totp;
   $("devices-invite").hidden = !member;
   $("devices-open-join").hidden = devices.state !== "outside";
+  $("computer-add").hidden = !member || devices.listed;
+  $("computers-title").hidden = devices.computers.length === 0;
+  $("computers-list").replaceChildren(
+    ...devices.computers.map((computer) => {
+      const label = document.createElement("span");
+      label.className = "who";
+      label.textContent = `${computer.name} (${computer.id})${computer.me ? ", este computador" : ""}`;
+      label.title = label.textContent;
+      const item = document.createElement("li");
+      item.append(label);
+      if (member) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "link";
+        remove.textContent = "Remover";
+        remove.addEventListener("click", async () => {
+          if (!confirm(`Tirar ${computer.name} de Meus computadores?`)) return;
+          try {
+            await invoke("computer_remove", { host: computer.host });
+            loadDevices();
+          } catch (message) {
+            accountStatus(String(message), true);
+          }
+        });
+        item.append(remove);
+      }
+      return item;
+    }),
+  );
   $("devices-list").replaceChildren(
     ...devices.devices.map((device) => {
       const label = document.createElement("span");
@@ -666,6 +708,37 @@ function showAccount(view) {
   if (!!was !== !!view || account.panel === null) {
     accountPanel(null);
   }
+}
+
+/** The account's computers: a click connects. */
+function showComputers(computers, online) {
+  $("computers-section").hidden = computers.length === 0;
+  $("computers").replaceChildren(
+    ...computers.map(({ id, name }) => {
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "pick";
+      pick.textContent = name ? `${name} (${id})` : id;
+      pick.title = `Conectar a ${pick.textContent}`;
+      if (online) {
+        const on = online.includes(id);
+        const dot = document.createElement("span");
+        dot.className = on ? "dot online" : "dot";
+        dot.title = on ? "Online" : "Offline";
+        pick.prepend(dot);
+      }
+      pick.addEventListener("click", async () => {
+        try {
+          await invoke("connect", { id, password: null, remember: false });
+        } catch (message) {
+          showStatus(String(message), true);
+        }
+      });
+      const item = document.createElement("li");
+      item.append(pick);
+      return item;
+    }),
+  );
 }
 
 function showStatus(text, error = false) {
