@@ -143,6 +143,28 @@ fn launchctl(args: &[&str]) -> Result<String> {
     }
 }
 
+/// Whether another copy of Hext Remote is running: one opened by hand keeps
+/// the installed one from staying open.
+fn other_open() -> bool {
+    let Ok(out) = Command::new("/usr/bin/pgrep")
+        .args(["-f", "HextRemote"])
+        .output()
+    else {
+        return false;
+    };
+    let me = std::process::id().to_string();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .any(|pid| !pid.is_empty() && pid != me)
+}
+
+/// Whether the installed one is running now.
+fn running() -> bool {
+    launchctl(&["print", &format!("{}/{LABEL}", domain())])
+        .is_ok_and(|state| state.contains("state = running"))
+}
+
 pub fn installed() -> bool {
     plist_file().is_ok_and(|p| p.exists())
 }
@@ -267,9 +289,14 @@ pub fn install(name: Option<String>) -> Result<()> {
     }
     match id {
         Some(id) => println!("ID deste computador: {}", id.trim()),
+        // The installed one did not stay open: most often, a copy opened
+        // before keeps its place.
+        None if !running() && other_open() => println!(
+            "Outra cópia do Hext Remote está aberta neste Mac e ficou no lugar do instalado. Feche-a \
+             (no Terminal: pkill -f HextRemote) e rode `service install` de novo."
+        ),
         None => println!(
-            "Ainda sem ID. Se o Hext Remote já estava aberto, ele continua no lugar do instalado até o \
-             próximo login. Veja {}",
+            "Ainda sem ID. Veja o que houve em {}",
             dir.join("ui.log").display()
         ),
     }
@@ -314,6 +341,10 @@ pub fn status() -> Result<()> {
     }
     match launchctl(&["print", &format!("{}/{LABEL}", domain())]) {
         Ok(state) if state.contains("state = running") => println!("Hext Remote: rodando"),
+        Ok(_) if other_open() => println!(
+            "Hext Remote: parado, porque outra cópia aberta está no lugar dele (feche-a com \
+             pkill -f HextRemote e rode `service install` de novo)"
+        ),
         Ok(_) => println!("Hext Remote: parado"),
         Err(_) => println!("Hext Remote: instalado, mas fora desta sessão (abre no próximo login)"),
     }
