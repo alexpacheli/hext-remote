@@ -89,10 +89,49 @@ fn info_plist() -> String {
     )
 }
 
+/// The app `exe` runs from, if it came signed with a Developer ID (the
+/// `.dmg` of F6): copied whole, it keeps its signature and notarization.
+fn signed_bundle(exe: &Path) -> Option<PathBuf> {
+    let app = exe.parent()?.parent()?.parent()?;
+    if app.extension().and_then(|e| e.to_str()) != Some("app") {
+        return None;
+    }
+    let verified = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict"])
+        .arg(app)
+        .output()
+        .ok()?;
+    let details = Command::new("/usr/bin/codesign")
+        .arg("-dv")
+        .arg(app)
+        .output()
+        .ok()?;
+    // (codesign describes it on stderr; an ad hoc one names no authority.)
+    let signed = String::from_utf8_lossy(&details.stderr).contains("Authority=Developer ID");
+    (verified.status.success() && signed).then(|| app.to_owned())
+}
+
 /// Puts `new` in the bundle, and signs the bundle (ad hoc, with its
-/// identifier) for the privacy settings to know it.
+/// identifier) for the privacy settings to know it. A signed app is copied
+/// as it is.
 fn place_bundle(new: &Path) -> Result<()> {
     let app = bundle()?;
+    if let Some(signed) = signed_bundle(new) {
+        let next = app.with_extension("new");
+        let _ = std::fs::remove_dir_all(&next);
+        let copied = Command::new("/usr/bin/ditto")
+            .arg(&signed)
+            .arg(&next)
+            .status()
+            .context("ditto")?;
+        if !copied.success() {
+            bail!("ditto: {copied}");
+        }
+        // The one running keeps its files: the new one takes the name.
+        let _ = std::fs::remove_dir_all(&app);
+        std::fs::rename(&next, &app).with_context(|| app.display().to_string())?;
+        return Ok(());
+    }
     let exe = program()?;
     if let Some(dir) = exe.parent() {
         std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
