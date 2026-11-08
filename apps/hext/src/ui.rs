@@ -37,8 +37,8 @@ use crate::agent::{read_msg, write_msg};
 use crate::chat::{Author, Chat, HOST_CHAT};
 use crate::recent::{Computer, Recent};
 use crate::ui_link::{
-    FromUi, HOST_LOCKED, SessionView, ToUi, UiHub, VIEWER_CHAT_NO_ONE, VIEWER_CHAT_OPEN,
-    VIEWER_CONNECTED, chat_json, chat_of_viewer_line,
+    FromUi, HOST_LOCKED, SessionView, ToUi, ToViewer, UiHub, VIEWER_CHAT_NO_ONE, VIEWER_CHAT_OPEN,
+    VIEWER_CONNECTED, chat_of_viewer_line, ending_of_viewer_line, of_session_line,
 };
 
 /// Tells the pages to read [`View`] again.
@@ -46,6 +46,10 @@ const CHANGED: &str = "changed";
 /// The viewer's key, next to this computer's: the one the computers on the
 /// list know.
 const VIEWER_KEY: &str = "viewer.key";
+/// Before the session's number, the label of a viewer session's chat window.
+const VIEWER_CHAT_PREFIX: &str = "chat-viewer-";
+/// Computers open at once, at most: each window decodes its own video.
+const MAX_VIEWERS: usize = 8;
 /// How long the bar says how a file ended, before going back to saying what
 /// the session may do.
 const TRANSFER_SHOWN: Duration = Duration::from_secs(8);
@@ -80,19 +84,21 @@ struct AskView {
     can_restart: bool,
 }
 
-/// The viewer opened from the home screen.
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(tag = "state", rename_all = "lowercase")]
-enum ViewerState {
-    #[default]
-    Idle,
-    Asking {
-        locked: bool,
-    },
-    Connected,
-    Failed {
-        message: String,
-    },
+/// A computer opened from the home screen, each in a window of the viewer.
+#[derive(Debug, Clone, Serialize)]
+struct ViewerItem {
+    /// The viewer's number for it.
+    session: u64,
+    id: String,
+    /// What it is called, once connected.
+    name: Option<String>,
+    /// Waiting for someone there to accept.
+    asking: bool,
+    /// Its screen is locked: someone must wake it.
+    locked: bool,
+    /// Which viewer process holds it.
+    #[serde(skip)]
+    hub: u64,
 }
 
 /// What the pages show.
@@ -104,7 +110,10 @@ struct View {
     notice: Option<String>,
     ask: Option<AskView>,
     session: Option<SessionView>,
-    viewer: ViewerState,
+    /// The computers open, or opening, from here.
+    viewers: Vec<ViewerItem>,
+    /// Why the last one that failed did.
+    viewer_failure: Option<String>,
     /// The computers this one accessed, the latest first.
     recent: Vec<Computer>,
     /// The IDs on that list that are online; `None`: not known.
@@ -128,8 +137,10 @@ struct Shared {
     can_restart: bool,
     /// The conversations, by the label of their window.
     chats: Mutex<HashMap<String, Chat>>,
-    /// Where each viewer running takes its messages, by that same label.
-    viewers: Mutex<HashMap<String, ChildStdin>>,
+    /// The viewer running (which one, and where it takes what it is asked).
+    hub: Mutex<Option<(u64, ChildStdin)>>,
+    next_hub: AtomicU64,
+    /// Numbers the viewer sessions.
     next_viewer: AtomicU64,
     /// Asks the server at once who on the list is online.
     presence: Arc<Notify>,
@@ -721,10 +732,8 @@ fn chat_send(app: AppHandle, window: WebviewWindow, shared: State<'_, Shared>, t
         shared.send(FromUi::Chat(text.clone()));
         true
     } else {
-        let mut viewers = shared.viewers.lock().expect("lock");
-        viewers
-            .get_mut(label)
-            .is_some_and(|viewer| writeln!(viewer, "{}", chat_json(&text)).is_ok())
+        session_of_chat(label)
+            .is_some_and(|n| tell_viewer(&shared, &ToViewer::Chat(n, text.clone())))
     };
     if let Some(chat) = shared.chats.lock().expect("lock").get_mut(label) {
         if sent {
@@ -796,24 +805,37 @@ fn connect(
 ) -> Result<(), String> {
     let password = password.filter(|p| !p.is_empty()).map(Zeroizing::new);
     let id: DeviceId = id.parse().map_err(|e| format!("{e}"))?;
+    let shown = id.to_string();
+    let n = shared.next_viewer.fetch_add(1, Ordering::Relaxed);
     {
         let mut view = shared.view.lock().expect("lock");
-        if matches!(
-            view.viewer,
-            ViewerState::Asking { .. } | ViewerState::Connected
-        ) {
-            return Err("Já existe uma conexão aberta.".into());
-        }
-        if view.id.as_deref() == Some(id.to_string().as_str()) {
+        if view.id.as_deref() == Some(shown.as_str()) {
             return Err("Esse é o ID deste computador.".into());
         }
-        view.viewer = ViewerState::Asking { locked: false };
+        // (Each host takes one session at a time anyway.)
+        if view.viewers.iter().any(|v| v.id == shown) {
+            return Err("Esse computador já está aberto.".into());
+        }
+        if view.viewers.len() >= MAX_VIEWERS {
+            return Err("Feche uma das conexões antes de abrir outra.".into());
+        }
+        view.viewer_failure = None;
+        view.viewers.push(ViewerItem {
+            session: n,
+            id: shown,
+            name: None,
+            asking: true,
+            locked: false,
+            hub: 0,
+        });
     }
-    if let Err(e) = open_viewer(app.clone(), id, password) {
+    if let Err(e) = open_viewer(&app, n, id, password) {
         let message = format!("Não foi possível abrir a conexão: {e:#}");
-        shared.view.lock().expect("lock").viewer = ViewerState::Failed {
-            message: message.clone(),
-        };
+        let mut view = shared.view.lock().expect("lock");
+        view.viewers.retain(|v| v.session != n);
+        view.viewer_failure = Some(message.clone());
+        drop(view);
+        changed(&app);
         return Err(message);
     }
     changed(&app);
@@ -838,7 +860,6 @@ fn remember(app: &AppHandle, id: &str, name: &str) {
     recent.save();
     let shared = app.state::<Shared>();
     let mut view = shared.view.lock().expect("lock");
-    view.viewer = ViewerState::Connected;
     view.recent = recent.into_list();
     shared.presence.notify_one();
 }
@@ -888,16 +909,75 @@ fn watch_presence(app: AppHandle) {
     ));
 }
 
-/// Opens the viewer, a process of its own (ARCHITECTURE 3.5), and follows it.
-fn open_viewer(app: AppHandle, id: DeviceId, password: Option<Zeroizing<String>>) -> Result<()> {
+/// The chat window of viewer session `n`.
+fn chat_label(n: u64) -> String {
+    format!("{VIEWER_CHAT_PREFIX}{n}")
+}
+
+/// The viewer session of chat window `label`.
+fn session_of_chat(label: &str) -> Option<u64> {
+    label.strip_prefix(VIEWER_CHAT_PREFIX)?.parse().ok()
+}
+
+/// Asks the viewer for something; false if there is no viewer, or it is gone.
+fn tell_viewer(shared: &Shared, asked: &ToViewer) -> bool {
+    let mut hub = shared.hub.lock().expect("lock");
+    let Some((_, stdin)) = hub.as_mut() else {
+        return false;
+    };
+    let line = asked.line();
+    let told = writeln!(stdin, "{}", line.as_str()).and_then(|()| stdin.flush());
+    if told.is_err() {
+        *hub = None;
+    }
+    told.is_ok()
+}
+
+/// Opens computer `id` as viewer session `n`: in the viewer running, or a
+/// new one. One viewer holds them all, each in its window: they share its
+/// connection to the network (ARCHITECTURE 3.5 keeps it apart from this
+/// process).
+fn open_viewer(
+    app: &AppHandle,
+    n: u64,
+    id: DeviceId,
+    password: Option<Zeroizing<String>>,
+) -> Result<()> {
+    let shared = app.state::<Shared>();
+    let asked = ToViewer::Open {
+        session: n,
+        id,
+        password,
+    };
+    let running = shared.hub.lock().expect("lock").as_ref().map(|(g, _)| *g);
+    let generation = match running {
+        Some(generation) if tell_viewer(&shared, &asked) => generation,
+        // None running, or it just left.
+        _ => {
+            let ToViewer::Open { password, .. } = asked else {
+                unreachable!("an open");
+            };
+            start_viewer(app, n, id, password)?
+        }
+    };
+    let mut view = shared.view.lock().expect("lock");
+    if let Some(item) = view.viewers.iter_mut().find(|v| v.session == n) {
+        item.hub = generation;
+    }
+    Ok(())
+}
+
+/// Starts the viewer, a process of its own (ARCHITECTURE 3.5), with session
+/// `n`, and follows it; which one it is.
+fn start_viewer(
+    app: &AppHandle,
+    n: u64,
+    id: DeviceId,
+    password: Option<Zeroizing<String>>,
+) -> Result<u64> {
     // Not the key the portable host is using: our relay serves one
     // connection per key, so the two would keep knocking each other off.
     let key = hext_crypto::config_dir()?.join(VIEWER_KEY);
-    let number = app
-        .state::<Shared>()
-        .next_viewer
-        .fetch_add(1, Ordering::Relaxed);
-    let label = format!("chat-viewer-{number}");
     let mut command = Command::new(std::env::current_exe()?);
     command
         .arg("view")
@@ -905,6 +985,8 @@ fn open_viewer(app: AppHandle, id: DeviceId, password: Option<Zeroizing<String>>
         .arg("--device-key")
         .arg(key)
         .arg("--report-to-ui")
+        .arg("--session")
+        .arg(n.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -923,76 +1005,131 @@ fn open_viewer(app: AppHandle, id: DeviceId, password: Option<Zeroizing<String>>
     if let Some(password) = &password {
         writeln!(stdin, "{}", password.as_str()).context("passar a senha ao visualizador")?;
     }
-    let shared = app.state::<Shared>();
-    let mut viewers = shared.viewers.lock().expect("lock");
-    viewers.insert(label.clone(), stdin);
-    drop(viewers);
     let stdout = child.stdout.take().context("saída do visualizador")?;
     let stderr = child.stderr.take().context("erros do visualizador")?;
+    let shared = app.state::<Shared>();
+    let generation = shared.next_hub.fetch_add(1, Ordering::Relaxed);
+    *shared.hub.lock().expect("lock") = Some((generation, stdin));
 
-    let connected = app.clone();
-    let chat_label = label.clone();
+    let reading = app.clone();
     std::thread::spawn(move || {
-        let in_chat = |author, text: String| {
-            let shared = connected.state::<Shared>();
-            if let Some(chat) = shared.chats.lock().expect("lock").get_mut(&chat_label) {
-                chat.push(author, text);
-            }
-            changed(&connected);
-        };
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
-            if let Some(name) = line.strip_prefix(VIEWER_CONNECTED) {
-                let chat = Chat::new(name.trim().to_owned());
-                let shared = connected.state::<Shared>();
-                let mut chats = shared.chats.lock().expect("lock");
-                chats.insert(chat_label.clone(), chat);
-                drop(chats);
-                remember(&connected, &id.to_string(), name.trim());
-                changed(&connected);
-            } else if line == VIEWER_CHAT_OPEN {
-                open_chat(&connected, chat_label.clone(), true);
-            } else if line == VIEWER_CHAT_NO_ONE {
-                let text = "Ninguém recebeu: não há usuário no computador, ou a conexão caiu.";
-                in_chat(Author::App, text.into());
-                open_chat(&connected, chat_label.clone(), false);
-            } else if let Some(text) = chat_of_viewer_line(&line) {
-                in_chat(Author::Them, text.into());
-                open_chat(&connected, chat_label.clone(), false);
-            } else if line == HOST_LOCKED {
-                connected
-                    .state::<Shared>()
-                    .view
-                    .lock()
-                    .expect("lock")
-                    .viewer = ViewerState::Asking { locked: true };
-                changed(&connected);
+            if let Some((n, line)) = of_session_line(&line) {
+                viewer_said(&reading, n, line);
             }
         }
     });
+    let app = app.clone();
     std::thread::spawn(move || {
         // What `main` prints when it fails: `Error: <the reason>`.
         let failure = BufReader::new(stderr)
             .lines()
             .map_while(Result::ok)
             .find_map(|line| line.strip_prefix("Error: ").map(str::to_owned));
-        let status = child.wait();
-        let state = match (status, failure) {
-            (Ok(status), _) if status.success() => ViewerState::Idle,
-            (_, Some(message)) => ViewerState::Failed { message },
-            _ => ViewerState::Failed {
-                message: "A conexão terminou com um erro.".into(),
-            },
-        };
+        let _ = child.wait();
         let shared = app.state::<Shared>();
-        shared.view.lock().expect("lock").viewer = state;
-        shared.viewers.lock().expect("lock").remove(&label);
+        {
+            let mut hub = shared.hub.lock().expect("lock");
+            if hub.as_ref().is_some_and(|(g, _)| *g == generation) {
+                *hub = None;
+            }
+        }
+        // Whatever it still held is gone with it.
+        let gone: Vec<ViewerItem> = {
+            let mut view = shared.view.lock().expect("lock");
+            let (gone, kept) = std::mem::take(&mut view.viewers)
+                .into_iter()
+                .partition(|v| v.hub == generation);
+            view.viewers = kept;
+            if gone.iter().any(|v| v.asking) {
+                view.viewer_failure =
+                    Some(failure.unwrap_or_else(|| "A conexão terminou com um erro.".to_owned()));
+            }
+            gone
+        };
+        let mut chats = shared.chats.lock().expect("lock");
+        for item in gone {
+            if let Some(chat) = chats.get_mut(&chat_label(item.session)) {
+                chat.live = false;
+            }
+        }
+        drop(chats);
+        changed(&app);
+    });
+    Ok(generation)
+}
+
+/// A line of the viewer about session `n`.
+fn viewer_said(app: &AppHandle, n: u64, line: &str) {
+    let label = chat_label(n);
+    let shared = app.state::<Shared>();
+    let in_chat = |author, text: String| {
+        if let Some(chat) = shared.chats.lock().expect("lock").get_mut(&label) {
+            chat.push(author, text);
+        }
+        changed(app);
+    };
+    if let Some(name) = line.strip_prefix(VIEWER_CONNECTED) {
+        let name = name.trim().to_owned();
+        let chat = Chat::new(name.clone());
+        shared.chats.lock().expect("lock").insert(label, chat);
+        let id = {
+            let mut view = shared.view.lock().expect("lock");
+            let Some(item) = view.viewers.iter_mut().find(|v| v.session == n) else {
+                return;
+            };
+            item.asking = false;
+            item.locked = false;
+            item.name = Some(name.clone());
+            item.id.clone()
+        };
+        remember(app, &id, &name);
+        changed(app);
+    } else if line == VIEWER_CHAT_OPEN {
+        open_chat(app, label, true);
+    } else if line == VIEWER_CHAT_NO_ONE {
+        let text = "Ninguém recebeu: não há usuário no computador, ou a conexão caiu.";
+        in_chat(Author::App, text.into());
+        open_chat(app, label, false);
+    } else if let Some(text) = chat_of_viewer_line(line) {
+        in_chat(Author::Them, text.into());
+        open_chat(app, label, false);
+    } else if line == HOST_LOCKED {
+        let mut view = shared.view.lock().expect("lock");
+        if let Some(item) = view.viewers.iter_mut().find(|v| v.session == n) {
+            item.locked = true;
+        }
+        drop(view);
+        changed(app);
+    } else if let Some(reason) = ending_of_viewer_line(line) {
+        {
+            let mut view = shared.view.lock().expect("lock");
+            if let Some(at) = view.viewers.iter().position(|v| v.session == n) {
+                let item = view.viewers.remove(at);
+                if let Some(reason) = reason {
+                    let who = item.name.unwrap_or(item.id);
+                    view.viewer_failure = Some(format!("{who}: {reason}"));
+                }
+            }
+        }
         if let Some(chat) = shared.chats.lock().expect("lock").get_mut(&label) {
             chat.live = false;
         }
-        changed(&app);
-    });
-    Ok(())
+        changed(app);
+    }
+}
+
+/// Brings the window of viewer session `session` forward.
+#[tauri::command]
+fn viewer_focus(shared: State<'_, Shared>, session: u64) {
+    tell_viewer(&shared, &ToViewer::Focus(session));
+}
+
+/// Ends viewer session `session`.
+#[tauri::command]
+fn viewer_close(shared: State<'_, Shared>, session: u64) {
+    tell_viewer(&shared, &ToViewer::Close(session));
 }
 
 /// Double-clicked, a console app gets a console of its own: not wanted
@@ -1047,7 +1184,8 @@ pub fn run(link: Link) -> Result<()> {
             managed: AtomicBool::new(stays),
             can_restart,
             chats: Mutex::default(),
-            viewers: Mutex::default(),
+            hub: Mutex::default(),
+            next_hub: AtomicU64::new(1),
             next_viewer: AtomicU64::new(1),
             presence: Arc::default(),
         })
@@ -1062,6 +1200,8 @@ pub fn run(link: Link) -> Result<()> {
             open_host_chat,
             rename,
             connect,
+            viewer_focus,
+            viewer_close,
             forget
         ])
         .on_window_event(move |window, event| {

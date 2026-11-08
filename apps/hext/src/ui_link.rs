@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::warn;
+use zeroize::Zeroizing;
 
 use crate::agent::{Task, read_msg, write_msg};
 use crate::signaling::{ANSWER_TIME, Ask};
@@ -57,6 +58,101 @@ pub fn viewer_chat_line(text: &ChatText) -> String {
 /// The message in a line of [`viewer_chat_line`].
 pub fn chat_of_viewer_line(line: &str) -> Option<ChatText> {
     chat_of_json(line.strip_prefix(VIEWER_CHAT)?)
+}
+
+/// Printed by a viewer for a session that is over: alone if it ended well,
+/// followed by the reason if not.
+pub const VIEWER_ENDED: &str = "hext-ui: fim";
+
+/// The reason in a line of [`VIEWER_ENDED`]: `None` if it is not one,
+/// `Some(None)` if the session ended well.
+pub fn ending_of_viewer_line(line: &str) -> Option<Option<&str>> {
+    let rest = line.strip_prefix(VIEWER_ENDED)?;
+    match rest.strip_prefix(' ') {
+        Some(reason) if !reason.is_empty() => Some(Some(reason)),
+        _ if rest.is_empty() => Some(None),
+        _ => None,
+    }
+}
+
+/// One viewer holds every session the interface opens (they share its
+/// connection to the network: our relay serves one per key). Each line
+/// between them is about one session, by its number.
+pub fn session_line(session: u64, line: &str) -> String {
+    format!("{session} {line}")
+}
+
+/// The session and the rest of a [`session_line`].
+pub fn of_session_line(line: &str) -> Option<(u64, &str)> {
+    let (session, rest) = line.split_once(' ')?;
+    Some((session.parse().ok()?, rest))
+}
+
+const OPEN: &str = "open";
+const FOCUS: &str = "focus";
+const CLOSE: &str = "close";
+
+/// What the interface asks of its viewer. (No `Debug`: it may carry a
+/// password.)
+pub enum ToViewer {
+    /// Another computer, as session `session`; with `password`, nobody there
+    /// needs to accept.
+    Open {
+        session: u64,
+        id: DeviceId,
+        password: Option<Zeroizing<String>>,
+    },
+    /// Bring the session's window forward.
+    Focus(u64),
+    /// End the session.
+    Close(u64),
+    /// Send this in the session's chat.
+    Chat(u64, ChatText),
+}
+
+impl ToViewer {
+    /// As one line (without its end).
+    pub fn line(&self) -> Zeroizing<String> {
+        Zeroizing::new(match self {
+            Self::Open {
+                session,
+                id,
+                password: None,
+            } => format!("{OPEN} {session} {}", id.get()),
+            Self::Open {
+                session,
+                id,
+                password: Some(password),
+            } => format!("{OPEN} {session} {} {}", id.get(), password.as_str()),
+            Self::Focus(session) => session_line(*session, FOCUS),
+            Self::Close(session) => session_line(*session, CLOSE),
+            Self::Chat(session, text) => session_line(*session, &chat_json(text)),
+        })
+    }
+
+    /// A line of [`ToViewer::line`] (its end already gone).
+    pub fn parse(line: &str) -> Option<Self> {
+        if let Some(rest) = line.strip_prefix(OPEN).and_then(|r| r.strip_prefix(' ')) {
+            let mut parts = rest.splitn(3, ' ');
+            let session = parts.next()?.parse().ok()?;
+            let id = parts.next()?.parse().ok()?;
+            let password = parts
+                .next()
+                .filter(|p| !p.is_empty())
+                .map(|p| Zeroizing::new(p.to_owned()));
+            return Some(Self::Open {
+                session,
+                id,
+                password,
+            });
+        }
+        let (session, rest) = of_session_line(line)?;
+        Some(match rest {
+            FOCUS => Self::Focus(session),
+            CLOSE => Self::Close(session),
+            chat => Self::Chat(session, chat_of_json(chat)?),
+        })
+    }
 }
 
 /// Owner of the sessions → interface.
@@ -462,6 +558,60 @@ mod tests {
 
     fn id() -> DeviceId {
         DeviceId::new(482_913_557).unwrap()
+    }
+
+    #[test]
+    fn what_the_interface_asks_of_its_viewer_goes_as_lines() {
+        let open = ToViewer::Open {
+            session: 3,
+            id: id(),
+            password: Some(Zeroizing::new("uma senha  com espaços ".to_owned())),
+        };
+        let line = open.line();
+        assert_eq!(line.as_str(), "open 3 482913557 uma senha  com espaços ");
+        let Some(ToViewer::Open {
+            session: 3,
+            id: back,
+            password: Some(password),
+        }) = ToViewer::parse(&line)
+        else {
+            panic!("an open with a password");
+        };
+        assert_eq!((back, password.as_str()), (id(), "uma senha  com espaços "));
+        assert!(matches!(
+            ToViewer::parse("open 4 482913557"),
+            Some(ToViewer::Open {
+                session: 4,
+                password: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            ToViewer::parse("2 focus"),
+            Some(ToViewer::Focus(2))
+        ));
+        assert!(matches!(
+            ToViewer::parse("2 close"),
+            Some(ToViewer::Close(2))
+        ));
+        let text = ChatText::new("oi").unwrap();
+        let chat = ToViewer::Chat(5, text.clone()).line();
+        assert!(matches!(ToViewer::parse(&chat), Some(ToViewer::Chat(5, t)) if t == text));
+        assert!(ToViewer::parse("open x 1").is_none());
+        assert!(ToViewer::parse("focus").is_none());
+        assert!(ToViewer::parse("2 nonsense").is_none());
+    }
+
+    #[test]
+    fn a_viewer_says_which_session_each_line_is_about() {
+        let line = session_line(7, VIEWER_CONNECTED);
+        assert_eq!(of_session_line(&line), Some((7, VIEWER_CONNECTED)));
+        assert_eq!(of_session_line("Pedindo acesso a 482913557..."), None);
+        assert_eq!(ending_of_viewer_line(VIEWER_ENDED), Some(None));
+        let failed = format!("{VIEWER_ENDED} senha errada");
+        assert_eq!(ending_of_viewer_line(&failed), Some(Some("senha errada")));
+        assert_eq!(ending_of_viewer_line("hext-ui: fimx"), None);
+        assert_eq!(ending_of_viewer_line(VIEWER_CHAT_OPEN), None);
     }
 
     /// A fake interface, connected to `hub`.
