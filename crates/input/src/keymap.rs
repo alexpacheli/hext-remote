@@ -292,6 +292,31 @@ pub fn mac_keycode(scancode: u16) -> Option<u16> {
     Some(code)
 }
 
+/// Whether a Mac key (`kVK_*`) is one a real keyboard marks as on the numeric
+/// pad (the keypad and the arrows): the one flag an injected key carries of
+/// its own.
+///
+/// The "secondary Fn" flag macOS also puts on arrows, F-keys and Home/End is
+/// left out on purpose: posted with injected keys it can stay behind as a
+/// held Fn/Globe, and then typing "é" opens the emoji picker (Fn+E), "c" the
+/// Control Center (Fn+C), and so on.
+pub fn mac_numeric_pad(keycode: u16) -> bool {
+    matches!(
+        keycode,
+        0x41 | 0x43
+            | 0x45
+            | 0x47
+            | 0x4B
+            | 0x4C
+            | 0x4E
+            | 0x51..=0x59
+            | 0x5B
+            | 0x5C
+            | 0x5F
+            | 0x7B..=0x7E
+    )
+}
+
 /// For viewers on Windows/Linux controlling a Mac: Ctrl and the Windows key
 /// trade places, so Ctrl+C sends Cmd+C (copy) and Win+... sends Control.
 pub fn swap_ctrl_and_super(scancode: u16) -> u16 {
@@ -383,6 +408,21 @@ mod tests {
             {
                 panic!("{code:#06x} and {other:#06x} both map to {mac:#04x}");
             }
+        }
+    }
+
+    #[test]
+    fn numeric_pad_keys() {
+        // Keypad and arrows carry the flag; letters, F-keys and Home do not.
+        let pad = [
+            0x47, 0x52, 0x53, 0x37, 0x4A, 0x4E, 0x59, 0x7E, 0xE01C, 0xE035, 0xE045, 0xE048, 0xE04B,
+            0xE04D, 0xE050,
+        ];
+        for sc in pad {
+            assert!(mac_numeric_pad(mac_keycode(sc).unwrap()), "{sc:#06x}");
+        }
+        for sc in [0x12, 0x1A, 0x1C, 0x3B, 0x57, 0xE047, 0xE053, 0xE05B, 0x2A] {
+            assert!(!mac_numeric_pad(mac_keycode(sc).unwrap()), "{sc:#06x}");
         }
     }
 

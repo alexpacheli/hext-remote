@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 use hext_proto::{InputEvent, MouseButton};
 use objc2_core_foundation::CGPoint;
 use objc2_core_graphics::{
-    CGEvent, CGEventField, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton,
-    CGScrollEventUnit,
+    CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
+    CGEventType, CGMouseButton, CGScrollEventUnit,
 };
 
-use crate::keymap::mac_keycode;
+use crate::keymap::{mac_keycode, mac_numeric_pad};
 use crate::{Area, Injector};
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -35,6 +35,24 @@ const MULTI_CLICK_DISTANCE: f64 = 4.0;
 const PIXELS_PER_NOTCH: f32 = 40.0;
 
 const CAPS_LOCK: u16 = 0x3A;
+
+/// Each modifier flag and the Mac key (`kVK_*`) that lets go of it.
+const MODIFIER_KEYS: [(CGEventFlags, u16); 5] = [
+    (CGEventFlags::MaskShift, 0x38),
+    (CGEventFlags::MaskControl, 0x3B),
+    (CGEventFlags::MaskAlternate, 0x3A),
+    (CGEventFlags::MaskCommand, 0x37),
+    (CGEventFlags::MaskSecondaryFn, 0x3F), // Fn / Globe
+];
+
+/// The modifiers macOS believes held (`system`) that nobody here holds
+/// (`held`), each with the key that releases it.
+fn stray_modifiers(system: CGEventFlags, held: CGEventFlags) -> Vec<(CGEventFlags, u16)> {
+    MODIFIER_KEYS
+        .into_iter()
+        .filter(|&(flag, _)| system.contains(flag) && !held.contains(flag))
+        .collect()
+}
 
 pub struct CgEventInjector {
     keys_down: HashSet<u16>,
@@ -72,7 +90,7 @@ impl Default for CgEventInjector {
         if !unsafe { AXIsProcessTrusted() } {
             tracing::warn!("sem permissão de \"Acessibilidade\": o input remoto será ignorado");
         }
-        Self {
+        let injector = Self {
             keys_down: HashSet::new(),
             buttons_down: HashSet::new(),
             position: CGPoint { x: 0.0, y: 0.0 },
@@ -80,7 +98,11 @@ impl Default for CgEventInjector {
             click_count: 1,
             caps_lock: false,
             wheel_rest: (0.0, 0.0),
-        }
+        };
+        // A modifier left behind earlier (another session, an older
+        // version) would ruin this one's typing from the first key.
+        injector.release_stray_modifiers();
+        injector
     }
 }
 
@@ -116,13 +138,29 @@ impl CgEventInjector {
         flags
     }
 
-    fn post(&self, event: Option<&CGEvent>) {
-        // Keep the flags macOS set for the key itself (arrows, Home/End and
-        // friends carry NumericPad/SecondaryFn on a real keyboard).
-        let own =
-            CGEvent::flags(event) & (CGEventFlags::MaskNumericPad | CGEventFlags::MaskSecondaryFn);
+    /// Posts `event` with exactly the held modifiers plus `own`, the flags
+    /// of the key itself. Nothing comes from the flags the event was created
+    /// with: those can carry the system's current state (a stuck Fn, say),
+    /// and posting them again would keep it stuck for good.
+    fn post(&self, event: Option<&CGEvent>, own: CGEventFlags) {
         CGEvent::set_flags(event, own | self.flags());
         CGEvent::post(CGEventTapLocation::HIDEventTap, event);
+    }
+
+    /// Lets go of every modifier macOS still believes held that this
+    /// injector does not hold: a Fn/Globe, Command or Control left behind
+    /// turns plain typing into shortcuts (the emoji picker on "é", new
+    /// windows, pop-ups). Real keys held right now count as held there too,
+    /// so this runs only when the remote side lets go of everything.
+    fn release_stray_modifiers(&self) {
+        let system = CGEventSource::flags_state(CGEventSourceStateID::HIDSystemState);
+        let held = self.flags();
+        for (flag, keycode) in stray_modifiers(system, held) {
+            tracing::warn!("modificador preso no Mac ({flag:?}); soltando");
+            let event = CGEvent::new_keyboard_event(None, keycode, false);
+            CGEvent::set_type(event.as_deref(), CGEventType::FlagsChanged);
+            self.post(event.as_deref(), CGEventFlags::empty());
+        }
     }
 
     fn move_to(&mut self, point: CGPoint) {
@@ -138,7 +176,7 @@ impl CgEventInjector {
             (CGEventType::MouseMoved, 0)
         };
         let event = CGEvent::new_mouse_event(None, kind, point, CGMouseButton(button));
-        self.post(event.as_deref());
+        self.post(event.as_deref(), CGEventFlags::empty());
     }
 
     fn button(&mut self, number: u32, pressed: bool) {
@@ -174,7 +212,7 @@ impl CgEventInjector {
             CGEventField::MouseEventClickState,
             self.click_count,
         );
-        self.post(event.as_deref());
+        self.post(event.as_deref(), CGEventFlags::empty());
     }
 
     fn key(&mut self, scancode: u16, pressed: bool) {
@@ -198,7 +236,12 @@ impl CgEventInjector {
         if is_modifier {
             CGEvent::set_type(event.as_deref(), CGEventType::FlagsChanged);
         }
-        self.post(event.as_deref());
+        let own = if mac_numeric_pad(keycode) {
+            CGEventFlags::MaskNumericPad
+        } else {
+            CGEventFlags::empty()
+        };
+        self.post(event.as_deref(), own);
     }
 }
 
@@ -235,7 +278,7 @@ impl Injector for CgEventInjector {
                         -(h as i32),
                         0,
                     );
-                    self.post(event.as_deref());
+                    self.post(event.as_deref(), CGEventFlags::empty());
                 }
             }
             InputEvent::Key { scancode, pressed } => self.key(scancode, pressed),
@@ -254,5 +297,31 @@ impl Injector for CgEventInjector {
         for number in buttons {
             self.button(number, false);
         }
+        // Whatever macOS still believes held after that was not ours to
+        // hold: let go of it too (focus lost, session over, reconnecting).
+        self.release_stray_modifiers();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stray_modifiers_are_the_ones_nobody_holds() {
+        let system = CGEventFlags::MaskSecondaryFn
+            | CGEventFlags::MaskCommand
+            | CGEventFlags::MaskShift
+            | CGEventFlags::MaskAlphaShift
+            | CGEventFlags::MaskNumericPad;
+        let held = CGEventFlags::MaskShift;
+        let keys: Vec<u16> = stray_modifiers(system, held)
+            .into_iter()
+            .map(|(_, key)| key)
+            .collect();
+        // Command and Fn/Globe; never Caps Lock (a toggle) or held Shift.
+        assert_eq!(keys, vec![0x37, 0x3F]);
+        assert!(stray_modifiers(held, held).is_empty());
+        assert!(stray_modifiers(CGEventFlags::empty(), CGEventFlags::empty()).is_empty());
     }
 }
