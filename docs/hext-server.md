@@ -85,6 +85,8 @@ computador: `account {request, call}` e a resposta `account {request, reply}`. O
 | `chain_get`, `chain_append {entry}` | A lista de dispositivos da conta (a cadeia assinada, abaixo) e mais uma entrada no fim. A primeira exige 2FA e é assinada pelo próprio dispositivo |
 | `chain_host {known}` | Para um computador, sem login de conta (vale a chave com que ele se conectou): as cadeias das contas que o têm em Meus computadores, as das contas com quem elas o compartilham e as de `known` (as que ele vinculou, para ver se ainda o têm). Até 16; ele confere cada uma |
 | `chain_shared` | As cadeias das contas que compartilham algum computador com a conta logada, para listar. Até 16; o app confere cada uma |
+| `host_events {events}` | Para um computador, sem login de conta: linhas da auditoria dele (até 20, de até 300 caracteres), guardadas para as contas que o têm em Meus computadores (as 500 mais novas de cada) |
+| `activity` | As linhas dos computadores da conta, as mais novas primeiro |
 | `chain_join {device, name, proof}`, `chain_pending` | Um dispositivo pede para entrar na lista (só por si mesmo), e o que mostra o código vê os pedidos (10 minutos, até 5) |
 
 - **Guardado:** a senha como hash Argon2id; códigos, tokens e códigos de recuperação como SHA-256 (são

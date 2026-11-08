@@ -608,7 +608,14 @@ pub fn technicians(revoke: Option<&str>, revoke_all: bool) -> Result<()> {
 /// A line in the audit log, for the owner of the computer.
 fn audit(entry: &str) {
     super::kept::audit_to(super::log_file("audit"), entry);
+    if let Some(activity) = ACTIVITY.get() {
+        let _ = activity.send(entry.to_owned());
+    }
 }
+
+/// Where the service sends what the audit writes, for the account's
+/// Atividade screen (unset outside the service).
+static ACTIVITY: OnceLock<tokio::sync::mpsc::UnboundedSender<String>> = OnceLock::new();
 
 fn owners_file() -> Result<PathBuf> {
     Ok(machine_dir()?.join("owners.json"))
@@ -1019,6 +1026,9 @@ async fn serve() -> Result<()> {
     restore_resume(&resumes);
     let host_key = key.public_key();
     let owners = crate::owners::Owners::new(owners_file()?, key.clone(), DEFAULT_SERVER.to_owned());
+    let (activity, activity_out) = tokio::sync::mpsc::unbounded_channel();
+    let _ = ACTIVITY.set(activity);
+    tokio::spawn(crate::owners::report_activity(owners.clone(), activity_out));
     let shown = ui.clone();
     tokio::spawn(crate::owners::keep_fresh(
         owners.clone(),

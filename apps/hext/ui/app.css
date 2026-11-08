@@ -539,3 +539,7 @@ input[type="password"] {
   align-items: center;
   gap: 6px;
 }
+
+.sessions .who.wrap {
+  white-space: normal;
+}

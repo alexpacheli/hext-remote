@@ -38,6 +38,9 @@ pub(crate) const GUESS_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// Longest code or token taken (anything longer is wrong anyway).
 const MAX_CODE: usize = 128;
 
+/// Events kept for each account (the latest).
+const KEPT_EVENTS: i64 = 500;
+
 /// Where e-mails go.
 pub trait Mailer: Send + Sync {
     fn send(&self, to: &str, subject: &str, body: &str);
@@ -107,6 +110,13 @@ pub(crate) fn init(conn: &Connection) -> rusqlite::Result<()> {
              PRIMARY KEY (account_id, device_id, with_chain)
          ) WITHOUT ROWID;
          CREATE INDEX IF NOT EXISTS account_shares_by_id ON account_shares (device_id);
+         CREATE TABLE IF NOT EXISTS account_events (
+             account_id INTEGER NOT NULL,
+             at INTEGER NOT NULL,
+             device_id INTEGER NOT NULL,
+             text TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS account_events_by_account ON account_events (account_id, at);
          CREATE TABLE IF NOT EXISTS account_sessions (
              token_hash BLOB PRIMARY KEY,
              account_id INTEGER NOT NULL,
@@ -444,6 +454,63 @@ impl Db {
             )?;
         }
         tx.commit()
+    }
+
+    /// Keeps `events` of computer `host` for the accounts that list it (the
+    /// latest [`KEPT_EVENTS`] of each).
+    fn record_events(&self, host: DeviceId, at: i64, events: &[String]) -> rusqlite::Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let accounts: Vec<i64> = {
+            let mut query =
+                tx.prepare("SELECT account_id FROM account_computers WHERE device_id = ?1")?;
+            let rows = query.query_map(params![host.get()], |row| row.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for account in accounts {
+            for text in events {
+                tx.execute(
+                    "INSERT INTO account_events (account_id, at, device_id, text)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![account, at, host.get(), text],
+                )?;
+            }
+            tx.execute(
+                "DELETE FROM account_events WHERE account_id = ?1 AND rowid NOT IN (
+                     SELECT rowid FROM account_events WHERE account_id = ?1
+                     ORDER BY at DESC, rowid DESC LIMIT ?2)",
+                params![account, KEPT_EVENTS],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// The latest events of `account`'s computers, the latest first.
+    fn events(&self, account: i64) -> rusqlite::Result<Vec<hext_signal::account::ActivityEvent>> {
+        let conn = self.conn();
+        let mut query = conn.prepare(
+            "SELECT at, device_id, text FROM account_events WHERE account_id = ?1
+             ORDER BY at DESC, rowid DESC LIMIT ?2",
+        )?;
+        let rows = query.query_map(params![account, KEPT_EVENTS], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (at, device, text) = row?;
+            if let Some(computer) = DeviceId::new(device) {
+                events.push(hext_signal::account::ActivityEvent {
+                    at: at as u64,
+                    computer,
+                    text,
+                });
+            }
+        }
+        Ok(events)
     }
 
     /// The accounts that share a computer with `account`.
@@ -899,6 +966,29 @@ async fn run(
                 })
                 .await?;
             Ok(AccountReply::HostChains { chains })
+        }
+        AccountCall::HostEvents { events } => {
+            // Kept only for the accounts that list this computer.
+            let events: Vec<String> = events
+                .into_iter()
+                .take(hext_signal::account::MAX_EVENTS)
+                .map(|e| {
+                    e.chars()
+                        .take(hext_signal::account::MAX_EVENT_LEN)
+                        .collect()
+                })
+                .collect();
+            let at = crate::db::now();
+            state
+                .db(move |db| db.record_events(device, at, &events))
+                .await?;
+            Ok(AccountReply::Ok)
+        }
+        AccountCall::Activity => {
+            let account = logged_in(state, login, device).await?;
+            let id = account.id;
+            let events = state.db(move |db| db.events(id)).await?;
+            Ok(AccountReply::Activity { events })
         }
         AccountCall::ChainShared => {
             let account = logged_in(state, login, device).await?;

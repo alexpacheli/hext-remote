@@ -189,6 +189,9 @@ dispositivos de outra conta: cole o **ID da lista** dela (ela o vê em Dispositi
 permissões e a validade. **Revogar** fecha na hora (uma sessão em andamento cai em até 30 segundos). Vale
 com o computador vinculado à sua conta.
 
+**Atividade.** Em Dispositivos, **Ver os acessos** mostra quem entrou nos computadores vinculados à conta, como
+a auditoria de cada um registrou. O `audit.log` de cada computador continua sendo o registro completo.
+
 Dá para atender vários computadores ao mesmo tempo (até 8), cada um na sua janela: conecte em um e depois em
 outro, pela mesma tela inicial. A seção **Sessões abertas** lista cada um, com **Mostrar** (traz a janela para
 a frente) e **Encerrar** (ou **Cancelar**, enquanto o outro lado ainda não aceitou). A área de transferência

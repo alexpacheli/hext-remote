@@ -610,12 +610,12 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         (handshake, None) => handshake?,
     };
     let client = hello.peer;
-    // A trusted technician is audited like the password.
-    let bound = grant.as_ref().is_some_and(|grant| grant.bound);
+    // Every session the host let in is audited (a trusted technician like
+    // the password; one accepted at the computer too).
     let audit = config
         .unattended
         .as_ref()
-        .filter(|_| resumed || bound)
+        .filter(|_| resumed || grant.is_some())
         .or(unattended)
         .map(|access| access.password.clone());
     if let (true, Some(access), Some(grant)) = (resumed, &config.unattended, &grant) {
@@ -631,7 +631,8 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                 let how = match (&grant.via, grant.bound) {
                     (Some(via), _) => format!(" ({via})"),
                     (None, true) => " (técnico vinculado, sem senha)".to_owned(),
-                    (None, false) => String::new(),
+                    (None, false) if grant.needs_password => String::new(),
+                    (None, false) => " (aceita no computador)".to_owned(),
                 };
                 audit.audit(&format!("sessão iniciada{how}: {}", who(&grant)));
             }

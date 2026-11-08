@@ -561,8 +561,16 @@ async fn a_viewer_comes_back_with_its_token_without_the_password() {
 
     let back = host.attempt_back(&viewer, token).await.unwrap();
     assert_eq!(back.permissions, Permissions::CONTROL);
-    let audit = host.audit(1).await;
-    assert!(audit[0].starts_with("sessão retomada"), "{audit:?}");
+    // (Accepted at the computer: audited from its start, then its end.)
+    let audit = host.audit(3).await;
+    assert!(
+        audit[0].starts_with("sessão iniciada (aceita no computador)"),
+        "{audit:?}"
+    );
+    assert!(
+        audit.iter().any(|line| line.starts_with("sessão retomada")),
+        "{audit:?}"
+    );
 
     // Once only: the new session has its own.
     assert_ne!(token_of(&back).await, token);
@@ -573,7 +581,7 @@ async fn a_viewer_comes_back_with_its_token_without_the_password() {
 
     // What came back is audited to its end, whoever let it in.
     back.close().await.unwrap();
-    let audit = host.audit(3).await;
+    let audit = host.audit(4).await;
     assert!(
         audit
             .iter()

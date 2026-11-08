@@ -227,8 +227,8 @@ impl Owners {
 
     /// The chains the server has for this computer (and `known`), each
     /// checked; the ones that do not hold are left out.
-    async fn fetch(&self, known: &[ChainId]) -> Result<Vec<(Chain, Vec<Entry>)>> {
-        let mut client = Client::connect(
+    async fn connect(&self) -> Result<Client> {
+        let client = Client::connect(
             &self.0.server,
             &self.0.key,
             &crate::device_name(),
@@ -241,6 +241,29 @@ impl Owners {
             let _ = client.close().await;
             bail!("o servidor ainda não tem contas");
         }
+        Ok(client)
+    }
+
+    /// Sends entries of the audit to the server, for the account's
+    /// Atividade screen.
+    pub(crate) async fn send_events(&self, events: &[String]) -> Result<()> {
+        let mut client = self.connect().await?;
+        let mut result = Ok(());
+        for chunk in events.chunks(hext_signal::account::MAX_EVENTS) {
+            let call = AccountCall::HostEvents {
+                events: chunk.to_vec(),
+            };
+            if let Err(e) = client.account(call).await {
+                result = Err(e.into());
+                break;
+            }
+        }
+        let _ = client.close().await;
+        result
+    }
+
+    async fn fetch(&self, known: &[ChainId]) -> Result<Vec<(Chain, Vec<Entry>)>> {
+        let mut client = self.connect().await?;
         let reply = client
             .account(AccountCall::ChainHost {
                 known: known.to_vec(),
@@ -290,6 +313,35 @@ pub async fn keep_fresh(owners: Owners, every: Duration, show: impl Fn(Option<St
             info!("conta vinculada: lista conferida");
         }
         show(owners.summary());
+    }
+}
+
+/// Sends what the audit writes to the server, for the Atividade screen of
+/// the account (marco 7), while this computer is bound to one: not
+/// otherwise. A few at a time; if the server does not answer, they stay
+/// only in the audit here, which is the record that counts.
+pub async fn report_activity(
+    owners: Owners,
+    mut entries: tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
+    while let Some(first) = entries.recv().await {
+        // What comes together (a session's start and its first file) goes
+        // together.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let mut batch = vec![first];
+        while let Ok(more) = entries.try_recv() {
+            if batch.len() < 200 {
+                batch.push(more);
+            }
+        }
+        if owners.bound().is_none() {
+            continue;
+        }
+        match tokio::time::timeout(FETCH_TIME, owners.send_events(&batch)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!("atividade da conta: {e:#}"),
+            Err(_) => warn!("atividade da conta: servidor sem resposta"),
+        }
     }
 }
 
