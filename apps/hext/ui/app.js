@@ -63,6 +63,7 @@ const pages = {
       const notice = $("notice");
       notice.hidden = !view.notice;
       notice.textContent = view.notice ?? "";
+      $("install").hidden = !view.installable;
       $("update").hidden = !view.update;
       $("update-text").textContent = view.update
         ? `Versão ${view.update.version} disponível.`
@@ -458,6 +459,18 @@ function startAccount() {
       await invoke("account_unbind");
     } catch (message) {
       showStatus(String(message), true);
+    }
+  });
+  on("install-here", async () => {
+    if (!confirm("Instalar o Hext Remote neste computador? O Windows vai pedir permissão de administrador. Instalado, ele abre com o Windows e o ID passa a ser o da instalação.")) return;
+    $("install-here").disabled = true;
+    showStatus("Instalando…");
+    try {
+      await invoke("install_here");
+      showStatus("Instalado. Esta janela fecha, e o Hext Remote instalado abre no lugar dela.");
+    } catch (message) {
+      showStatus(String(message), true);
+      $("install-here").disabled = false;
     }
   });
   on("update-open", async () => {

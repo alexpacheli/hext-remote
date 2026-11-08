@@ -31,6 +31,12 @@ final faria. Serve para fechar a F6. Marque cada passo e anote avisos do sistema
 2. [ ] Mostra um ID, e o técnico conecta com aceite.
 3. [ ] Com a `v0.6.1` publicada, a tela inicial mostra "Versão 0.6.1 disponível". **Baixar** abre a página
    da versão.
+4. [ ] **Instalar neste computador** (num computador sem o Hext instalado): o Windows pede administrador, o
+   instalador roda, a janela do portátil fecha e a do instalado abre sozinha, com o ID da instalação. O Hext
+   Remote aparece em Configurações → Aplicativos. (Num build sem a chave de release, sem `.msi` para baixar,
+   ele instala o próprio programa como serviço e não aparece em Aplicativos: `service uninstall` remove.)
+5. [ ] Recusar o pedido de administrador: nada muda, e a tela diz que é preciso permitir.
+6. [ ] Com o Hext já instalado, o portátil não mostra o botão.
 
 ## 3. macOS (.dmg)
 

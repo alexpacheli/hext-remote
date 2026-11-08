@@ -138,6 +138,8 @@ struct View {
     owners: Option<String>,
     /// A newer version (F6), where nothing installs it by itself.
     update: Option<UpdateView>,
+    /// The portable app on Windows: it can install itself here.
+    installable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +176,114 @@ fn watch_updates(app: AppHandle) {
             tokio::time::sleep(UPDATE_CHECK).await;
         }
     });
+}
+
+/// Installs the Hext Remote on this computer, from the portable app.
+/// Windows asks for an administrator. Done, this app closes: the service
+/// opens its own window in its place (with this computer's installed ID).
+#[tauri::command]
+async fn install_here(app: AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if managed(&app) || crate::service::installed() {
+            return Err("O Hext Remote já está instalado neste computador.".to_owned());
+        }
+        if app
+            .state::<Shared>()
+            .view
+            .lock()
+            .expect("lock")
+            .session
+            .is_some()
+        {
+            return Err("Termine a sessão antes de instalar.".to_owned());
+        }
+        install_this_computer()
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        let closing = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            closing.exit(0);
+        });
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("Só no Windows.".to_owned())
+    }
+}
+
+/// The signed `.msi` of the latest release, when this build knows the
+/// release key (it then shows in Apps, and uninstalls there); otherwise
+/// this program itself, as the service (`service install`).
+#[cfg(windows)]
+async fn install_this_computer() -> anyhow::Result<()> {
+    if crate::update::enabled() {
+        match crate::update::latest().await {
+            Ok(manifest) => {
+                let dir = std::env::temp_dir().join(format!("HextRemote-{}", std::process::id()));
+                let msi = crate::update::download(&manifest, "windows-msi", &dir).await?;
+                tracing::info!("instalar: {}", msi.display());
+                // (The installer asks for the administrator itself.)
+                let status = tokio::task::spawn_blocking(move || {
+                    std::process::Command::new("msiexec.exe")
+                        .arg("/i")
+                        .arg(&msi)
+                        .status()
+                })
+                .await??;
+                let _ = std::fs::remove_dir_all(&dir);
+                return match status.code() {
+                    Some(0 | 3010) => Ok(()),
+                    Some(1602) => anyhow::bail!("Instalação cancelada."),
+                    code => anyhow::bail!("O instalador terminou com erro ({code:?})."),
+                };
+            }
+            Err(e) => warn!("instalar: sem a versão publicada ({e:#}); vai este programa"),
+        }
+    }
+    let code = tokio::task::spawn_blocking(|| run_elevated_wait("service install")).await??;
+    if code != 0 {
+        anyhow::bail!("A instalação falhou ({code}).");
+    }
+    Ok(())
+}
+
+/// Runs this program with `args` as administrator (Windows asks), and
+/// waits for it: its exit code.
+#[cfg(windows)]
+#[allow(unsafe_code)] // Win32 calls, on handles this function owns
+fn run_elevated_wait(args: &str) -> anyhow::Result<u32> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
+    use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    use windows::core::{HSTRING, PCWSTR, w};
+    let exe = HSTRING::from(std::env::current_exe()?.as_os_str());
+    let params = HSTRING::from(args);
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: w!("runas"),
+        lpFile: PCWSTR(exe.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    // (It fails, most often, because the user said no.)
+    if unsafe { ShellExecuteExW(&mut info) }.is_err() || info.hProcess.is_invalid() {
+        anyhow::bail!("Nada foi instalado: é preciso permitir como administrador.");
+    }
+    let mut code = 1;
+    unsafe {
+        WaitForSingleObject(info.hProcess, INFINITE);
+        let got = GetExitCodeProcess(info.hProcess, &mut code);
+        let _ = CloseHandle(info.hProcess);
+        got?;
+    }
+    Ok(code)
 }
 
 /// Opens the new version's page in the browser.
@@ -1520,6 +1630,9 @@ pub fn run(link: Link) -> Result<()> {
         .manage(Shared {
             view: Mutex::new(View {
                 recent: Recent::load().into_list(),
+                installable: cfg!(windows)
+                    && matches!(link, Link::Portable)
+                    && !crate::service::installed(),
                 ..View::default()
             }),
             to_host,
@@ -1565,6 +1678,7 @@ pub fn run(link: Link) -> Result<()> {
             share_remove,
             account_activity,
             open_update,
+            install_here,
             computer_remove
         ])
         .on_window_event(move |window, event| {
