@@ -6,6 +6,8 @@
 //! this machine's screen; `view` opens a window showing a host's screen and
 //! forwards mouse and keyboard.
 
+#[cfg(any(windows, target_os = "macos"))]
+mod account;
 #[cfg_attr(not(windows), allow(dead_code))] // the service is Windows-only for now
 mod agent;
 mod bench;

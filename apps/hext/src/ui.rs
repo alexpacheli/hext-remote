@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hext_proto::{ChatText, Permissions};
-use hext_signal::DeviceId;
+use hext_signal::{AccountCall, AccountReply, AccountView, DeviceId};
 use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, RunEvent, State, WebviewUrl,
@@ -33,6 +33,7 @@ use tokio::sync::{Notify, mpsc};
 use tracing::warn;
 use zeroize::Zeroizing;
 
+use crate::account::Account;
 use crate::agent::{read_msg, write_msg};
 use crate::chat::{Author, Chat, HOST_CHAT};
 use crate::recent::{Computer, Recent};
@@ -126,6 +127,8 @@ struct View {
     sessions: u64,
     /// The technicians this computer trusts without the password.
     technicians: Vec<crate::technicians::Technician>,
+    /// The account logged in here (F5), once the server said so.
+    account: Option<AccountView>,
 }
 
 struct Shared {
@@ -146,6 +149,8 @@ struct Shared {
     next_viewer: AtomicU64,
     /// Asks the server at once who on the list is online.
     presence: Arc<Notify>,
+    /// The account of this computer's technician (`None`: no folder for it).
+    account: Option<Arc<Account>>,
 }
 
 impl Shared {
@@ -876,6 +881,59 @@ fn remember(app: &AppHandle, id: &str, name: &str) {
     shared.presence.notify_one();
 }
 
+/// An account call from the home screen (see [`Account::call`]). The view
+/// follows what it says of the account.
+#[tauri::command]
+async fn account(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+    call: AccountCall,
+) -> Result<AccountReply, String> {
+    let Some(account) = shared.account.clone() else {
+        return Err("Sem uma pasta para guardar a conta neste computador.".into());
+    };
+    let answer = account.call(call).await;
+    {
+        let mut view = shared.view.lock().expect("lock");
+        match &answer {
+            _ if !account.kept() => view.account = None,
+            Ok(AccountReply::LoggedIn { account, .. } | AccountReply::Account(account)) => {
+                view.account = Some(account.clone());
+            }
+            Ok(AccountReply::RecoveryCodes { .. }) => {
+                if let Some(account) = &mut view.account {
+                    account.totp = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    changed(&app);
+    answer
+}
+
+/// The authenticator link as a QR code (SVG).
+#[tauri::command]
+fn account_qr(text: String) -> Option<String> {
+    crate::account::qr_svg(&text)
+}
+
+/// Asks the server which account is logged in here, once at the start.
+fn show_account(app: AppHandle) {
+    let Some(account) = app.state::<Shared>().account.clone() else {
+        return;
+    };
+    if !account.kept() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let current = account.current().await;
+        let shared = app.state::<Shared>();
+        shared.view.lock().expect("lock").account = current;
+        changed(&app);
+    });
+}
+
 /// Keeps [`View::online`] up to date while the home screen is open.
 fn watch_presence(app: AppHandle) {
     let Ok(dir) = hext_crypto::config_dir() else {
@@ -1207,6 +1265,9 @@ pub fn run(link: Link) -> Result<()> {
             next_hub: AtomicU64::new(1),
             next_viewer: AtomicU64::new(1),
             presence: Arc::default(),
+            account: hext_crypto::config_dir()
+                .ok()
+                .map(|dir| Arc::new(Account::new(dir.join(VIEWER_KEY)))),
         })
         .invoke_handler(tauri::generate_handler![
             view,
@@ -1222,7 +1283,9 @@ pub fn run(link: Link) -> Result<()> {
             connect,
             viewer_focus,
             viewer_close,
-            forget
+            forget,
+            account,
+            account_qr
         ])
         .on_window_event(move |window, event| {
             // Back on the home screen: who is online now.
@@ -1262,6 +1325,7 @@ pub fn run(link: Link) -> Result<()> {
                 open_home(&handle);
             }
             watch_presence(handle.clone());
+            show_account(handle.clone());
             connect_to_host(handle, link, outgoing);
             Ok(())
         })

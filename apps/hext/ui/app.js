@@ -49,6 +49,7 @@ const pages = {
           $("remember-line").hidden = true;
         }
       });
+      startAccount();
       // Only with a password is there something to remember it by.
       $("password").addEventListener("input", () => {
         $("remember-line").hidden = $("password").value === "";
@@ -63,6 +64,7 @@ const pages = {
       notice.hidden = !view.notice;
       notice.textContent = view.notice ?? "";
 
+      showAccount(view.account);
       showRecent(view.recent, view.online);
       showSessions(view.viewers);
       showTechnicians(view.technicians);
@@ -317,6 +319,223 @@ function showRecent(computers, online) {
       return item;
     }),
   );
+}
+
+/** The account section: which panel shows, and the steps between them. */
+const account = {
+  view: null,
+  /** A panel the user is in, over the one the view calls for. */
+  panel: null,
+  /** The password typed when registering, for confirming the address. */
+  password: "",
+};
+
+function accountPanel(name) {
+  account.panel = name;
+  for (const panel of document.querySelectorAll(".account-panel")) {
+    panel.hidden = panel.id !== `account-${name ?? (account.view ? "in" : "out")}`;
+  }
+  const first = !name ? null : document.querySelector(`#account-${name} input:not([hidden])`);
+  first?.focus();
+}
+
+function accountStatus(text, error = false) {
+  $("account-status").textContent = text;
+  $("account-status").classList.toggle("error", error);
+}
+
+/** Makes an account call; the answer, or null after showing what went wrong. */
+async function accountCall(call, busy) {
+  accountStatus(busy);
+  try {
+    const reply = await invoke("account", { call });
+    accountStatus("");
+    return reply;
+  } catch (message) {
+    accountStatus(String(message), true);
+    return null;
+  }
+}
+
+function startAccount() {
+  const on = (id, handler) => $(id).addEventListener("click", handler);
+  const submit = (id, handler) =>
+    $(id).addEventListener("submit", (event) => {
+      event.preventDefault();
+      handler();
+    });
+  for (const cancel of document.querySelectorAll(".account-panel .cancel")) {
+    cancel.addEventListener("click", () => {
+      account.password = "";
+      accountStatus("");
+      accountPanel(null);
+    });
+  }
+  on("account-open-login", () => {
+    $("login-second").hidden = true;
+    $("login-second").value = "";
+    accountPanel("login");
+  });
+  on("account-open-register", () => accountPanel("register"));
+  on("account-open-forgot", () => {
+    $("forgot-email").value = $("login-email").value;
+    accountPanel("forgot");
+  });
+  on("account-open-totp", async () => {
+    const reply = await accountCall({ call: "totp_setup" }, "Preparando…");
+    if (reply?.reply !== "totp") return;
+    $("totp-secret").textContent = reply.secret.replace(/(.{4})/g, "$1 ").trim();
+    const svg = await invoke("account_qr", { text: reply.uri });
+    // Our own SVG, made from the link: parsed as an image, not as markup.
+    const image = new Image();
+    image.alt = "QR code para o app autenticador";
+    image.src = svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` : "";
+    $("totp-qr").replaceChildren(...(svg ? [image] : []));
+    $("totp-code").value = "";
+    accountPanel("totp-setup");
+  });
+  on("account-open-change", () => accountPanel("change"));
+  on("account-logout", async () => {
+    await accountCall({ call: "logout" }, "Saindo…");
+    accountPanel(null);
+  });
+  on("account-recovery-done", () => {
+    $("recovery-codes").replaceChildren();
+    accountPanel(null);
+  });
+
+  submit("account-login", async () => {
+    const second = $("login-second").value.trim();
+    const reply = await accountCall(
+      {
+        call: "login",
+        email: $("login-email").value,
+        password: $("login-password").value,
+        second: second || null,
+      },
+      "Entrando…",
+    );
+    if (reply?.reply === "needs_second_factor") {
+      $("login-second").hidden = false;
+      $("login-second").focus();
+      accountStatus("Escreva o código do app autenticador.");
+    } else if (reply) {
+      $("login-password").value = "";
+      $("login-second").value = "";
+      accountPanel(null);
+    }
+  });
+  submit("account-register", async () => {
+    const password = $("register-password").value;
+    if (password !== $("register-again").value) {
+      accountStatus("As duas senhas não são iguais.", true);
+      return;
+    }
+    const email = $("register-email").value;
+    const reply = await accountCall({ call: "register", email, password }, "Criando…");
+    if (!reply) return;
+    account.password = password;
+    $("register-password").value = "";
+    $("register-again").value = "";
+    $("verify-email").textContent = email.trim();
+    $("verify-password").hidden = true;
+    $("verify-code").value = "";
+    accountPanel("verify");
+  });
+  submit("account-verify", async () => {
+    const password = account.password || $("verify-password").value;
+    if (!password) {
+      $("verify-password").hidden = false;
+      $("verify-password").focus();
+      return;
+    }
+    const email = $("verify-email").textContent;
+    const reply = await accountCall(
+      { call: "verify", email, code: $("verify-code").value, password },
+      "Confirmando…",
+    );
+    if (!reply) return;
+    // Straight in, with the same password.
+    const login = await accountCall({ call: "login", email, password }, "Entrando…");
+    account.password = "";
+    $("verify-password").value = "";
+    if (login) {
+      accountPanel(null);
+      accountStatus("Conta criada. Ligue a verificação em duas etapas para ter computadores nela.");
+    } else {
+      $("login-email").value = email;
+      accountPanel("login");
+    }
+  });
+  submit("account-forgot", async () => {
+    const reply = await accountCall(
+      { call: "forgot_password", email: $("forgot-email").value },
+      "Mandando…",
+    );
+    if (!reply) return;
+    $("reset-code").value = "";
+    accountPanel("reset");
+  });
+  submit("account-reset", async () => {
+    const reply = await accountCall(
+      {
+        call: "reset_password",
+        email: $("forgot-email").value,
+        code: $("reset-code").value,
+        password: $("reset-password").value,
+      },
+      "Trocando…",
+    );
+    if (!reply) return;
+    $("reset-password").value = "";
+    $("login-email").value = $("forgot-email").value;
+    accountPanel("login");
+    accountStatus("Senha trocada. Entre com a senha nova.");
+  });
+  submit("account-totp-setup", async () => {
+    const reply = await accountCall(
+      { call: "totp_enable", code: $("totp-code").value },
+      "Ligando…",
+    );
+    if (reply?.reply !== "recovery_codes") return;
+    $("recovery-codes").replaceChildren(
+      ...reply.codes.map((code) => {
+        const item = document.createElement("li");
+        item.textContent = code;
+        return item;
+      }),
+    );
+    accountPanel("recovery");
+  });
+  submit("account-change", async () => {
+    const reply = await accountCall(
+      { call: "change_password", old: $("change-old").value, new: $("change-new").value },
+      "Trocando…",
+    );
+    $("change-old").value = "";
+    $("change-new").value = "";
+    if (!reply) return;
+    accountPanel(null);
+    accountStatus("Senha trocada. Os outros computadores saíram da conta.");
+  });
+  accountPanel(null);
+}
+
+/** The account logged in here (null: none). */
+function showAccount(view) {
+  const was = account.view;
+  account.view = view;
+  if (view) {
+    $("account-email").textContent = view.email;
+    $("account-totp").textContent = view.totp
+      ? "Verificação em duas etapas ligada."
+      : "Verificação em duas etapas desligada: ela é obrigatória para ter computadores na conta.";
+    $("account-open-totp").hidden = view.totp;
+  }
+  // In or out changed: back to what the view calls for.
+  if (!!was !== !!view || account.panel === null) {
+    accountPanel(null);
+  }
 }
 
 function showStatus(text, error = false) {

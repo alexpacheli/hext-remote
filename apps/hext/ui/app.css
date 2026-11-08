@@ -163,6 +163,43 @@ button.link {
   margin: 4px 0 0;
 }
 
+.account-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.account-panel[hidden] {
+  display: none;
+}
+
+.account-panel .wide,
+.account-panel .hint {
+  flex-basis: 100%;
+}
+
+.qr img {
+  width: 200px;
+  height: 200px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.secret,
+.codes {
+  font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+  letter-spacing: 0.05em;
+}
+
+.codes {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: 4px 24px;
+  padding: 0;
+  list-style: none;
+}
+
 form.rename {
   margin-top: 8px;
 }

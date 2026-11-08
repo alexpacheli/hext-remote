@@ -56,6 +56,8 @@ tauri-plugin-dialog = "2"
 # The question before taking a file, over the session's window.
 rfd = { version = "0.17", default-features = false }
 tauri-plugin-single-instance = "2"
+# The authenticator link as a QR code (2FA of the account).
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.build-dependencies]
 tauri-build = { version = "2", features = [] }
