@@ -1173,11 +1173,19 @@ mod tests {
     /// Another account, with 2FA and its own list, on another computer.
     async fn other_account(world: &mut World, email: &str) -> Account {
         let account = world.computer();
+        let sent = world.inbox.0.lock().unwrap().len();
         let register = AccountCall::Register {
             email: email.into(),
             password: PASSWORD.into(),
         };
         account.call(register).await.unwrap();
+        // Its own e-mail, not the one before.
+        for _ in 0..500 {
+            if world.inbox.0.lock().unwrap().len() > sent {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         let verify = AccountCall::Verify {
             email: email.into(),
             code: code(&world.inbox).await,

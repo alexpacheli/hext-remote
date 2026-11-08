@@ -84,6 +84,7 @@ assets = [
 
 [package.metadata.generate-rpm]
 name = "hext-remote"
+license = "Proprietary"
 summary = "Hext Remote: acesso remoto"
 assets = [
     { source = "target/release/hext", dest = "/usr/bin/hext-remote", mode = "755" },
