@@ -13,6 +13,7 @@ gethostname.workspace = true
 hext-capture.workspace = true
 hext-clipboard.workspace = true
 hext-codec.workspace = true
+hex.workspace = true
 hext-crypto.workspace = true
 hext-input.workspace = true
 hext-net.workspace = true

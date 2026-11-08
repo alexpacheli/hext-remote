@@ -399,6 +399,73 @@ function startAccount() {
     await accountCall({ call: "logout" }, "Saindo…");
     accountPanel(null);
   });
+  on("devices-create", async () => {
+    accountStatus("Criando a lista…");
+    try {
+      const code = await invoke("chain_create");
+      accountStatus("");
+      $("recovery-key").textContent = code;
+      accountPanel("recovery-key");
+    } catch (message) {
+      accountStatus(String(message), true);
+    }
+  });
+  on("account-recovery-key-done", () => {
+    $("recovery-key").textContent = "";
+    accountPanel(null);
+    loadDevices();
+  });
+  on("devices-invite", async () => {
+    const code = await invoke("chain_invite");
+    $("invite-code").textContent = code;
+    $("invite-state").textContent = "Esperando o outro computador…";
+    accountPanel("invite");
+    // Asks every few seconds whether it typed the code, for 10 minutes.
+    const until = Date.now() + 10 * 60 * 1000;
+    const ask = async () => {
+      if (account.panel !== "invite" || $("invite-code").textContent !== code) return;
+      if (Date.now() > until) {
+        $("invite-state").textContent = "O código venceu. Feche e gere outro.";
+        return;
+      }
+      try {
+        const name = await invoke("chain_approve", { code });
+        if (name) {
+          $("invite-state").textContent = `${name} entrou na lista.`;
+          loadDevices();
+          return;
+        }
+      } catch (message) {
+        $("invite-state").textContent = String(message);
+      }
+      setTimeout(ask, 5000);
+    };
+    setTimeout(ask, 5000);
+  });
+  on("devices-open-join", () => {
+    $("join-code").value = "";
+    accountPanel("join");
+  });
+  submit("account-join", async () => {
+    const typed = $("join-code").value;
+    const recovery = typed.replace(/[^A-Za-z0-9]/g, "").length > 12;
+    accountStatus(recovery ? "Entrando com a chave de recuperação…" : "Pedindo para entrar…");
+    try {
+      await invoke(recovery ? "chain_recover" : "chain_join", { code: typed });
+      accountPanel(null);
+      if (recovery) {
+        accountStatus("Este computador entrou na lista.");
+        loadDevices();
+      } else {
+        accountStatus("Pedido feito. Assim que o outro computador confirmar, este entra na lista.");
+        // Looks again in a while: the other one approves within seconds.
+        setTimeout(loadDevices, 8000);
+        setTimeout(loadDevices, 20000);
+      }
+    } catch (message) {
+      accountStatus(String(message), true);
+    }
+  });
   on("account-recovery-done", () => {
     $("recovery-codes").replaceChildren();
     accountPanel(null);
@@ -521,10 +588,73 @@ function startAccount() {
   accountPanel(null);
 }
 
+/** The account's devices, asked of the server (each signature checked). */
+async function loadDevices() {
+  if (!account.view) {
+    $("devices").hidden = true;
+    return;
+  }
+  let devices;
+  try {
+    devices = await invoke("account_devices");
+  } catch (message) {
+    $("devices").hidden = false;
+    $("devices-hint").textContent = String(message);
+    $("devices-list").replaceChildren();
+    for (const id of ["devices-create", "devices-invite", "devices-open-join"]) $(id).hidden = true;
+    return;
+  }
+  $("devices").hidden = false;
+  const member = devices.state === "member";
+  $("devices-hint").textContent = {
+    none: account.view.totp
+      ? "A conta ainda não tem a lista dos seus dispositivos. Comece por este computador."
+      : "Ligue a verificação em duas etapas para colocar computadores na conta.",
+    outside: "Este computador ainda não está na lista da conta.",
+    member: "Os dispositivos da lista entram nos computadores da conta.",
+  }[devices.state];
+  $("devices-create").hidden = devices.state !== "none" || !account.view.totp;
+  $("devices-invite").hidden = !member;
+  $("devices-open-join").hidden = devices.state !== "outside";
+  $("devices-list").replaceChildren(
+    ...devices.devices.map((device) => {
+      const label = document.createElement("span");
+      label.className = "who";
+      label.textContent = device.me ? `${device.name} (este computador)` : device.name;
+      label.title = label.textContent;
+      const item = document.createElement("li");
+      item.append(label);
+      if (member && !device.me && devices.devices.length > 1) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "link";
+        remove.textContent = "Remover";
+        remove.addEventListener("click", async () => {
+          if (!confirm(`Tirar ${device.name} da conta? Ele deixa de entrar nos seus computadores.`)) {
+            return;
+          }
+          try {
+            await invoke("chain_remove", { key: device.key });
+            loadDevices();
+          } catch (message) {
+            accountStatus(String(message), true);
+          }
+        });
+        item.append(remove);
+      }
+      return item;
+    }),
+  );
+}
+
 /** The account logged in here (null: none). */
 function showAccount(view) {
   const was = account.view;
   account.view = view;
+  // Logged in, or 2FA turned on: the list again.
+  if (!!was !== !!view || (view && was && view.totp !== was.totp)) {
+    loadDevices();
+  }
   if (view) {
     $("account-email").textContent = view.email;
     $("account-totp").textContent = view.totp

@@ -125,7 +125,42 @@
           <button type="button" class="primary" id="account-open-totp">Ligar a verificação em duas etapas</button>
           <button type="button" id="account-open-change">Trocar a senha</button>
           <button type="button" class="link" id="account-logout">Sair da conta</button>
+          <div class="wide devices" id="devices" hidden>
+            <h3>Dispositivos da conta</h3>
+            <p class="hint" id="devices-hint"></p>
+            <ul class="sessions" id="devices-list"></ul>
+            <button type="button" class="primary" id="devices-create" hidden>Criar a lista com este computador</button>
+            <button type="button" class="primary" id="devices-invite" hidden>Adicionar outro dispositivo</button>
+            <button type="button" class="primary" id="devices-open-join" hidden>Colocar este computador na conta</button>
+          </div>
         </div>
+        <div class="account-panel" id="account-recovery-key" hidden>
+          <p class="hint">
+            Esta é a chave de recuperação da conta. Com ela, você coloca um computador na conta quando
+            nenhum outro estiver à mão. Guarde num lugar seguro: ela não aparece de novo, e ninguém
+            (nem o suporte) consegue recuperá-la.
+          </p>
+          <p class="secret big" id="recovery-key"></p>
+          <button type="button" class="primary" id="account-recovery-key-done">Guardei a chave</button>
+        </div>
+        <div class="account-panel" id="account-invite" hidden>
+          <p class="hint">
+            No outro computador, entre na mesma conta e escolha "Colocar este computador na conta".
+            Depois digite este código lá (vale por 10 minutos):
+          </p>
+          <p class="secret big" id="invite-code"></p>
+          <p class="hint" id="invite-state">Esperando o outro computador…</p>
+          <button type="button" class="cancel">Fechar</button>
+        </div>
+        <form class="account-panel" id="account-join" hidden>
+          <p class="hint wide">
+            Num computador que já está na conta, escolha "Adicionar outro dispositivo" e digite aqui o
+            código que aparecer. Sem outro computador à mão, use a chave de recuperação.
+          </p>
+          <input id="join-code" class="wide" autocomplete="off" spellcheck="false" placeholder="Código ou chave de recuperação" aria-label="Código do outro computador ou chave de recuperação" />
+          <button type="submit" class="primary">Entrar na lista</button>
+          <button type="button" class="cancel">Cancelar</button>
+        </form>
         <form class="account-panel" id="account-totp-setup" hidden>
           <p class="hint wide">
             Leia o código com o app autenticador (Google Authenticator, Authy, 1Password…) ou digite a

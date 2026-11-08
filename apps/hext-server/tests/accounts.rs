@@ -468,3 +468,80 @@ async fn password_guesses_are_limited() {
         error(AccountError::TooManyAttempts)
     );
 }
+
+#[tokio::test]
+async fn the_server_keeps_only_a_chain_that_holds() {
+    use hext_signal::chain::{Entry, Op, recovery_key};
+    let (url, inbox) = server().await;
+    let key = DeviceKey::generate().unwrap();
+    let mut pc = device(&url, &key).await;
+    account(&mut pc, &inbox).await;
+    token(call(&mut pc, login(PASSWORD, None)).await);
+    let recovery = recovery_key("ABCD-EFGH-JKLM-NPQR-STUV").public_key();
+    let first = Entry::create(&key, "PC", recovery);
+    let append = |entry: &Entry| AccountCall::ChainAppend {
+        entry: entry.clone(),
+    };
+
+    // Without 2FA, no chain.
+    assert_eq!(
+        call(&mut pc, append(&first)).await,
+        error(AccountError::NeedsTotp)
+    );
+    let AccountReply::Totp { secret, .. } = call(&mut pc, AccountCall::TotpSetup).await else {
+        panic!("no secret");
+    };
+    let code = totp_code(&secret, now()).unwrap();
+    call(&mut pc, AccountCall::TotpEnable { code }).await;
+
+    // Only this device starts it, by itself.
+    let other = DeviceKey::generate().unwrap();
+    assert_eq!(
+        call(&mut pc, append(&Entry::create(&other, "Outro", recovery))).await,
+        error(AccountError::ChainInvalid)
+    );
+    assert_eq!(call(&mut pc, append(&first)).await, AccountReply::Ok);
+    assert_eq!(
+        call(&mut pc, append(&first)).await,
+        error(AccountError::ChainConflict)
+    );
+    let AccountReply::Chain { entries } = call(&mut pc, AccountCall::ChainGet).await else {
+        panic!("no chain");
+    };
+    let chain = hext_signal::chain::Chain::verify(&entries).unwrap();
+    // An entry signed by a key not in the account is refused.
+    let intruder = chain.sign(
+        Op::AddDevice {
+            device: other.public_key(),
+            name: "Intruso".into(),
+        },
+        &other,
+    );
+    assert_eq!(
+        call(&mut pc, append(&intruder)).await,
+        error(AccountError::ChainInvalid)
+    );
+    // A device asks to join only for itself.
+    let join = AccountCall::ChainJoin {
+        device: other.public_key(),
+        name: "Outro".into(),
+        proof: [0; 32],
+    };
+    assert_eq!(call(&mut pc, join).await, error(AccountError::ChainInvalid));
+    let own = AccountCall::ChainJoin {
+        device: key.public_key(),
+        name: "PC".into(),
+        proof: [1; 32],
+    };
+    assert_eq!(call(&mut pc, own).await, AccountReply::Ok);
+    let AccountReply::Joins { joins } = call(&mut pc, AccountCall::ChainPending).await else {
+        panic!("no joins");
+    };
+    assert_eq!(joins.len(), 1);
+    // Another account cannot see it.
+    let mut stranger = device(&url, &DeviceKey::generate().unwrap()).await;
+    assert_eq!(
+        call(&mut stranger, AccountCall::ChainGet).await,
+        error(AccountError::NotLoggedIn)
+    );
+}

@@ -912,6 +912,55 @@ async fn account(
     answer
 }
 
+fn the_account(shared: &Shared) -> Result<Arc<Account>, String> {
+    shared
+        .account
+        .clone()
+        .ok_or_else(|| "Sem uma pasta para guardar a conta neste computador.".to_owned())
+}
+
+/// The account's devices (marco 3).
+#[tauri::command]
+async fn account_devices(shared: State<'_, Shared>) -> Result<crate::account::DevicesView, String> {
+    the_account(&shared)?.devices().await
+}
+
+/// Starts the account's list of devices with this one; the recovery code.
+#[tauri::command]
+async fn chain_create(shared: State<'_, Shared>) -> Result<String, String> {
+    the_account(&shared)?.create_chain().await
+}
+
+/// A code to show, for adding another device.
+#[tauri::command]
+fn chain_invite() -> String {
+    hext_signal::chain::new_code(hext_signal::chain::JOIN_CODE_LEN)
+}
+
+/// Lets in the device that typed `code`, if one did by now; its name.
+#[tauri::command]
+async fn chain_approve(shared: State<'_, Shared>, code: String) -> Result<Option<String>, String> {
+    the_account(&shared)?.approve(&code).await
+}
+
+/// Asks to join the account's list, with the code another device shows.
+#[tauri::command]
+async fn chain_join(shared: State<'_, Shared>, code: String) -> Result<(), String> {
+    the_account(&shared)?.join(&code).await
+}
+
+/// Joins the account's list with the recovery code.
+#[tauri::command]
+async fn chain_recover(shared: State<'_, Shared>, code: String) -> Result<(), String> {
+    the_account(&shared)?.recover(&code).await
+}
+
+/// Takes a device out of the account's list.
+#[tauri::command]
+async fn chain_remove(shared: State<'_, Shared>, key: String) -> Result<(), String> {
+    the_account(&shared)?.remove(&key).await
+}
+
 /// The authenticator link as a QR code (SVG).
 #[tauri::command]
 fn account_qr(text: String) -> Option<String> {
@@ -1285,7 +1334,14 @@ pub fn run(link: Link) -> Result<()> {
             viewer_close,
             forget,
             account,
-            account_qr
+            account_qr,
+            account_devices,
+            chain_create,
+            chain_invite,
+            chain_approve,
+            chain_join,
+            chain_recover,
+            chain_remove
         ])
         .on_window_event(move |window, event| {
             // Back on the home screen: who is online now.
