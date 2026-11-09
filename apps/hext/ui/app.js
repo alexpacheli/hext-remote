@@ -121,7 +121,15 @@ const pages = {
       showTechnicians(view.technicians);
       $("owners-section").hidden = !view.owners;
       $("owners-text").textContent = view.owners || "";
-      $("security-empty").hidden = !!view.owners || view.technicians.length > 0;
+      const password = view.password;
+      $("password-section").hidden = password === null || password === undefined;
+      $("password-text").textContent = password
+        ? "Ligada: quem tem a senha entra sem que alguém aceite na tela, e um técnico com ela pode inserir este computador na conta dele. Trocar ou desligar a senha revoga esses acessos."
+        : "Desligada: todo acesso pede aceite na tela. Com a senha, um técnico entra sem aceite e pode inserir este computador na conta dele.";
+      $("password-set").textContent = password ? "Trocar a senha" : "Definir a senha de acesso";
+      $("password-off").hidden = !password;
+      $("security-empty").hidden =
+        !!view.owners || view.technicians.length > 0 || password !== null && password !== undefined;
       $("home-empty").hidden =
         view.viewers.length > 0 || view.computers.length > 0 || view.recent.length > 0;
       if (view.viewer_failure) {
@@ -513,6 +521,24 @@ function startAccount() {
       setTimeout(ask, 5000);
     };
     setTimeout(ask, 5000);
+  });
+  on("password-set", async () => {
+    showStatus("Permita como administrador e digite a senha na janela que abrir.");
+    try {
+      await invoke("password_set", { off: false });
+      showStatus("Senha de acesso definida.");
+    } catch (message) {
+      showStatus(String(message), true);
+    }
+  });
+  on("password-off", async () => {
+    if (!confirm("Desligar a senha de acesso? Todo acesso volta a pedir aceite, e quem entrou com ela perde o acesso sem aceite.")) return;
+    try {
+      await invoke("password_set", { off: true });
+      showStatus("Senha de acesso desligada.");
+    } catch (message) {
+      showStatus(String(message), true);
+    }
   });
   on("owners-off", async () => {
     if (!confirm("Os dispositivos da conta voltam a precisar de aceite. Desligar?")) return;

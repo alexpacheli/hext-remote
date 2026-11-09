@@ -133,6 +133,9 @@ struct View {
     sessions: u64,
     /// The technicians this computer trusts without the password.
     technicians: Vec<crate::technicians::Technician>,
+    /// Whether the unattended password is on (`None`: not the installed
+    /// service, where there is no such password).
+    password: Option<bool>,
     /// The account logged in here (F5), once the server said so.
     account: Option<AccountView>,
     /// This computer's host key (to put it in the account).
@@ -275,6 +278,7 @@ fn run_elevated_wait(args: &str) -> anyhow::Result<u32> {
         lpVerb: w!("runas"),
         lpFile: PCWSTR(exe.as_ptr()),
         lpParameters: PCWSTR(params.as_ptr()),
+        // (Hidden; a command that needs a window opens one itself.)
         nShow: SW_HIDE.0,
         ..Default::default()
     };
@@ -628,6 +632,7 @@ fn received(app: &AppHandle, msg: ToUi) {
             }
         }
         ToUi::Technicians(list) => view.technicians = list,
+        ToUi::Password(on) => view.password = Some(on),
         ToUi::Owners(text) => view.owners = text,
         ToUi::Chat(text) => {
             if let Some(session) = &view.session {
@@ -1257,6 +1262,35 @@ fn account_bind(shared: State<'_, Shared>, chain: String) -> Result<(), String> 
     Err("Só com o serviço instalado (HextRemote service install).".to_owned())
 }
 
+/// Sets (or changes) the unattended password, or turns it off (`off`). It
+/// takes an administrator: Windows asks, and a window of its own asks for
+/// the password (typed there, never through this page). Waits for it.
+#[tauri::command]
+async fn password_set(off: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    let result = {
+        let args = if off {
+            "service password --off"
+        } else {
+            "service password --window"
+        };
+        let done = tauri::async_runtime::spawn_blocking(move || run_elevated_wait(args))
+            .await
+            .map_err(|e| e.to_string())?;
+        match done {
+            Ok(0) => Ok(()),
+            Ok(_) => Err("A senha não mudou.".to_owned()),
+            Err(_) => Err("Nada mudou: é preciso permitir como administrador.".to_owned()),
+        }
+    };
+    #[cfg(not(windows))]
+    let result = {
+        let _ = off;
+        Err("Só com o serviço instalado no Windows.".to_owned())
+    };
+    result
+}
+
 /// Unbinds this computer from the account: every access asks again. It
 /// takes an administrator: Windows asks. Waits for it, to tell how it went
 /// (the home screen follows within seconds).
@@ -1758,6 +1792,7 @@ pub fn run(link: Link) -> Result<()> {
             computer_add,
             account_bind,
             account_unbind,
+            password_set,
             share_add,
             share_remove,
             account_activity,

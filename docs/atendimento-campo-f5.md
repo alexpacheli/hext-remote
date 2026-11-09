@@ -56,7 +56,8 @@ Em cada um, Escritório e Casa:
 ## 3b. Computador de um cliente (sem entrar na conta nele)
 
 1. [ ] No computador do cliente (Windows), instalar e definir a senha de acesso não assistido
-   (`HextRemote.exe service password`, como administrador). **Não** entrar em conta nenhuma nele.
+   (aba **Segurança** → **Definir a senha de acesso**; o Windows pede administrador e uma janela pede a senha).
+   **Não** entrar em conta nenhuma nele.
 2. [ ] No notebook, conectar pelo ID do cliente com a senha, marcando **Inserir em Meus computadores** (aparece
    com o notebook na lista da conta). A sessão abre, e a tela inicial diz que o computador está em Meus
    computadores.

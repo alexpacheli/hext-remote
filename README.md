@@ -159,6 +159,8 @@ enviadas, e uma transferência interrompida não é retomada.
 ### Acesso não assistido
 
 Com a senha, o técnico entra sem que ninguém aceite no computador. Quem liga é o dono, como administrador:
+na aba **Segurança**, **Definir a senha de acesso** (o Windows pede administrador e uma janela própria pede a
+senha; o mesmo cartão troca e desliga). Pela linha de comando:
 
 ```sh
 HextRemote.exe service password        # define a senha (ou troca)

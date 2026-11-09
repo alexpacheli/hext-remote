@@ -242,6 +242,8 @@ pub enum ToUi {
     /// The technicians this computer trusts without the password (only
     /// where there is such a list: the service).
     Technicians(Vec<crate::technicians::Technician>),
+    /// Whether the unattended password is on (only from the service).
+    Password(bool),
 }
 
 /// Interface → owner of the sessions.
@@ -314,6 +316,8 @@ struct State {
     key: Option<String>,
     /// The bound account, as said to the interface.
     owners: Option<String>,
+    /// Whether the password is on, as said (`None`: not known here).
+    password: Option<bool>,
     /// The request on screen, waiting for its answer.
     asking: Option<(u64, oneshot::Sender<Option<Permissions>>)>,
     next_ask: u64,
@@ -365,6 +369,9 @@ impl UiHub {
             }
             if state.owners.is_some() {
                 let _ = tx.send(ToUi::Owners(state.owners.clone()));
+            }
+            if let Some(on) = state.password {
+                let _ = tx.send(ToUi::Password(on));
             }
             if let Some(notice) = &state.notice {
                 let _ = tx.send(ToUi::Notice(notice.clone()));
@@ -489,6 +496,16 @@ impl UiHub {
         let key = key.to_string();
         state.key = Some(key.clone());
         state.send(ToUi::Key(key));
+    }
+
+    /// Whether the password is on, for the Segurança tab.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn set_password(&self, on: bool) {
+        let mut state = self.0.lock().expect("lock");
+        if state.password != Some(on) {
+            state.password = Some(on);
+            state.send(ToUi::Password(on));
+        }
     }
 
     /// The account bound here (`None`: none), for the home screen.

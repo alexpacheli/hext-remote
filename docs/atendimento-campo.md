@@ -64,8 +64,9 @@ passa pelo servidor e pelo relay como num atendimento de verdade.
 
 ## 6. Senha e vínculo (opcional, se o cliente usar acesso não assistido)
 
-1. [ ] O cliente liga a senha: `HextRemote.exe service password` (como administrador). **Quem digita a senha é
-   o cliente.**
+1. [ ] O cliente liga a senha: aba **Segurança** → **Definir a senha de acesso** (o Windows pede administrador
+   e uma janela pede a senha). **Quem digita a senha é o cliente.** Conferir também **Trocar a senha** e
+   **Desligar a senha** no mesmo cartão.
 2. [ ] O técnico encerra, conecta de novo com a senha (sem ninguém aceitar) e marca **Entrar sem senha da
    próxima vez**.
 3. [ ] O técnico encerra e conecta de novo **sem a senha**: entra direto. Na tela inicial do cliente, **Técnicos
