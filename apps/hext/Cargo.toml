@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
@@ -85,7 +87,7 @@ assets = [
 
 [package.metadata.generate-rpm]
 name = "hext-remote"
-license = "Proprietary"
+license = "AGPL-3.0-only"
 summary = "Hext Remote: acesso remoto"
 assets = [
     { source = "target/release/hext", dest = "/usr/bin/hext-remote", mode = "755" },

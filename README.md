@@ -276,3 +276,31 @@ ID muda). O log fica em `~/Library/Application Support/HextRemote/ui.log`.
 - No Linux o host ainda transmite só uma imagem de teste (`--test-pattern`).
 - No Mac a imagem ainda passa pela memória do sistema (1,5 bytes por pixel, já em NV12); no Windows ela vai direto da captura para o encoder pela GPU (zero-copy), exceto em placas sem processador de vídeo D3D11 ou com o encoder em outra placa (ex.: notebooks com duas GPUs), que voltam ao caminho pela memória.
 - Janelas abertas como administrador, a tela de UAC e a tela de bloqueio não recebem controle (precisam do serviço, na F4).
+
+## Licença
+
+O Hext Remote é software livre, sob a [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
+Quem distribuir o programa modificado, ou oferecer uma versão modificada do servidor pela rede, precisa
+publicar o código-fonte dessa versão sob a mesma licença.
+
+## Code signing policy
+
+Windows releases are to be signed through [SignPath.io](https://about.signpath.io/), with a certificate
+from the [SignPath Foundation](https://signpath.org/) (free code signing for open-source projects). The macOS
+app is signed with an Apple Developer ID and notarized.
+
+- **What is signed:** only files built by this repository's GitHub Actions release workflow
+  (`.github/workflows/release.yml`) from a version tag. Nothing built on a developer's machine is signed.
+- **Team:** committer and approver: [Alex Pacheli](https://github.com/alexpacheli). Every release is
+  approved by hand: the pipeline opens a draft, and only a maintainer publishes it.
+- **Privacy:** this program sends data only where its features need it:
+  - the Hext signaling server: the device's ID, public key, name and version, to find the other computer;
+  - with an account (optional): the e-mail and the sign-in data, the account's signed list of devices and
+    computers and, for a computer bound to the account, its access log (who connected and when), shown on
+    the account's Activity screen. Verification codes are sent to that e-mail through an e-mail provider;
+  - the relay: the session itself, end-to-end encrypted, when a direct connection is not possible;
+  - GitHub: update checks and downloads.
+
+  Nobody connects to a computer without the user's acceptance on screen, an unattended password the
+  computer's owner set, or a device of an account the owner bound. Every session is shown on screen while it
+  lasts, and the installed app keeps a local log of them.

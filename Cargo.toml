@@ -4,6 +4,8 @@ members = ["crates/*", "apps/*"]
 
 [workspace.package]
 version = "0.6.1"
+license = "AGPL-3.0-only"
+repository = "https://github.com/alexpacheli/remote-control"
 edition = "2024"
 rust-version = "1.97"
 publish = false
