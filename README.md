@@ -293,8 +293,14 @@ app is signed with an Apple Developer ID and notarized.
   (`.github/workflows/release.yml`) from a version tag. Nothing built on a developer's machine is signed.
 - **Team:** committer and approver: [Alex Pacheli](https://github.com/alexpacheli). Every release is
   approved by hand: the pipeline opens a draft, and only a maintainer publishes it.
-- **Privacy:** this program connects only to what the user asks for: the Hext signaling server (device ID,
-  public key and computer name, to find the other computer; the e-mail of an account, if the user creates
-  one), the relay (session traffic, end-to-end encrypted) and GitHub (update checks). Nobody connects to
-  a computer without the user's acceptance on screen, an unattended password the computer's owner set, or a
-  device of an account the owner bound. Every session is shown on screen while it lasts and logged locally.
+- **Privacy:** this program sends data only where its features need it:
+  - the Hext signaling server: the device's ID, public key, name and version, to find the other computer;
+  - with an account (optional): the e-mail and the sign-in data, the account's signed list of devices and
+    computers and, for a computer bound to the account, its access log (who connected and when), shown on
+    the account's Activity screen. Verification codes are sent to that e-mail through an e-mail provider;
+  - the relay: the session itself, end-to-end encrypted, when a direct connection is not possible;
+  - GitHub: update checks and downloads.
+
+  Nobody connects to a computer without the user's acceptance on screen, an unattended password the
+  computer's owner set, or a device of an account the owner bound. Every session is shown on screen while it
+  lasts, and the installed app keeps a local log of them.
