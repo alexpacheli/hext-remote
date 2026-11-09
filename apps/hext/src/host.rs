@@ -214,8 +214,26 @@ pub async fn portable(hub: UiHub) -> Result<()> {
     let session_codes = SessionCodes::default();
     let resumes = ResumeTokens::default();
     let restart = crate::service::own_restart(&resumes);
+    // Installed on the Mac: the password, the technicians and the account
+    // let people in without anyone accepting (on Windows, the service does).
+    let login = crate::service::login_access(&key, &hub);
+    let (owners, unattended, attempts, ask): (_, _, _, Box<dyn crate::signaling::Ask>) = match login
+    {
+        Some(login) => (
+            Some(login.owners),
+            Some(login.unattended),
+            login.attempts,
+            login.ask,
+        ),
+        None => (
+            None,
+            None,
+            crate::signaling::no_attempts(),
+            Box::new(UiAsk(hub.clone())),
+        ),
+    };
     let config = Arc::new(HostConfig {
-        owners: None,
+        owners,
         peer: PeerInfo::local(APP_VERSION, name.clone()),
         access_code: None,
         session_codes: session_codes.clone(),
@@ -225,7 +243,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
             encoder: EncoderSettings::default(),
         }),
         presence: Some(Arc::new(hub.clone())),
-        unattended: None,
+        unattended,
         resumes: resumes.clone(),
         restart,
         files: Some(Arc::new(OwnFiles(crate::downloads()))),
@@ -237,9 +255,9 @@ pub async fn portable(hub: UiHub) -> Result<()> {
         name,
         (endpoint.clone(), has_relay),
         (session_codes, resumes),
-        crate::signaling::no_attempts(),
+        attempts,
         slot.clone(),
-        Box::new(UiAsk(hub)),
+        ask,
     ));
     accept(&endpoint, config, slot, std::future::pending::<()>()).await;
     endpoint.close().await;

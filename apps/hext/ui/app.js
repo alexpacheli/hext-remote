@@ -6,6 +6,8 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
+// On the Mac, the access is its user's: no administrator to allow.
+const onMac = navigator.userAgent.includes("Mac");
 
 /** Aceitar waits this long: a window that pops up while the user is typing
  * or clicking must not be answered by accident. */
@@ -523,7 +525,11 @@ function startAccount() {
     setTimeout(ask, 5000);
   });
   on("password-set", async () => {
-    showStatus("Permita como administrador e digite a senha na janela que abrir.");
+    showStatus(
+      onMac
+        ? "Digite a senha na janela que abrir."
+        : "Permita como administrador e digite a senha na janela que abrir.",
+    );
     try {
       await invoke("password_set", { off: false });
       showStatus("Senha de acesso definida.");
@@ -601,8 +607,8 @@ function startAccount() {
     try {
       await invoke("account_bind", { chain: shownChain });
       accountStatus(
-        "Feito como administrador: os dispositivos da conta entram sem aceite. " +
-          "Para desfazer: HextRemote service account --off.",
+        "Feito: os dispositivos da conta entram sem aceite. " +
+          "Para desfazer: Segurança, Desligar a entrada sem aceite.",
       );
     } catch (message) {
       accountStatus(String(message), true);

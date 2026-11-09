@@ -241,7 +241,13 @@ Instalado, o Mac abre o Hext Remote sozinho a cada login, sem janela, com o mesm
 
 Com a permissão de reiniciar, **Ctrl+Alt+R** duas vezes reinicia o Mac. Os apps recebem o pedido para fechar, e
 um app com algo sem salvar pode segurar o reinício. O técnico volta sozinho quando alguém entrar no Mac, se for
-em até 10 minutos. No Mac ainda não há senha de acesso não assistido: cada acesso novo pede aceite.
+em até 10 minutos.
+
+**Senha de acesso no Mac (F6, marco 3).** Na aba **Segurança** do app instalado, **Definir a senha de acesso**
+(a senha vai numa janela do próprio macOS; no Terminal, `./HextRemote service password`, sem sudo). Com ela, um
+técnico entra sem aceite, pode marcar **Entrar sem senha da próxima vez** e inserir o Mac na conta dele, como no
+Windows. Vale depois que o usuário entra no Mac: a tela de login ainda fica de fora. `service technicians` e
+`service account` também valem no Mac, sem sudo.
 
 `service status` mostra o estado e o ID. `service uninstall` tira do login (`--purge` apaga também a chave, e o
 ID muda). O log fica em `~/Library/Application Support/HextRemote/ui.log`.

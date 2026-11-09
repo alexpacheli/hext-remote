@@ -85,6 +85,8 @@ jobs:
           wix build installer\windows\HextRemote.wxs -arch x64 `
             -d Version=$env:VERSION -d Exe=dist\HextRemote.exe -d Icon=apps\hext\icons\icon.ico `
             -o "dist\HextRemote-$env:VERSION-x64.msi"
+          # (WiX's debug symbols: not for the release.)
+          Remove-Item dist\*.wixpdb -ErrorAction SilentlyContinue
 
       - name: Sign the installer
         if: env.WINDOWS_CERTIFICATE != ''
