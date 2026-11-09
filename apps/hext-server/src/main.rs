@@ -39,6 +39,22 @@ struct Args {
     /// Remetente, como "Hext Remote <nao-responda@exemplo.com.br>".
     #[arg(long, env = "HEXT_MAIL_FROM")]
     mail_from: Option<String>,
+    /// URL do relay sem o limite por dispositivo (ex.:
+    /// https://relay-full.exemplo.com.br), para as contas da lista. Sem ela,
+    /// todos usam o relay normal.
+    #[arg(long, env = "HEXT_RELAY_FULL_URL")]
+    relay_full_url: Option<String>,
+    /// Porta UDP da descoberta de endereço (QUIC) desse relay.
+    #[arg(long, env = "HEXT_RELAY_FULL_QUIC_PORT", default_value_t = 7843)]
+    relay_full_quic_port: u16,
+    /// Arquivo com os e-mails das contas que usam esse relay, um por linha.
+    /// Lido a cada consulta: editar vale na hora.
+    #[arg(
+        long,
+        env = "HEXT_RELAY_FULL_ACCOUNTS",
+        default_value = "/etc/hext/relay-livre.txt"
+    )]
+    relay_full_accounts: PathBuf,
 }
 
 /// The SMTP sender, if one is set up; a half setup is an error, not a
@@ -80,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION"),
         args.listen
     );
-    let state = Arc::new(match mailer(&args).await? {
+    let mut state = match mailer(&args).await? {
         Some(mailer) => {
             let mailer = Arc::new(mailer);
             // A wrong password or server shows at start, not at the first sign-up.
@@ -92,7 +108,19 @@ async fn main() -> anyhow::Result<()> {
             State::with_mailer(db, mailer)
         }
         None => State::new(db),
-    });
+    };
+    if let Some(url) = args.relay_full_url.clone().filter(|u| !u.is_empty()) {
+        info!(
+            "relay sem limite: {url}, para as contas em {}",
+            args.relay_full_accounts.display()
+        );
+        state.set_relay_full(hext_server::relay_full::RelayFull {
+            url,
+            quic_port: args.relay_full_quic_port,
+            accounts: args.relay_full_accounts.clone(),
+        });
+    }
+    let state = Arc::new(state);
     tokio::select! {
         served = hext_server::serve(listener, state, Config {
             behind_proxy: args.behind_proxy,

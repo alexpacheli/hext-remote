@@ -96,6 +96,26 @@ impl Db {
     }
 
     /// Whether a device with this key has an ID (logged in at least once).
+    /// The e-mails of the accounts `key` belongs to: as one of their
+    /// devices (on the list, or logged in) or computers.
+    pub fn account_emails(&self, key: &PublicKey) -> rusqlite::Result<Vec<String>> {
+        let conn = self.conn.lock().expect("db lock");
+        let mut query = conn.prepare_cached(
+            "SELECT a.email FROM accounts a JOIN account_members m ON m.account_id = a.id
+               WHERE m.public_key = ?1
+             UNION SELECT a.email FROM accounts a
+               JOIN account_computers c ON c.account_id = a.id
+               JOIN devices d ON d.id = c.device_id WHERE d.public_key = ?1
+             UNION SELECT a.email FROM accounts a
+               JOIN account_sessions s ON s.account_id = a.id
+               JOIN devices d ON d.id = s.device_id WHERE d.public_key = ?1",
+        )?;
+        let emails = query
+            .query_map(params![key.as_bytes()], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(emails)
+    }
+
     pub fn is_registered(&self, key: &PublicKey) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().expect("db lock");
         Ok(id_of(&conn, key)?.is_some())

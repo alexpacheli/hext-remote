@@ -99,11 +99,50 @@ limite por dispositivo. O limite do provedor é de 10 TB por mês por padrão (o
 vídeo para caber. O limite vale para tudo o que passa pelo relay, inclusive arquivos. As sessões diretas (P2P) não têm limite. Se `conexões que bateram no limite` crescer muito e
 houver folga de tráfego, aumente o valor.
 
+## Relay sem limite para contas escolhidas
+
+O limite de 5 Mbit/s vale para todos no relay normal. Para liberar o relay sem limite a contas escolhidas
+(as suas, por exemplo), o servidor roda um segundo `iroh-relay`, sem `[limits]`, que só aceita essas contas.
+
+1. Crie o nome `relay-full.<domínio>` apontando para este servidor (o mesmo IP dos outros dois).
+2. Se o provedor tiver firewall próprio (ex.: a Security List da Oracle), libere a porta UDP 7843.
+3. No servidor:
+
+   ```sh
+   RELAY_FULL_HOST=relay-full.hext.com.br ./deploy/install.sh
+   ```
+
+   O nome fica guardado em `/etc/hext/hosts.env`, então as próximas atualizações continuam só com
+   `./deploy/install.sh`. Para tirar o relay sem limite: `RELAY_FULL_HOST= ./deploy/install.sh`.
+4. Coloque os e-mails das contas em `/etc/hext/relay-livre.txt`, um por linha (`#` começa um comentário):
+
+   ```sh
+   sudoedit /etc/hext/relay-livre.txt
+   ```
+
+   O arquivo é lido a cada consulta: incluir ou remover uma conta vale na hora, sem reiniciar nada.
+
+Como funciona:
+
+- Ao entrar no servidor, cada dispositivo e computador de uma conta da lista recebe o endereço desse relay e
+  passa a usá-lo no lugar do normal. Contam os dispositivos da lista da conta (Conta → Dispositivos), os
+  computadores em Meus computadores e os dispositivos com a conta aberta. Quem sai da lista volta ao relay
+  normal no próximo login (o serviço do computador reconecta sozinho).
+- Quem abre uma sessão com uma dessas contas (um técnico de outra conta, ou alguém aceito na tela) pode usar
+  esse relay durante a sessão: o `hext-server` libera os dois lados por 2 minutos, o tempo de se conectarem a
+  ele, quando o pedido é aceito.
+- O limite só atrapalha quem envia o vídeo, o computador acessado. Por isso os computadores da conta também
+  precisam estar em Meus computadores para usar o relay sem limite.
+- `./deploy/uso.sh` mostra os contadores dos dois relays.
+
+Só na instalação com systemd por enquanto: o Docker continua com um relay só.
+
 ## Segurança
 
 - O `hext-server` e o `iroh-relay` escutam só em `127.0.0.1`. Da internet chegam só o Caddy (80/443) e a
-  descoberta de endereço do relay (UDP 7842).
-- O `/v1/relay-access` é bloqueado no Caddy e exige o segredo: só o relay da própria VM pergunta.
+  descoberta de endereço do relay (UDP 7842; e 7843 para o relay sem limite, se houver).
+- O `/v1/relay-access` e o `/v1/relay-access-full` são bloqueados no Caddy e exigem o segredo: só os relays
+  da própria VM perguntam.
 - Por isso o app só usa o relay padrão com o servidor padrão: ele se registra no servidor antes de chegar ao
   relay. Pelo IP, ou com `--server off` ou outro servidor, a conexão é só direta, a não ser que você informe
   outro relay.

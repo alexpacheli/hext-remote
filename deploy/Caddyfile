@@ -13,8 +13,8 @@
 }
 
 {$SIGNAL_HOST} {
-	# The relay's access check is for the relay on this machine only.
-	respond /v1/relay-access 404
+	# The relays' access checks are for the relays on this machine only.
+	respond /v1/relay-access* 404
 	reverse_proxy {$SIGNAL_UPSTREAM:127.0.0.1:8080}
 }
 
@@ -27,3 +27,7 @@
 http://{$RELAY_HOST} {
 	reverse_proxy {$RELAY_UPSTREAM:127.0.0.1:3340}
 }
+
+# The relay without the per-device limit, when install.sh sets it up
+# (relay-full.caddy); without it, nothing matches and nothing changes.
+import /etc/caddy/hext-*.caddy

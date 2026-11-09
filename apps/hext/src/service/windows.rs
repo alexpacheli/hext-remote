@@ -953,7 +953,7 @@ async fn serve() -> Result<()> {
     let endpoint = hext_net::bind(
         &key,
         &EndpointConfig {
-            relay,
+            relay: relay.clone(),
             bind: None,
             accept: true,
         },
@@ -1040,7 +1040,7 @@ async fn serve() -> Result<()> {
         DEFAULT_SERVER.to_owned(),
         key,
         name,
-        (endpoint.clone(), true),
+        (endpoint.clone(), relay),
         (session_codes, resumes),
         attempts_out,
         slot.clone(),

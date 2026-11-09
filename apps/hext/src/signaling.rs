@@ -133,18 +133,24 @@ pub async fn host(
     server: String,
     key: Arc<DeviceKey>,
     name: String,
-    (endpoint, has_relay): (Endpoint, bool),
+    (endpoint, relay): (Endpoint, Option<hext_net::RelayUrl>),
     (codes, resumes): (SessionCodes, ResumeTokens),
     mut attempts: mpsc::UnboundedReceiver<Attempt>,
     slot: Arc<Semaphore>,
     mut ask: Box<dyn Ask>,
 ) {
+    let has_relay = relay.is_some();
+    // The server may name another relay (the account's, without the limit),
+    // or take it back: on each login.
+    let relays = hext_net::RelaySwitch::new(relay);
     let mut retry = RETRY_FIRST;
     let mut shown: Option<DeviceId> = None;
     loop {
         match Client::connect(&server, &key, &name, APP_VERSION, Role::Host).await {
             Ok(mut client) => {
                 retry = RETRY_FIRST;
+                let named = client.relay().map(|r| (r.url.as_str(), r.quic_port));
+                relays.follow(&endpoint, named).await;
                 if shown != Some(client.id()) {
                     ask.show_id(client.id());
                     shown = Some(client.id());

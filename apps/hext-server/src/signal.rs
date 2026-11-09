@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 use crate::accounts::{self, LogMailer, Mailer};
 use crate::db::Db;
 use crate::limits::RateLimiter;
+use crate::relay_full::{Guests, RelayFull};
 
 /// How long a device has to answer the challenge.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -101,6 +102,10 @@ pub struct State {
     pub(crate) account_guesses_by_email: RateLimiter<String>,
     /// Devices asking to join an account's chain.
     pub(crate) joins: accounts::Joins,
+    /// The relay without the per-device limit, if there is one.
+    relay_full: Option<RelayFull>,
+    /// Who may use it for a session with one of its accounts.
+    relay_guests: Guests,
 }
 
 /// A device logged in as a host (it takes requests).
@@ -115,6 +120,7 @@ struct HostLogin {
 /// A request waiting for the host's answer.
 struct Pending {
     viewer: DeviceId,
+    viewer_key: PublicKey,
     viewer_session: u64,
     /// The viewer's own number for it.
     viewer_request: u64,
@@ -173,7 +179,43 @@ impl State {
                 accounts::GUESS_WINDOW,
             ),
             joins: accounts::Joins::default(),
+            relay_full: None,
+            relay_guests: Guests::default(),
         }
+    }
+
+    /// With the relay without the limit, for the accounts on its list.
+    pub fn set_relay_full(&mut self, relay: RelayFull) {
+        self.relay_full = Some(relay);
+    }
+
+    pub(crate) fn has_relay_full(&self) -> bool {
+        self.relay_full.is_some()
+    }
+
+    /// Whether `key` belongs to an account on the list.
+    async fn listed(&self, key: PublicKey) -> bool {
+        let Some(relay) = &self.relay_full else {
+            return false;
+        };
+        match self.db(move |db| db.account_emails(&key)).await {
+            Ok(emails) => relay.lists(&emails),
+            Err(e) => {
+                warn!("banco de dados: {e}");
+                false
+            }
+        }
+    }
+
+    /// May `key` use the relay without the limit?
+    pub(crate) async fn on_relay_full(&self, key: PublicKey) -> bool {
+        self.relay_guests.admits(&key) || self.listed(key).await
+    }
+
+    /// The relay to tell device `key` to use, if not the build's.
+    async fn relay_for(&self, key: PublicKey) -> Option<hext_signal::RelayHint> {
+        let relay = self.relay_full.as_ref()?;
+        self.listed(key).await.then(|| relay.hint())
     }
 
     /// Number of logins (hosts and viewers).
@@ -493,6 +535,7 @@ pub async fn handle(socket: WebSocket, state: &State, ip: IpAddr) {
         takes_attempts: true,
         takes_presence: true,
         takes_accounts: true,
+        relay: state.relay_for(key).await,
     };
     if send(&mut sink, &welcome).await {
         let mut ping = tokio::time::interval(PING_INTERVAL);
@@ -596,6 +639,13 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
         } => {
             let p = take_mine(state, me, request)?;
             let (host, viewer) = (p.host, p.viewer);
+            // A session with an account on the relay's list: both sides may
+            // use the relay without the limit, which one of them is on.
+            if state.has_relay_full()
+                && (state.listed(me.key).await || state.listed(p.viewer_key).await)
+            {
+                state.relay_guests.let_in(&[me.key, p.viewer_key]);
+            }
             if p.unattended {
                 // This says nothing of the password yet: it must not make the
                 // viewer trusted, or its guesses would go unlimited. Only
@@ -773,6 +823,7 @@ async fn connect(
             server_request,
             Pending {
                 viewer: me.id,
+                viewer_key: me.key,
                 viewer_session: me.session,
                 viewer_request: request,
                 host: to,

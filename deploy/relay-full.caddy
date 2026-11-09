@@ -1,0 +1,11 @@
+# The relay without the per-device limit (iroh-relay-full.toml): imported by
+# the Caddyfile when install.sh sets it up, with its name in place of
+# {$RELAY_FULL_HOST}.
+
+{$RELAY_FULL_HOST} {
+	reverse_proxy 127.0.0.1:3341
+}
+
+http://{$RELAY_FULL_HOST} {
+	reverse_proxy 127.0.0.1:3341
+}
