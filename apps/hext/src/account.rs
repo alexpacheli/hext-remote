@@ -759,10 +759,10 @@ fn answer_error(reply: &AccountReply) -> String {
     }
 }
 
-/// What to tell the user.
 /// Why a device that is not on the account's list changes nothing.
 const NOT_ON_THE_LIST: &str = "Este computador não está em Dispositivos da conta, e só um dispositivo de lá pode mudar a conta. Inclua este em Conta → Dispositivos, com o código mostrado em outro dispositivo da lista ou com o código de recuperação.";
 
+/// What to tell the user.
 pub fn message(error: AccountError) -> &'static str {
     match error {
         AccountError::InvalidEmail => "Esse e-mail não parece certo.",
