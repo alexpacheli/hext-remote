@@ -253,7 +253,8 @@ async fn install_this_computer() -> anyhow::Result<()> {
             Err(e) => warn!("instalar: sem a versão publicada ({e:#}); vai este programa"),
         }
     }
-    let code = tokio::task::spawn_blocking(|| run_elevated_wait("service install")).await??;
+    let code =
+        tokio::task::spawn_blocking(|| run_elevated_wait("service install", false)).await??;
     if code != 0 {
         anyhow::bail!("A instalação falhou ({code}).");
     }
@@ -261,14 +262,18 @@ async fn install_this_computer() -> anyhow::Result<()> {
 }
 
 /// Runs this program with `args` as administrator (Windows asks), and
-/// waits for it: its exit code.
+/// waits for it: its exit code. `visible`: with its console window shown,
+/// for a command that asks something there (this program is a console one:
+/// started hidden, its console is hidden too, and it would wait unseen).
 #[cfg(windows)]
 #[allow(unsafe_code)] // Win32 calls, on handles this function owns
-fn run_elevated_wait(args: &str) -> anyhow::Result<u32> {
+fn run_elevated_wait(args: &str, visible: bool) -> anyhow::Result<u32> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
     use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
-    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        ASFW_ANY, AllowSetForegroundWindow, SW_HIDE, SW_SHOWNORMAL,
+    };
     use windows::core::{HSTRING, PCWSTR, w};
     let exe = HSTRING::from(std::env::current_exe()?.as_os_str());
     let params = HSTRING::from(args);
@@ -278,10 +283,13 @@ fn run_elevated_wait(args: &str) -> anyhow::Result<u32> {
         lpVerb: w!("runas"),
         lpFile: PCWSTR(exe.as_ptr()),
         lpParameters: PCWSTR(params.as_ptr()),
-        // (Hidden; a command that needs a window opens one itself.)
-        nShow: SW_HIDE.0,
+        nShow: if visible { SW_SHOWNORMAL.0 } else { SW_HIDE.0 },
         ..Default::default()
     };
+    if visible {
+        // So that its window comes in front of ours, where it is typed in.
+        let _ = unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    }
     // (It fails, most often, because the user said no.)
     if unsafe { ShellExecuteExW(&mut info) }.is_err() || info.hProcess.is_invalid() {
         anyhow::bail!("Nada foi instalado: é preciso permitir como administrador.");
@@ -1280,7 +1288,7 @@ async fn password_set(off: bool) -> Result<(), String> {
         } else {
             "service password --window"
         };
-        let done = tauri::async_runtime::spawn_blocking(move || run_elevated_wait(args))
+        let done = tauri::async_runtime::spawn_blocking(move || run_elevated_wait(args, !off))
             .await
             .map_err(|e| e.to_string())?;
         match done {
@@ -1311,10 +1319,11 @@ async fn password_set(off: bool) -> Result<(), String> {
 async fn account_unbind() -> Result<(), String> {
     #[cfg(windows)]
     let result = {
-        let done =
-            tauri::async_runtime::spawn_blocking(|| run_elevated_wait("service account --off"))
-                .await
-                .map_err(|e| e.to_string())?;
+        let done = tauri::async_runtime::spawn_blocking(|| {
+            run_elevated_wait("service account --off", false)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         match done {
             Ok(0) => Ok(()),
             Ok(code) => Err(format!("Não foi possível desligar ({code}).")),

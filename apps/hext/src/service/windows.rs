@@ -545,11 +545,22 @@ pub fn password(off: bool, window: bool) -> Result<()> {
 #[allow(unsafe_code)] // Win32 calls
 fn own_console() {
     use windows::Win32::System::Console::{AllocConsole, GetConsoleWindow, SetConsoleTitleW};
+    use windows::Win32::UI::WindowsAndMessaging::{SW_SHOW, SetForegroundWindow, ShowWindow};
     unsafe {
         if GetConsoleWindow().is_invalid() {
             let _ = AllocConsole();
         }
         let _ = SetConsoleTitleW(windows::core::w!("Hext Remote: senha de acesso"));
+        // Shown and in front, even if this was started hidden: the password
+        // is typed here, and the app waits for it.
+        let window = GetConsoleWindow();
+        if !window.is_invalid() {
+            // (Twice: started hidden, the first call takes the hidden state it was
+            // started with, whatever it asks.)
+            let _ = ShowWindow(window, SW_SHOW);
+            let _ = ShowWindow(window, SW_SHOW);
+            let _ = SetForegroundWindow(window);
+        }
     }
 }
 
