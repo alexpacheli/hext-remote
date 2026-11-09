@@ -130,6 +130,10 @@ fn user_name(change: NameChange) -> Result<()> {
 }
 
 pub fn command(action: ServiceAction) -> Result<()> {
+    // (These may run elevated from Downloads: no library from beside the
+    // program. No window here, so nothing that needs its own.)
+    #[cfg(windows)]
+    windows::harden_dll_search();
     let action = match action {
         ServiceAction::Name { name, reset } => {
             let change = match name {

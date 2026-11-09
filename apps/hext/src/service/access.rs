@@ -4,14 +4,14 @@
 //! there); the Mac app opened at login, in its user's folder (F6 marco 3:
 //! after the user signs in, not at the sign-in screen).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use hext_crypto::pake::Verifier;
 use hext_crypto::{DeviceKey, PublicKey};
-use hext_session::host::UnattendedPassword;
+use hext_session::host::{PasswordSalt, UnattendedPassword};
 use tracing::warn;
 
 use crate::owners::{Owners, Way};
@@ -33,11 +33,24 @@ pub const OWNERS_CHECK: Duration = Duration::from_secs(60);
 pub struct Access {
     dir: PathBuf,
     audit: fn(&str),
+    /// Whether a file there may be believed (see [`Self::trusting`]).
+    trusted: fn(&Path) -> bool,
 }
 
 impl Access {
     pub fn new(dir: PathBuf, audit: fn(&str)) -> Self {
-        Self { dir, audit }
+        Self {
+            dir,
+            audit,
+            trusted: |_| true,
+        }
+    }
+
+    /// Believes only the files `trusted` says so of (on Windows: written by
+    /// the system or the administrators alone); any other counts as none.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn trusting(self, trusted: fn(&Path) -> bool) -> Self {
+        Self { trusted, ..self }
     }
 
     /// What is kept of the password; no file: the access is off.
@@ -48,6 +61,7 @@ impl Access {
     /// The technicians trusted without the password (F4 marco 12).
     pub fn technicians(&self) -> crate::technicians::Technicians {
         crate::technicians::Technicians::new(self.dir.join("technicians.json"))
+            .trusting(self.trusted)
     }
 
     /// This computer's binding to an account, as `key` (this computer's)
@@ -66,10 +80,40 @@ impl Access {
 
     /// The password, if it is on.
     pub fn verifier(&self) -> Option<Verifier> {
-        Verifier::load(&self.password_file()).unwrap_or_else(|e| {
+        let file = self.password_file();
+        // (A password someone else put there would be their way in.)
+        if file.exists() && !(self.trusted)(&file) {
+            warn!("{}: de origem desconhecida, ignorado", file.display());
+            return None;
+        }
+        Verifier::load(&file).unwrap_or_else(|e| {
             warn!("{e}");
             None
         })
+    }
+
+    /// Whether the session `grant` let in without anyone accepting may still
+    /// go on: by the password, that it is on and (`password`, when known) the
+    /// same; as a trusted technician, that it was not revoked. (By the
+    /// account: [`Owners`] says.)
+    pub fn still(
+        &self,
+        viewer: &PublicKey,
+        grant: &hext_session::Grant,
+        password: Option<&PasswordSalt>,
+    ) -> bool {
+        if grant.via.is_some() {
+            return true;
+        }
+        if grant.bound {
+            return self.technicians().bound(viewer);
+        }
+        if grant.needs_password {
+            return self
+                .verifier()
+                .is_some_and(|now| password.is_none_or(|salt| now.salt() == salt));
+        }
+        true
     }
 
     /// Sets (or changes) the password: whoever came in under the old one
@@ -268,6 +312,15 @@ impl UnattendedPassword for Password {
         self.access.audit(entry);
     }
 
+    fn still(
+        &self,
+        viewer: &PublicKey,
+        grant: &hext_session::Grant,
+        password: Option<&PasswordSalt>,
+    ) -> bool {
+        self.access.still(viewer, grant, password)
+    }
+
     fn bind(&self, viewer: &PublicKey, grant: &hext_session::Grant) -> bool {
         match self
             .access
@@ -357,6 +410,69 @@ mod tests {
             .bind(&technician, "482913557", "Técnico")
             .unwrap();
         access.password_off(&owners).unwrap();
+        assert!(access.verifier().is_none());
+        assert!(!access.technicians().bound(&technician));
+    }
+
+    fn grant(needs_password: bool, bound: bool) -> hext_session::Grant {
+        hext_session::Grant {
+            permissions: hext_proto::Permissions::CONTROL,
+            name: "Técnico".into(),
+            id: "482913557".into(),
+            needs_password,
+            remember: false,
+            bound,
+            via: None,
+            account: None,
+        }
+    }
+
+    #[test]
+    fn a_session_lasts_only_while_its_way_in_holds() {
+        let (access, owners) = access("still");
+        let technician = PublicKey::from_bytes([7; 32]);
+        let (by_password, as_technician) = (grant(true, false), grant(false, true));
+        access.set_password("uma senha bem longa", &owners).unwrap();
+        let salt = *access.verifier().unwrap().salt();
+        access
+            .technicians()
+            .bind(&technician, "482913557", "Técnico")
+            .unwrap();
+        assert!(access.still(&technician, &by_password, Some(&salt)));
+        assert!(access.still(&technician, &as_technician, None));
+        assert!(
+            access.still(&technician, &grant(false, false), None),
+            "accepted at the computer: nothing to revoke"
+        );
+
+        access
+            .technicians()
+            .revoke(&technician.to_string())
+            .unwrap();
+        assert!(!access.still(&technician, &as_technician, None));
+
+        access
+            .set_password("outra senha bem longa", &owners)
+            .unwrap();
+        assert!(!access.still(&technician, &by_password, Some(&salt)));
+        assert!(
+            access.still(&technician, &by_password, None),
+            "on, salt unknown"
+        );
+        access.password_off(&owners).unwrap();
+        assert!(!access.still(&technician, &by_password, None));
+    }
+
+    #[test]
+    fn files_not_trusted_count_as_none() {
+        let (access, owners) = access("untrusted");
+        access.set_password("uma senha bem longa", &owners).unwrap();
+        let technician = PublicKey::from_bytes([7; 32]);
+        access
+            .technicians()
+            .bind(&technician, "482913557", "Técnico")
+            .unwrap();
+        let access = access.trusting(|_| false);
         assert!(access.verifier().is_none());
         assert!(!access.technicians().bound(&technician));
     }

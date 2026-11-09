@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use hext_proto::Permissions;
+use hext_session::host::PasswordSalt;
 use hext_session::{Grant, KeptResume, RESTART_LIFETIME, ResumeTokens};
 use tracing::{info, warn};
 
@@ -26,11 +27,15 @@ struct KeptFile {
     /// Came in by the account: how (older files: not).
     #[serde(default)]
     via: Option<String>,
+    /// The salt of the password it came in with (hex), to see it changed
+    /// meanwhile (older files, or not with the password: none).
+    #[serde(default)]
+    password: Option<String>,
     /// Seconds since 1970 (nothing else counts across a restart).
     until: u64,
 }
 
-fn kept_file(dir: &Path) -> PathBuf {
+pub fn kept_file(dir: &Path) -> PathBuf {
     dir.join("resume.json")
 }
 
@@ -41,7 +46,18 @@ fn unix_now() -> u64 {
 }
 
 /// Writes `kept` in `dir`, good for the next [`RESTART_LIFETIME`].
+#[cfg_attr(windows, allow(dead_code))]
 pub fn keep(dir: &Path, kept: &KeptResume) -> Result<(), String> {
+    keep_with(dir, kept, None)
+}
+
+/// [`keep`], with the salt of the password the viewer came in with: a new
+/// password before the restart is over leaves it out.
+pub fn keep_with(
+    dir: &Path,
+    kept: &KeptResume,
+    password: Option<&PasswordSalt>,
+) -> Result<(), String> {
     let file = KeptFile {
         hash: kept.hash,
         viewer: *kept.viewer.as_bytes(),
@@ -51,6 +67,7 @@ pub fn keep(dir: &Path, kept: &KeptResume) -> Result<(), String> {
         needs_password: kept.grant.needs_password,
         bound: kept.grant.bound,
         via: kept.grant.via.clone(),
+        password: password.map(hex::encode),
         until: unix_now() + RESTART_LIFETIME.as_secs(),
     };
     let path = kept_file(dir);
@@ -84,7 +101,18 @@ pub fn revoke(dir: &Path) {
 }
 
 /// Takes back the token kept in `dir` before a restart, if it is still good.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn restore(dir: &Path, resumes: &ResumeTokens) {
+    restore_if(dir, resumes, |_, _| true);
+}
+
+/// [`restore`], if `still` says the way its viewer came in holds (given the
+/// salt of the password it came in with, when kept).
+pub fn restore_if(
+    dir: &Path,
+    resumes: &ResumeTokens,
+    still: impl Fn(&KeptResume, Option<&PasswordSalt>) -> bool,
+) {
     let path = kept_file(dir);
     let Ok(text) = std::fs::read(&path) else {
         return;
@@ -103,23 +131,34 @@ pub fn restore(dir: &Path, resumes: &ResumeTokens) {
     if left == 0 || left > RESTART_LIFETIME.as_secs() {
         return;
     }
-    resumes.restore(
-        KeptResume {
-            hash: kept.hash,
-            viewer: hext_crypto::PublicKey::from_bytes(kept.viewer),
-            grant: Grant {
-                permissions: kept.permissions,
-                name: kept.name,
-                id: kept.id,
-                needs_password: kept.needs_password,
-                remember: false,
-                bound: kept.bound,
-                via: kept.via,
-                account: None,
-            },
+    // (A salt that does not read is a password that cannot match.)
+    let password = match kept.password.as_deref().map(hex::decode) {
+        None => None,
+        Some(Ok(bytes)) => match PasswordSalt::try_from(bytes) {
+            Ok(salt) => Some(salt),
+            Err(_) => return,
         },
-        Duration::from_secs(left),
-    );
+        Some(Err(_)) => return,
+    };
+    let back = KeptResume {
+        hash: kept.hash,
+        viewer: hext_crypto::PublicKey::from_bytes(kept.viewer),
+        grant: Grant {
+            permissions: kept.permissions,
+            name: kept.name,
+            id: kept.id,
+            needs_password: kept.needs_password,
+            remember: false,
+            bound: kept.bound,
+            via: kept.via,
+            account: None,
+        },
+    };
+    if !still(&back, password.as_ref()) {
+        info!("o acesso de quem pediu o reinício foi revogado: sem retorno");
+        return;
+    }
+    resumes.restore(back, Duration::from_secs(left));
 }
 
 /// A line in the audit log (`log`), for the owner of the computer.
@@ -206,6 +245,22 @@ mod tests {
             Some("Ana".into())
         );
         assert!(again.take(&token, &viewer).is_none(), "good for one start");
+    }
+
+    #[test]
+    fn a_way_in_closed_during_the_restart_does_not_come_back() {
+        let dir = temp_dir("closed");
+        let viewer = hext_crypto::DeviceKey::generate().unwrap().public_key();
+        let before = ResumeTokens::default();
+        let (token, hash, _) = before.open(viewer, grant());
+        let salt = [3u8; hext_crypto::pake::SALT_LEN];
+        keep_with(&dir, &before.kept(&hash).unwrap(), Some(&salt)).unwrap();
+
+        let after = ResumeTokens::default();
+        restore_if(&dir, &after, |_, password| password != Some(&salt));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(after.take(&token, &viewer).is_none());
     }
 
     #[test]
