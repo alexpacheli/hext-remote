@@ -32,3 +32,13 @@ echo "  repassado:                       $(gb "$(m bytes_sent_total)")"
 echo "  dispositivos conectados agora:   $(( $(m accepts_total) - $(m disconnects_total) ))"
 echo "  dispositivos diferentes:         $(m unique_client_keys_total)"
 echo "  conexões que bateram no limite:  $(m conns_rx_ratelimited_total)"
+
+# The relay without the limit, if this server has it (install.sh with
+# RELAY_FULL_HOST).
+if metrics=$(curl -fsS --max-time 5 http://127.0.0.1:9091/metrics 2>/dev/null); then
+    echo
+    echo "Relay sem limite (desde que iniciou):"
+    echo "  repassado:                       $(gb "$(m bytes_sent_total)")"
+    echo "  dispositivos conectados agora:   $(( $(m accepts_total) - $(m disconnects_total) ))"
+    echo "  dispositivos diferentes:         $(m unique_client_keys_total)"
+fi

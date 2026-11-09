@@ -123,6 +123,8 @@ struct Net {
     /// The hosts' keys, as first seen (by ID only).
     known: Option<KnownHosts>,
     relay: Option<hext_net::RelayUrl>,
+    /// The relay the server names at login (the account's), or the build's.
+    relays: hext_net::RelaySwitch,
     /// Bound on first use: by ID, only once logged in (and so registered,
     /// which the default relay requires).
     endpoint: tokio::sync::OnceCell<Endpoint>,
@@ -151,6 +153,7 @@ impl Net {
             key,
             server,
             known,
+            relays: hext_net::RelaySwitch::new(relay.clone()),
             relay,
             endpoint: tokio::sync::OnceCell::new(),
         })
@@ -1647,6 +1650,8 @@ async fn try_back(back: &Back, endpoint: &Endpoint, token: ResumeToken) -> Resul
         bail!("sem o servidor de sinalização");
     };
     let client = crate::signaling::login(server, &net.key, &device_name()).await?;
+    let named = client.relay().map(|r| (r.url.as_str(), r.quic_port));
+    net.relays.follow(endpoint, named).await;
     let (conn, code) =
         crate::signaling::connect(client, id, known, endpoint, (true, false, None), || {}).await?;
     let hello = Hello {
@@ -1817,6 +1822,8 @@ async fn reach(
             // before the endpoint reaches the relay.
             let client = crate::signaling::login(server, &net.key, &device_name()).await?;
             let endpoint = net.endpoint().await?;
+            let named = client.relay().map(|r| (r.url.as_str(), r.quic_port));
+            net.relays.follow(endpoint, named).await;
             // Signed here, for this computer: the server cannot point it at
             // another account.
             let account = account.map(|chain| BindAsk::new(&net.key, chain, id));

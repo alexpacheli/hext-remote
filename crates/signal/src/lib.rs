@@ -50,6 +50,14 @@ pub const MAX_ADDR_LEN: usize = 256;
 /// Most IDs one [`ClientMsg::Presence`] asks about (the rest go unanswered).
 pub const MAX_PRESENCE: usize = 50;
 
+/// A relay the server points a device to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayHint {
+    pub url: String,
+    /// Its QUIC address discovery port.
+    pub quic_port: u16,
+}
+
 /// Server to app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -75,6 +83,10 @@ pub enum ServerMsg {
         /// connection on it).
         #[serde(default)]
         takes_accounts: bool,
+        /// The relay this device should use instead of the build's (its
+        /// account's relay without the per-device limit). Older apps skip it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay: Option<RelayHint>,
     },
     /// (To a host) a device wants to connect. Answer with
     /// [`ClientMsg::Accept`] or [`ClientMsg::Reject`] for `request`.
@@ -283,6 +295,7 @@ mod tests {
                 takes_attempts: false,
                 takes_presence: false,
                 takes_accounts: false,
+                relay: None,
             }
         );
     }
@@ -300,6 +313,10 @@ mod tests {
             takes_attempts: true,
             takes_presence: true,
             takes_accounts: true,
+            relay: Some(RelayHint {
+                url: "https://relay-full.example.org".into(),
+                quic_port: 7843,
+            }),
         };
         assert_eq!(
             serde_json::from_str::<Older>(&welcome.to_json()).unwrap(),

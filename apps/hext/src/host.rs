@@ -41,7 +41,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
     let endpoint = hext_net::bind(
         &key,
         &EndpointConfig {
-            relay,
+            relay: relay.clone(),
             bind: Some(args.listen),
             accept: true,
         },
@@ -153,7 +153,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
             server,
             key.clone(),
             device_name(),
-            (endpoint.clone(), has_relay),
+            (endpoint.clone(), relay.clone()),
             (session_codes, resumes),
             crate::signaling::no_attempts(),
             slot.clone(),
@@ -193,11 +193,10 @@ pub async fn portable(hub: UiHub) -> Result<()> {
         Err(_) => warn!("servidor de sinalização: sem resposta"),
     }
     let relay = crate::relay(crate::DEFAULT_RELAY)?;
-    let has_relay = relay.is_some();
     let endpoint = hext_net::bind(
         &key,
         &EndpointConfig {
-            relay,
+            relay: relay.clone(),
             bind: None,
             accept: true,
         },
@@ -253,7 +252,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
         crate::DEFAULT_SERVER.to_owned(),
         key,
         name,
-        (endpoint.clone(), has_relay),
+        (endpoint.clone(), relay.clone()),
         (session_codes, resumes),
         attempts,
         slot.clone(),

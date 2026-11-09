@@ -11,6 +11,7 @@ pub mod accounts;
 pub mod db;
 mod limits;
 pub mod mail;
+pub mod relay_full;
 pub mod signal;
 
 use std::net::{IpAddr, SocketAddr};
@@ -34,6 +35,9 @@ const MAX_MESSAGE: usize = 16 * 1024;
 
 /// Path the relay asks whether a device may use it.
 pub const RELAY_ACCESS_PATH: &str = "/v1/relay-access";
+
+/// Path the relay without the limit asks the same.
+pub const RELAY_FULL_ACCESS_PATH: &str = "/v1/relay-access-full";
 
 /// How the server is reached.
 #[derive(Debug, Clone, Default)]
@@ -60,6 +64,7 @@ fn router(app: App) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route(SIGNAL_PATH, get(upgrade))
         .route(RELAY_ACCESS_PATH, post(relay_access))
+        .route(RELAY_FULL_ACCESS_PATH, post(relay_full_access))
         .with_state(app)
 }
 
@@ -70,23 +75,9 @@ async fn relay_access(
     headers: HeaderMap,
     Extract(app): Extract<App>,
 ) -> (StatusCode, &'static str) {
-    let Some(token) = &app.config.relay_token else {
-        return (StatusCode::NOT_FOUND, "");
-    };
-    let presented = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or("");
-    if !hext_crypto::constant_time_eq(presented.as_bytes(), token.as_bytes()) {
-        return (StatusCode::UNAUTHORIZED, "");
-    }
-    let Some(key) = headers
-        .get("x-iroh-endpoint-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<PublicKey>().ok())
-    else {
-        return (StatusCode::BAD_REQUEST, "");
+    let key = match relay_asks_about(&headers, &app) {
+        Ok(key) => key,
+        Err(answer) => return answer,
     };
     let db = app.state.db.clone();
     match tokio::task::spawn_blocking(move || db.is_registered(&key)).await {
@@ -94,6 +85,50 @@ async fn relay_access(
         Ok(Ok(false)) => (StatusCode::FORBIDDEN, "false"),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, ""),
     }
+}
+
+/// The relay without the per-device limit asks the same: yes for the
+/// devices and computers of the accounts on its list, and for whoever they
+/// just opened a session with.
+async fn relay_full_access(
+    headers: HeaderMap,
+    Extract(app): Extract<App>,
+) -> (StatusCode, &'static str) {
+    if !app.state.has_relay_full() {
+        return (StatusCode::NOT_FOUND, "");
+    }
+    let key = match relay_asks_about(&headers, &app) {
+        Ok(key) => key,
+        Err(answer) => return answer,
+    };
+    if app.state.on_relay_full(key).await {
+        (StatusCode::OK, "true")
+    } else {
+        (StatusCode::FORBIDDEN, "false")
+    }
+}
+
+/// The device a relay asks about, once it shows our secret.
+fn relay_asks_about(
+    headers: &HeaderMap,
+    app: &App,
+) -> Result<PublicKey, (StatusCode, &'static str)> {
+    let Some(token) = &app.config.relay_token else {
+        return Err((StatusCode::NOT_FOUND, ""));
+    };
+    let presented = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    if !hext_crypto::constant_time_eq(presented.as_bytes(), token.as_bytes()) {
+        return Err((StatusCode::UNAUTHORIZED, ""));
+    }
+    headers
+        .get("x-iroh-endpoint-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<PublicKey>().ok())
+        .ok_or((StatusCode::BAD_REQUEST, ""))
 }
 
 async fn upgrade(

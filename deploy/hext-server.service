@@ -9,6 +9,8 @@ StateDirectory=hext
 EnvironmentFile=/etc/hext/secrets.env
 # The SMTP login for the account e-mails (only this service reads it).
 EnvironmentFile=-/etc/hext/mail.env
+# The relay without the limit (HEXT_RELAY_FULL_URL), if install.sh set it up.
+EnvironmentFile=-/etc/hext/relay-full.env
 ExecStart=/usr/local/bin/hext-server --listen 127.0.0.1:8080 --db /var/lib/hext/hext-server.db --behind-proxy
 Restart=always
 RestartSec=5

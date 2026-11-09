@@ -54,6 +54,8 @@ pub struct Client {
     takes_presence: bool,
     /// The server answers [`ClientMsg::Account`].
     takes_accounts: bool,
+    /// The relay the server says to use instead of the build's.
+    relay: Option<crate::RelayHint>,
     next_request: u64,
 }
 
@@ -103,6 +105,7 @@ impl Client {
                 takes_attempts: false,
                 takes_presence: false,
                 takes_accounts: false,
+                relay: None,
                 next_request: 1,
             };
             let nonce = match client.recv().await? {
@@ -132,11 +135,13 @@ impl Client {
                     takes_attempts,
                     takes_presence,
                     takes_accounts,
+                    relay,
                 } => {
                     client.id = id;
                     client.takes_attempts = takes_attempts;
                     client.takes_presence = takes_presence;
                     client.takes_accounts = takes_accounts;
+                    client.relay = relay;
                 }
                 other => return Err(unexpected(&other)),
             }
@@ -213,6 +218,12 @@ impl Client {
     /// Whether the server answers [`ClientMsg::Account`].
     pub fn takes_accounts(&self) -> bool {
         self.takes_accounts
+    }
+
+    /// The relay the server says this device should use (`None`: the
+    /// build's).
+    pub fn relay(&self) -> Option<&crate::RelayHint> {
+        self.relay.as_ref()
     }
 
     /// Which of `ids` are online, of those the server tells this device

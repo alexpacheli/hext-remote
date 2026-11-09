@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use hext_crypto::{DeviceKey, PublicKey};
 use iroh::endpoint::{IdleTimeout, QuicTransportConfig, presets};
-use iroh::{EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey};
+use iroh::{EndpointAddr, EndpointId, RelayConfig, RelayMode, RelayUrl, SecretKey};
 
 use crate::{Connection, Endpoint, NetError, Result};
 
@@ -143,6 +143,55 @@ pub struct PathInfo {
     /// Through the relay (otherwise direct, peer to peer).
     pub relay: bool,
     pub rtt: Duration,
+}
+
+/// The QUIC address discovery port of a relay the build names.
+const DEFAULT_QUIC_PORT: u16 = 7842;
+
+/// An endpoint's relay: the build's, or another the signaling server names
+/// (its account's relay, without the per-device limit).
+#[derive(Debug)]
+pub struct RelaySwitch {
+    /// The build's (`None`: no relay at all, and nothing to switch).
+    default: Option<RelayUrl>,
+    /// The one the endpoint has now.
+    current: tokio::sync::Mutex<Option<RelayUrl>>,
+}
+
+impl RelaySwitch {
+    /// For an endpoint bound with relay `default`.
+    pub fn new(default: Option<RelayUrl>) -> Self {
+        Self {
+            current: tokio::sync::Mutex::new(default.clone()),
+            default,
+        }
+    }
+
+    /// Uses relay `named` (its URL and QUIC address discovery port), or the
+    /// build's one with `None` (or a URL that does not parse).
+    pub async fn follow(&self, endpoint: &Endpoint, named: Option<(&str, u16)>) {
+        let Some(default) = &self.default else {
+            return;
+        };
+        let (url, port) = named
+            .and_then(|(url, port)| Some((url.parse::<RelayUrl>().ok()?, port)))
+            .unwrap_or_else(|| (default.clone(), DEFAULT_QUIC_PORT));
+        let mut current = self.current.lock().await;
+        if current.as_ref() == Some(&url) {
+            return;
+        }
+        let mut config = RelayConfig::from(url.clone());
+        if let Some(quic) = config.quic.as_mut() {
+            quic.port = port;
+        }
+        endpoint
+            .insert_relay(url.clone(), std::sync::Arc::new(config))
+            .await;
+        if let Some(old) = current.replace(url.clone()) {
+            endpoint.remove_relay(&old).await;
+        }
+        tracing::info!("relay: {url}");
+    }
 }
 
 /// The connection's selected path, if one is.
