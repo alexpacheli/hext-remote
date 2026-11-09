@@ -1,17 +1,45 @@
 #!/usr/bin/env bash
-# Installs (or updates) the Hext Remote services on the VM: hext-server and
-# iroh-relay behind Caddy. Run from the repository root, as a user with sudo:
+# Installs (or updates) the Hext Remote services on a Debian or Ubuntu
+# server: hext-server and iroh-relay behind Caddy. Run from the repository
+# root, as a user with sudo, with your domain (the names signal.<domain> and
+# relay.<domain> must already point to this server):
 #
-#   ./deploy/install.sh
+#   HEXT_DOMAIN=example.org ./deploy/install.sh
 #
-# Safe to run again (to update after a `git pull`): it rebuilds, keeps the
-# database and the secret, and restarts the services.
+# (Or each name by itself: SIGNAL_HOST=… RELAY_HOST=… ./deploy/install.sh.)
+# The names are kept in /etc/hext/hosts.env, so to update after a `git pull`
+# it is just ./deploy/install.sh: it rebuilds, keeps the database and the
+# secret, and restarts the services.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 IROH_RELAY_VERSION=1.4.1
+HOSTS=/etc/hext/hosts.env
 
 step() { printf '\n==> %s\n' "$*"; }
+
+step "Names"
+if [ -z "${HEXT_DOMAIN:-}${SIGNAL_HOST:-}${RELAY_HOST:-}" ]; then
+    if sudo test -f "$HOSTS"; then
+        SIGNAL_HOST=$(sudo sed -n 's/^SIGNAL_HOST=//p' "$HOSTS")
+        RELAY_HOST=$(sudo sed -n 's/^RELAY_HOST=//p' "$HOSTS")
+    elif grep -qs '^signal\.hext\.com\.br ' /etc/caddy/Caddyfile; then
+        # Installed before the names were a setting: the names it had.
+        SIGNAL_HOST=signal.hext.com.br
+        RELAY_HOST=relay.hext.com.br
+    fi
+fi
+SIGNAL_HOST=${SIGNAL_HOST:-${HEXT_DOMAIN:+signal.$HEXT_DOMAIN}}
+RELAY_HOST=${RELAY_HOST:-${HEXT_DOMAIN:+relay.$HEXT_DOMAIN}}
+for name in "$SIGNAL_HOST" "$RELAY_HOST"; do
+    if ! [[ $name =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && $name == *.* ]]; then
+        echo "Informe o domínio: HEXT_DOMAIN=exemplo.com.br ./deploy/install.sh" >&2
+        echo "(os nomes signal.<domínio> e relay.<domínio> devem apontar para este servidor)" >&2
+        exit 1
+    fi
+done
+echo "sinalização: $SIGNAL_HOST"
+echo "relay:       $RELAY_HOST"
 
 step "Caddy"
 if ! command -v caddy >/dev/null; then
@@ -41,6 +69,7 @@ fi
 
 step "Configuration"
 sudo mkdir -p /etc/hext
+printf 'SIGNAL_HOST=%s\nRELAY_HOST=%s\n' "$SIGNAL_HOST" "$RELAY_HOST" | sudo tee "$HOSTS" >/dev/null
 if ! sudo test -f /etc/hext/secrets.env; then
     # The secret the relay presents to hext-server when asking about a device.
     token=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
@@ -48,8 +77,11 @@ if ! sudo test -f /etc/hext/secrets.env; then
         sudo tee /etc/hext/secrets.env >/dev/null
     sudo chmod 600 /etc/hext/secrets.env
 fi
-sudo install -m 644 deploy/iroh-relay.toml /etc/hext/iroh-relay.toml
-sudo install -m 644 deploy/Caddyfile /etc/caddy/Caddyfile
+# The names into the files, in place of {$SIGNAL_HOST} and {$RELAY_HOST}.
+names() { sed -e "s/{\$SIGNAL_HOST}/$SIGNAL_HOST/g" -e "s/{\$RELAY_HOST}/$RELAY_HOST/g" "$1"; }
+names deploy/iroh-relay.toml | sudo tee /etc/hext/iroh-relay.toml >/dev/null
+names deploy/Caddyfile | sudo tee /etc/caddy/Caddyfile >/dev/null
+sudo chmod 644 /etc/hext/iroh-relay.toml /etc/caddy/Caddyfile
 sudo install -m 644 deploy/hext-server.service /etc/systemd/system/hext-server.service
 sudo install -m 644 deploy/iroh-relay.service /etc/systemd/system/iroh-relay.service
 sudo systemctl daemon-reload
@@ -98,8 +130,8 @@ check() {
     curl -fsS --max-time 10 "$1" >/dev/null || true
     echo "FALHA $1"
 }
-check https://signal.hext.com.br/health
-check https://relay.hext.com.br/generate_204
+check "https://$SIGNAL_HOST/health"
+check "https://$RELAY_HOST/generate_204"
 systemctl --no-pager --lines=0 status caddy hext-server iroh-relay | grep -E '●|Active'
 echo
 echo "Logs: journalctl -u hext-server -u iroh-relay -u caddy -f"

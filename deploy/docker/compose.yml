@@ -1,0 +1,65 @@
+# The whole Hext Remote server with Docker: hext-server (IDs, presence,
+# signaling), iroh-relay (sessions that cannot connect directly) and Caddy
+# (TLS from Let's Encrypt). From this folder, with .env filled in (see
+# .env.example):
+#
+#   docker compose up -d --build
+#
+# Only Caddy (80 and 443 TCP) and the relay's address discovery (7842 UDP)
+# are reachable from the internet.
+
+name: hext
+
+services:
+  hext-server:
+    build:
+      context: ../..
+      dockerfile: apps/hext-server/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HEXT_RELAY_TOKEN: ${HEXT_RELAY_TOKEN:?gere com openssl rand -hex 32}
+    volumes:
+      - server:/data
+    # No published port: only Caddy (X-Forwarded-For) and the relay reach it.
+
+  relay:
+    build:
+      context: .
+      dockerfile: relay.Dockerfile
+    restart: unless-stopped
+    environment:
+      RELAY_HOST: relay.${HEXT_DOMAIN:?defina o domínio no .env}
+      IROH_RELAY_HTTP_BEARER_TOKEN: ${HEXT_RELAY_TOKEN}
+    volumes:
+      # Caddy's certificate for the relay's name, for QUIC (read only).
+      - caddy-data:/caddy:ro
+    ports:
+      - "7842:7842/udp"
+    depends_on:
+      - hext-server
+
+  caddy:
+    image: caddy:2.10.2
+    restart: unless-stopped
+    environment:
+      SIGNAL_HOST: signal.${HEXT_DOMAIN}
+      RELAY_HOST: relay.${HEXT_DOMAIN}
+      SIGNAL_UPSTREAM: hext-server:8080
+      RELAY_UPSTREAM: relay:3340
+    volumes:
+      - ../Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - hext-server
+      - relay
+
+volumes:
+  # The database: back it up. Without it, the computers get new IDs.
+  server:
+  caddy-data:
+  caddy-config:

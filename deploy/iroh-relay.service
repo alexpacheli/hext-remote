@@ -4,7 +4,7 @@ After=network-online.target caddy.service hext-server.service
 Wants=network-online.target
 
 [Service]
-# As Caddy's user, to read the certificate Caddy keeps for relay.hext.com.br.
+# As Caddy's user, to read the certificate Caddy keeps for the relay's name.
 User=caddy
 Group=caddy
 EnvironmentFile=/etc/hext/secrets.env

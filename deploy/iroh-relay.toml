@@ -1,6 +1,7 @@
 # iroh-relay behind Caddy: plain HTTP on 127.0.0.1 (Caddy does TLS on 443),
 # and QUIC address discovery on UDP 7842, which needs the certificate: it is
 # read from Caddy's files and reloaded as Caddy renews them.
+# {$RELAY_HOST} is the relay's name: install.sh writes it in.
 
 enable_relay = true
 http_bind_addr = "127.0.0.1:3340"
@@ -8,8 +9,8 @@ enable_quic_addr_discovery = true
 
 [tls]
 cert_mode = "Reloading"
-manual_cert_path = "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/relay.hext.com.br/relay.hext.com.br.crt"
-manual_key_path = "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/relay.hext.com.br/relay.hext.com.br.key"
+manual_cert_path = "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_HOST}/{$RELAY_HOST}.crt"
+manual_key_path = "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_HOST}/{$RELAY_HOST}.key"
 quic_bind_addr = "[::]:7842"
 # HTTPS is Caddy's job: the relay serves HTTP only (QUIC keeps its TLS).
 dangerous_http_only = true

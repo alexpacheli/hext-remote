@@ -1,5 +1,10 @@
 # Caddy in front of the Hext Remote services: TLS (Let's Encrypt, automatic)
-# on 443 for both names, everything else on 127.0.0.1.
+# on 443 for both names, everything else private.
+#
+# {$SIGNAL_HOST} and {$RELAY_HOST} are the two names (signal.<domain> and
+# relay.<domain>): install.sh writes them in; with Docker, Caddy reads them
+# from the environment. The upstreams are this machine's ports unless the
+# environment says otherwise (Docker: the containers).
 
 {
 	# Let's Encrypt only (no fallback to another CA): iroh-relay reads the
@@ -7,18 +12,18 @@
 	acme_ca https://acme-v02.api.letsencrypt.org/directory
 }
 
-signal.hext.com.br {
+{$SIGNAL_HOST} {
 	# The relay's access check is for the relay on this machine only.
 	respond /v1/relay-access 404
-	reverse_proxy 127.0.0.1:8080
+	reverse_proxy {$SIGNAL_UPSTREAM:127.0.0.1:8080}
 }
 
-relay.hext.com.br {
-	reverse_proxy 127.0.0.1:3340
+{$RELAY_HOST} {
+	reverse_proxy {$RELAY_UPSTREAM:127.0.0.1:3340}
 }
 
 # Plain HTTP to the relay too, not a redirect: iroh's captive-portal probe
 # (http://relay…/generate_204) expects the relay's own answer.
-http://relay.hext.com.br {
-	reverse_proxy 127.0.0.1:3340
+http://{$RELAY_HOST} {
+	reverse_proxy {$RELAY_UPSTREAM:127.0.0.1:3340}
 }

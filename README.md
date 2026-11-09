@@ -1,281 +1,211 @@
 # Hext Remote
 
-Acesso e suporte remoto para Windows, macOS e Linux, focado em fluidez.
+Acesso e suporte remoto para Windows, macOS e Linux, focado em fluidez. Software livre ([AGPL-3.0](LICENSE)),
+escrito em Rust.
 
-- Plano completo: [ARCHITECTURE.md](ARCHITECTURE.md)
-- Fase atual: **F2 — Mac como host** (host Windows e macOS; visualizador em Windows, macOS e Linux)
+- **Conexão pelo ID:** cada computador tem um ID de 9 dígitos. O técnico digita o ID, e quem está do outro lado
+  aceita ou recusa.
+- **Direto quando possível:** os dois computadores se conectam direto, mesmo em redes diferentes. Quando não dá
+  (um firewall corporativo, por exemplo), a sessão passa por um relay, sempre cifrada de ponta a ponta.
+- **Vídeo pela placa de vídeo:** captura, codificação H.264 e exibição pela GPU, com volta automática para o
+  processador.
+- **Acesso não assistido:** com o serviço instalado, o computador fica online desde o boot. O técnico entra com
+  uma senha definida pelo dono ou, depois, sem senha, pela chave dele ou pela conta. No Windows, isso vale
+  também na tela de login e no UAC.
+- **Na sessão:** vários monitores, área de transferência, arquivos, chat, reinício remoto e até 8 sessões ao
+  mesmo tempo.
+- **Contas (opcionais):** lista de computadores sincronizada, compartilhamento com outras contas e registro dos
+  acessos.
+- **Transparente:** toda sessão aparece na tela enquanto dura, e cada acesso fica registrado no computador.
+
+## Como funciona
+
+```
+                    ┌──────────────────────────────┐
+         ┌─────────►│  Servidor de sinalização     │◄─────────┐
+         │          │  (hext-server): IDs,         │          │
+         │          │  presença e pedidos          │          │
+         │          └──────────────────────────────┘          │
+         │                                                    │
+  ┌──────┴───────┐     sessão direta (P2P, QUIC)       ┌──────┴───────┐
+  │   Técnico    │◄───────────────────────────────────►│   Cliente    │
+  │ Hext Remote  │                                     │ Hext Remote  │
+  └──────┬───────┘                                     └──────┬───────┘
+         │          ┌──────────────────────────────┐          │
+         └─────────►│  Relay (iroh-relay): só sem  │◄─────────┘
+                    │  conexão direta; não vê o    │
+                    │  conteúdo                    │
+                    └──────────────────────────────┘
+```
+
+1. Ao abrir, o app se registra no **servidor de sinalização** com a chave do computador (Ed25519, criada na
+   primeira execução) e recebe o seu ID.
+2. O técnico pede para conectar a um ID. O servidor repassa o pedido, e o outro lado aceita, ou confere a senha
+   ou a chave do técnico.
+3. Os dois abrem uma conexão **QUIC** entre si, atravessando o NAT. Se não conseguirem, usam o **relay**.
+4. A sessão é cifrada de ponta a ponta entre os dois computadores: nem o servidor nem o relay veem a tela, o
+   teclado ou os arquivos. A senha de acesso nunca trafega (SPAKE2).
+
+Detalhes em [ARCHITECTURE.md](ARCHITECTURE.md) e no plano de cada fase ([F3](docs/F3.md) a [F6](docs/F6.md)).
+
+## Baixar e usar
+
+Os instaladores ficam em [Releases](https://github.com/alexpacheli/remote-control/releases):
+
+| Sistema | Arquivo | Observação |
+|---|---|---|
+| Windows | `HextRemote-<versão>-x64.msi` | Instala o app e o serviço (acesso não assistido, tela de login). Para muitos computadores: `msiexec /i HextRemote-<versão>-x64.msi /qn`. |
+| Windows | `HextRemote-<versão>-portable.exe` | Para um atendimento rápido, sem instalar. |
+| macOS | `HextRemote-<versão>.dmg` | Arraste o Hext Remote para Aplicativos. |
+| Linux | `.deb`, `.rpm` ou `.AppImage` | Por enquanto, linha de comando (`hext-remote`). |
+
+**Primeiro atendimento:**
+
+1. No computador do cliente, abra o Hext Remote. A tela inicial mostra o **ID** dele.
+2. No computador do técnico, abra o Hext Remote, digite esse ID e clique em **Conectar**.
+3. No cliente, aparece o pedido com o nome do técnico e as permissões. Ao aceitar, a sessão começa.
+
+Para entrar sem ninguém aceitar, instale o serviço (o `.msi` já instala) e defina a senha de acesso na aba
+**Segurança**. O roteiro completo de cada recurso, inclusive pela linha de comando, está em
+[docs/testes.md](docs/testes.md), e os roteiros de atendimento em campo, em
+[docs/atendimento-campo.md](docs/atendimento-campo.md).
+
+**Atualização.** Com o serviço do Windows, o Hext Remote se atualiza sozinho, entre uma sessão e outra. Nos
+outros casos, a tela inicial avisa quando há uma versão nova (no Linux: `hext-remote update check`). Cada versão é
+assinada pelo pipeline de release, e o app recusa qualquer outra.
+
+## Servidor próprio
+
+A versão oficial usa o nosso servidor (`signal.hext.com.br` e `relay.hext.com.br`). Quem atende muitos
+computadores, quer os dados na própria infraestrutura ou distribui uma versão modificada sobe o próprio servidor
+e compila o app apontando para ele. O servidor e o relay são deste repositório e do projeto
+[iroh](https://github.com/n0-computer/iroh), sem nenhum serviço pago.
+
+**Do que precisa:**
+
+- Um servidor Linux com IP público. Para começar, 1 a 2 vCPU e 1 a 2 GB de RAM bastam (a Oracle Cloud tem
+  um plano gratuito com bastante tráfego). Prefira um servidor perto dos usuários, por causa do relay.
+- Um domínio com dois nomes apontando para o IP do servidor: `signal.<domínio>` e `relay.<domínio>`. Com a
+  Cloudflare, deixe os dois em **DNS only** (nuvem cinza).
+- As portas **80 e 443 TCP** e **7842 UDP** abertas no firewall do provedor.
+
+**Quanto consome.** A sinalização é leve: ela só guarda IDs e presença e repassa os pedidos de conexão, e um
+servidor pequeno atende milhares de computadores conectados. O que custa é o **relay**: uma sessão que passa por
+ele usa de 0,5 a 3 Mbps (cerca de 0,2 a 1,3 GB por hora). A maioria das sessões é direta e não passa por ele.
+
+### Opção 1: Docker
+
+Com o [Docker](https://docs.docker.com/engine/install/) instalado no servidor:
+
+```sh
+git clone https://github.com/alexpacheli/remote-control.git
+cd remote-control/deploy/docker
+cp .env.example .env
+nano .env        # HEXT_DOMAIN e HEXT_RELAY_TOKEN (gere com: openssl rand -hex 32)
+docker compose up -d --build
+```
+
+Isso sobe três contêineres: o `hext-server`, o `iroh-relay` e o Caddy, que obtém os certificados da Let's Encrypt
+sozinho. Na primeira vez, a compilação leva alguns minutos, e o relay reinicia algumas vezes até o Caddy obter o
+certificado (menos de um minuto). Para conferir:
+
+```sh
+curl https://signal.<domínio>/health        # ok
+docker compose logs -f
+```
+
+Para atualizar: `git pull && docker compose up -d --build`. O banco fica no volume `hext_server`: faça backup dele.
+Sem ele, os computadores ganham IDs novos.
+
+### Opção 2: direto no sistema (systemd)
+
+Num Debian ou Ubuntu, com o [Rust](https://rustup.rs) instalado:
+
+```sh
+git clone https://github.com/alexpacheli/remote-control.git
+cd remote-control
+HEXT_DOMAIN=<domínio> ./deploy/install.sh
+```
+
+O script instala o Caddy, compila o `hext-server` e o `iroh-relay`, gera o segredo do relay, cria os serviços do
+systemd, libera as portas no iptables e testa os dois endereços. Para atualizar: `git pull && ./deploy/install.sh`
+(o domínio fica guardado). Detalhes, logs e backup em [docs/deploy.md](docs/deploy.md).
+
+### E-mails da conta (opcional)
+
+Para que as contas recebam os códigos de verificação, informe um servidor SMTP: no Docker, as linhas
+`HEXT_SMTP_*` do `.env`; no systemd, o arquivo `/etc/hext/mail.env`
+([docs/hext-server.md](docs/hext-server.md)). Sem isso, os códigos vão só para o log do servidor.
+
+### O app para o seu servidor
+
+O endereço do servidor e do relay entra no app na compilação, pelas variáveis `HEXT_SERVER` e `HEXT_RELAY`:
+
+- **Pelo GitHub (recomendado):** faça um fork deste repositório e, em **Settings → Secrets and variables →
+  Actions → Variables**, crie `HEXT_SERVER` = `wss://signal.<domínio>` e `HEXT_RELAY` = `https://relay.<domínio>`.
+  Cada tag `v*` gera os instaladores em Releases do seu fork, e o app procura atualizações lá. Para assinar as
+  atualizações e os instaladores, veja a seção 4 de [docs/F6.md](docs/F6.md).
+- **Na sua máquina:**
+
+  ```sh
+  HEXT_SERVER=wss://signal.<domínio> HEXT_RELAY=https://relay.<domínio> cargo build --release -p hext
+  ```
+
+Para um teste rápido, sem compilar: `HextRemote host --server wss://signal.<domínio> --relay https://relay.<domínio>`
+e o mesmo no `view`. Os computadores de um servidor não enxergam os de outro.
+
+## Compilar
+
+Precisa do [Rust](https://rustup.rs). A versão é fixada em `rust-toolchain.toml` e instalada sozinha. No Windows,
+precisa também do Visual Studio Build Tools com a carga "Desenvolvimento para desktop com C++".
+
+```sh
+cargo run -p hext              # a interface
+cargo run -p hext -- --help    # a linha de comando
+cargo run -p hext-server       # o servidor, em http://127.0.0.1:8080 (teste: --server ws://127.0.0.1:8080)
+cargo test --workspace         # testes (inclui um de ponta a ponta host → cliente)
+```
+
+Variáveis da compilação, todas opcionais:
+
+| Variável | O que define | Sem ela |
+|---|---|---|
+| `HEXT_SERVER` | Servidor de sinalização | `wss://signal.hext.com.br` |
+| `HEXT_RELAY` | Relay | `https://relay.hext.com.br` |
+| `HEXT_RELEASES` | Página das versões, onde o app procura atualizações | as Releases deste repositório |
+| `HEXT_UPDATE_KEY` | Chave pública que assina as atualizações | sem atualização automática |
 
 ## Estrutura
 
 | Pasta | Conteúdo |
 |---|---|
+| `apps/hext` | O app: interface (Tauri), `host`, `view` e `service` |
+| `apps/hext-server` | Servidor: IDs, presença, sinalização e contas ([docs/hext-server.md](docs/hext-server.md)) |
 | `crates/proto` | Mensagens do protocolo: handshake, vídeo, input |
-| `crates/crypto` | Identidade do computador: chave Ed25519 criada na primeira execução e guardada no disco |
+| `crates/crypto` | Identidade do computador (Ed25519) e senha de acesso (SPAKE2) |
 | `crates/signal` | Sinalização: ID de 9 dígitos, mensagens entre o app e o servidor, cliente WebSocket |
-| `crates/net` | Transporte (`iroh`/QUIC): direto quando possível, relay senão; cada computador é a sua chave |
-| `crates/capture` | Captura de tela (DXGI no Windows, ScreenCaptureKit no macOS) e imagem de teste |
-| `crates/codec` | H.264 (codificar e decodificar): placa de vídeo (Media Foundation no Windows, VideoToolbox no Mac) ou OpenH264 em software |
-| `crates/input` | Mapa de teclas e injeção de mouse/teclado (SendInput no Windows, CGEvent no macOS) |
+| `crates/net` | Transporte (`iroh`/QUIC): direto quando possível, relay senão |
+| `crates/capture` | Captura de tela (DXGI no Windows, ScreenCaptureKit no macOS) |
+| `crates/codec` | H.264: placa de vídeo (Media Foundation, VideoToolbox) ou OpenH264 em software |
+| `crates/input` | Mapa de teclas e injeção de mouse e teclado (SendInput, CGEvent) |
 | `crates/render` | Renderização na GPU (wgpu), YUV → RGB no shader |
 | `crates/session` | Pipelines do host e do cliente |
 | `crates/metrics` | Estatísticas de latência |
-| `apps/hext` | O app: interface (Tauri, sem comando), `host`, `view` e `service` |
-| `apps/hext-server` | Servidor: IDs, presença e sinalização (veja [docs/hext-server.md](docs/hext-server.md)) |
+| `deploy` | Servidor: script do systemd, Caddy, relay e Docker |
+| `installer` | Instalador do Windows (WiX) |
 
-## Desenvolvimento
+## Contribuir
 
-Precisa do [Rust](https://rustup.rs). A versão é fixada em `rust-toolchain.toml` e instalada sozinha. No
-Windows, precisa também do Visual Studio Build Tools com a carga "Desenvolvimento para desktop com C++".
-
-```sh
-cargo test --workspace     # testes (inclui um teste de ponta a ponta host → cliente)
-cargo run -p hext          # a interface
-cargo run -p hext -- --help
-```
-
-## Instalar
-
-Os instaladores ficam em **GitHub → Releases** (a partir da 0.6.0, F6, [plano](docs/F6.md)):
-
-- **Windows:** `HextRemote-<versão>-x64.msi` instala o app e o serviço (para acesso sem aceite e na tela de
-  login). Para muitos computadores: `msiexec /i HextRemote-<versão>-x64.msi /qn`. Para um atendimento
-  rápido sem instalar: `HextRemote-<versão>-portable.exe`.
-- **macOS:** `HextRemote-<versão>.dmg`: arraste o Hext Remote para Aplicativos.
-- **Linux** (linha de comando até a F7): `.deb` (Ubuntu, Debian), `.rpm` (Fedora, RHEL) ou `.AppImage`. O
-  programa se chama `hext-remote`.
-
-Sem os certificados configurados (veja a seção 4 do plano), os instaladores saem sem assinatura e o sistema
-avisa, como nos executáveis do CI abaixo.
-
-**Atualização.** Com o serviço do Windows, o Hext Remote se atualiza sozinho, entre uma sessão e outra. Nos
-outros casos, a tela inicial avisa quando há uma versão nova (no Linux: `hext-remote update check`). Cada
-versão é assinada pelo pipeline de release, e o app recusa qualquer outra.
-
-## Baixar os executáveis do CI
-
-Cada push gera executáveis em **GitHub → Actions → CI → (execução) → Artifacts**:
-
-- `HextRemote-windows-x64` → `HextRemote.exe`
-- `HextRemote-macos-universal` → `HextRemote` (Intel e Apple Silicon)
-- `hext-remote-linux-x64` → `hext-remote`
-
-Os binários ainda não são assinados (isso entra na F6):
-
-- **Windows:** o SmartScreen pode avisar. Clique em "Mais informações" → "Executar assim mesmo".
-- **macOS:** antes de rodar, no Terminal, na pasta do arquivo:
-
-  ```sh
-  chmod +x HextRemote && xattr -d com.apple.quarantine HextRemote
-  ```
-
-## Testar: controlar o Windows a partir do Mac (mesma rede)
-
-1. **No Windows** (o computador que será acessado), no PowerShell, na pasta do arquivo:
-
-   ```sh
-   .\HextRemote.exe host
-   ```
-
-   Ele mostra o **endereço**, um **código de acesso** e a **chave** deste computador, além do comando
-   pronto para o outro computador. Permita o acesso quando o Firewall perguntar (porta UDP 7420).
-   A chave é criada na primeira execução em `%APPDATA%\HextRemote\device.key` (no Mac,
-   `~/Library/Application Support/HextRemote`) e não muda: o comando do outro computador pode ser guardado.
-
-2. **No Mac**, cole o comando mostrado pelo Windows, trocando o nome do programa:
-
-   ```sh
-   ./HextRemote view 192.168.0.10 --code 482913557 --key <chave>
-   ```
-
-   Abre uma janela com a tela do Windows. Mouse e teclado da janela controlam o Windows.
-   O título da janela mostra fps, banda, tempos de captura/encode/decode e a latência (RTT).
-   O visualizador decodifica na placa de vídeo quando pode (`(GPU)` ao lado do decode);
-   `view ... --decoder software` força o processador.
-
-- **Tecla Command:** por padrão funciona como Ctrl (Cmd+C copia no Windows). Use `--cmd-key win` para que ela seja a tecla Windows.
-- **Fora de casa:** conecte pelo ID (abaixo); pelo IP, os dois precisam estar na mesma rede (ou no Tailscale).
-- **Outros monitores:** o técnico troca de monitor durante a sessão com **Ctrl+Alt+1..9** ou pelos botões
-  numerados no topo da janela. `host --display 1` começa no segundo monitor.
-- **Ajustes:** `host --bitrate-mbps 15 --fps 60`.
-- **Codificador:** por padrão usa a placa de vídeo (NVIDIA, AMD ou Intel, via Media Foundation) e volta
-  para o processador se ela não existir ou falhar. O título da janela mostra `(GPU)` ou `(CPU)` ao lado
-  do tempo de encode. Para forçar: `host --encoder software` ou `host --encoder hardware`.
-
-## Testar: conectar pelo ID (servidor de sinalização)
-
-Em vez de IP, código e chave, o técnico digita o **ID de 9 dígitos** do host, e quem está no
-host aceita ou recusa o pedido. O app usa o nosso servidor (`wss://signal.hext.com.br`, veja
-[docs/deploy.md](docs/deploy.md)) por padrão:
-
-1. **No Windows** (host): `.\HextRemote.exe host`. Ele mostra `Seu ID: 482 913 557`.
-2. **No Mac** (técnico): `./HextRemote view 482913557`.
-3. **No Windows**, o host pergunta `"Mac" (ID …) quer acessar este computador. Aceitar? [s/N]`. Digite
-   `s` e Enter.
-
-Outro servidor (o `hext-server` vem junto nos artefatos, para testes): `--server ws://<IP>:8080` nos dois;
-`--server off` desliga os IDs (só conexão pelo IP). O nosso relay só atende computadores registrados no
-nosso servidor: com outro servidor, sem servidor ou pelo IP, a conexão é só direta, a não ser que você
-informe outro relay (`--relay <url>`).
-
-Na primeira conexão, o técnico guarda a chave do host (`known_hosts`, na mesma pasta da chave). Se outro
-computador aparecer com o mesmo ID, a conexão é bloqueada com um aviso.
-
-Depois do aceite, os dois tentam se conectar **direto**, mesmo em redes diferentes (atravessando o NAT);
-quando não dá (firewall corporativo, por exemplo), a conexão passa pelo **relay** em São Paulo
-(`relay.hext.com.br`). O título da janela mostra `(P2P)` ou `(relay)`. `--relay off` desliga o relay;
-`--relay <url>` usa outro.
-
-## Testar: Hext Remote instalado como serviço (Windows)
-
-Instalado, o computador fica online com o **ID da máquina** desde o boot, sem ninguém abrir o app
-(F4, marco 1; veja [docs/F4.md](docs/F4.md)).
-
-1. **No Windows**, num terminal **como administrador**: `.\HextRemote.exe service install`. Ele copia o
-   app para `C:\Program Files\Hext Remote`, inicia o serviço e mostra o ID deste computador.
-2. **No Mac**: `./HextRemote view <ID>`.
-3. **No Windows**, aparece uma janela perguntando se aceita. Clique em **Sim**.
-
-Para dar um nome ao computador, que é o que o técnico vê na sessão e na lista de computadores, clique em
-**Alterar** ao lado do nome, na tela inicial (vazio volta ao nome do sistema). Pelo terminal:
-`service install --name "Recepção"` ou, depois, `service name "Recepção"` (`--reset` volta ao nome do sistema).
-No Windows, com o serviço, o Windows pede permissão de administrador e o serviço reinicia.
-
-`service status` mostra o estado e o ID; `service uninstall` remove o serviço (`--purge` apaga também a
-identidade, e o ID deixa de valer). Os logs ficam em `C:\ProgramData\HextRemote` (`service.log` e
-`agent.log`), uma pasta que só administradores abrem.
-
-Com o serviço, o técnico vê e controla também a **tela de login, o bloqueio e os prompts do UAC**, e manda
-`Ctrl+Alt+Del` com **Ctrl+Alt+End** (ou Ctrl+Alt+Delete no Mac). Com a permissão de reiniciar, aperte
-**Ctrl+Alt+R** duas vezes em até 5 segundos: o computador reinicia, fecha os programas abertos sem pedir para
-salvar, e o técnico volta sozinho quando ele estiver online, sem novo aceite. Quedas de rede também
-reconectam sozinhas. O acesso pelo IP com código fica
-desligado no serviço: só pelo ID, com aceite.
-
-Com a permissão de arquivos, arraste um arquivo para a janela da sessão: ele vai para a pasta Downloads do
-usuário logado no host. No host, **Enviar arquivo** na barra manda um arquivo para o técnico, que confirma
-antes de receber em Downloads. Nada é substituído: um nome repetido chega como `a (1).txt`. Pastas não são
-enviadas, e uma transferência interrompida não é retomada.
-
-### Acesso não assistido
-
-Com a senha, o técnico entra sem que ninguém aceite no computador. Quem liga é o dono, como administrador:
-na aba **Segurança**, **Definir a senha de acesso** (o Windows pede administrador e uma janela própria pede a
-senha; o mesmo cartão troca e desliga). Pela linha de comando:
+Sugestões e relatos de problemas são bem-vindos em [Issues](https://github.com/alexpacheli/remote-control/issues).
+Para enviar uma mudança, abra um pull request. O CI roda nos três sistemas:
 
 ```sh
-HextRemote.exe service password        # define a senha (ou troca)
-HextRemote.exe service password --off  # desliga
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked
+cargo test --workspace --locked
 ```
 
-Quem entra com a senha também pode copiar e colar texto, assim como quem foi aceito com **Área de transferência** marcada. Só passa o que for copiado durante a sessão, até 512 KB.
-
-No técnico, preencha a senha na tela inicial ou use `view <ID> --password-stdin`. A senha nunca trafega
-(SPAKE2) e, depois de 5 erros, o computador espera 1, 5 e 15 minutos. Durante a sessão, a barra mostra
-quem está conectado, também na tela de login e com o computador bloqueado, e cada acesso fica registrado
-em `C:\ProgramData\HextRemote\audit.log`. A tela inicial guarda o nome e o ID dos computadores acessados,
-nunca a senha. Uma bolinha ao lado de cada um mostra se ele está online (verde) ou não (cinza), com o
-serviço instalado ou com o app aberto à mão. Ela só aparece para os computadores que aceitaram você, ou em
-que você entrou com a senha, nos últimos 90 dias.
-
-**Técnico vinculado.** Ao entrar com a senha, o técnico pode marcar **Entrar sem senha da próxima vez** (ou
-usar `view <ID> --password-stdin --remember`). Se a senha estiver certa, o computador passa a confiar na
-chave daquele técnico: nas próximas vezes ele conecta pelo ID, sem senha e sem ninguém aceitar. Nenhuma senha
-fica guardada, só a chave do técnico. Na tela inicial do computador, **Técnicos que entram sem senha** lista
-cada um com **Revogar**, e o dono também pode usar:
-
-```sh
-HextRemote.exe service technicians                  # lista
-HextRemote.exe service technicians --revoke <ID>    # revoga um
-HextRemote.exe service technicians --revoke-all     # revoga todos
-```
-
-Trocar ou desligar a senha revoga todos. Com a senha desligada, ninguém entra sem aceite, nem os vinculados.
-Cada vínculo, entrada e revogação vai para o `audit.log`.
-
-**Conta vinculada** (Windows, com o serviço). Com o computador em **Meus computadores** da sua conta, o
-botão **Deixar os dispositivos da conta entrarem sem aceite** (ou a linha de comando, como administrador)
-faz os dispositivos da lista da conta entrarem sem aceite e sem senha. Quem sai da lista deixa de entrar, e a
-sessão dele cai em até 30 segundos. O computador confere a lista ele mesmo: o servidor não consegue pôr
-ninguém nela.
-
-```sh
-HextRemote.exe service account               # mostra a conta vinculada
-HextRemote.exe service account <ID da lista> # vincula (o ID está no app, em Dispositivos)
-HextRemote.exe service account --off         # desvincula
-```
-
-**Compartilhar com outra conta.** Em Dispositivos, **Compartilhar** ao lado do computador abre o acesso aos
-dispositivos de outra conta: cole o **ID da lista** dela (ela o vê em Dispositivos), dê um nome, escolha as
-permissões e a validade. **Revogar** fecha na hora (uma sessão em andamento cai em até 30 segundos). Vale
-com o computador vinculado à sua conta.
-
-**Atividade.** Em Dispositivos, **Ver os acessos** mostra quem entrou nos computadores vinculados à conta, como
-a auditoria de cada um registrou. O `audit.log` de cada computador continua sendo o registro completo.
-
-Dá para atender vários computadores ao mesmo tempo (até 8), cada um na sua janela: conecte em um e depois em
-outro, pela mesma tela inicial. A seção **Sessões abertas** lista cada um, com **Mostrar** (traz a janela para
-a frente) e **Encerrar** (ou **Cancelar**, enquanto o outro lado ainda não aceitou). A área de transferência
-vale só para a janela usada por último, para que o texto de um cliente nunca chegue a outro.
-
-Na janela do visualizador, **Ctrl+Alt+Enter** entra e sai da tela cheia, com a imagem ocupando a tela
-inteira sem distorcer. Na borda esquerda da janela, no meio da altura, fica sempre uma faixa fina: passar o mouse
-nela abre os botões ao lado dela, que recolhem pouco depois de o mouse sair. (A borda de cima fica para a barra
-de sessão do outro computador, que recolhe lá.) Um deles faz o mesmo que o atalho. Se o outro computador
-tiver mais de um monitor, os botões numerados ficam ao lado: o 1 é o monitor principal, e os outros seguem da
-esquerda para a direita. **Ctrl+Alt+1..9** faz o mesmo.
-
-Para conversar durante a sessão, o técnico usa o botão com um balão ou **Ctrl+Alt+C**, e quem está no outro
-computador usa o botão **Chat** da barra de sessão. A janela abre sozinha quando chega uma mensagem, sem tirar
-o foco. O chat funciona nas conexões abertas pela tela inicial do app, e as mensagens não ficam salvas.
-
-## Testar: Hext Remote instalado no Mac
-
-Instalado, o Mac abre o Hext Remote sozinho a cada login, sem janela, com o mesmo ID do app (F4, marco 9).
-
-1. **No Mac**, no Terminal, **sem sudo**: `./HextRemote service install`. Ele monta o app em
-   `~/Library/Application Support/HextRemote/HextRemote.app`, inicia e mostra o ID.
-2. Na primeira vez, o macOS pede **Gravação de Tela** e **Acessibilidade** para o **Hext Remote**. Libere as
-   duas em **Ajustes do Sistema → Privacidade e Segurança** e rode `service install` de novo, para ele reabrir
-   com a Gravação de Tela.
-3. **No técnico**, conecte pelo ID. No Mac, aparece a janela de aceite, agora com **Reiniciar**.
-
-Com a permissão de reiniciar, **Ctrl+Alt+R** duas vezes reinicia o Mac. Os apps recebem o pedido para fechar, e
-um app com algo sem salvar pode segurar o reinício. O técnico volta sozinho quando alguém entrar no Mac, se for
-em até 10 minutos.
-
-**Senha de acesso no Mac (F6, marco 3).** Na aba **Segurança** do app instalado, **Definir a senha de acesso**
-(a senha vai numa janela do próprio macOS; no Terminal, `./HextRemote service password`, sem sudo). Com ela, um
-técnico entra sem aceite, pode marcar **Entrar sem senha da próxima vez** e inserir o Mac na conta dele, como no
-Windows. Vale depois que o usuário entra no Mac: a tela de login ainda fica de fora. `service technicians` e
-`service account` também valem no Mac, sem sudo.
-
-`service status` mostra o estado e o ID. `service uninstall` tira do login (`--purge` apaga também a chave, e o
-ID muda). O log fica em `~/Library/Application Support/HextRemote/ui.log`.
-
-## Testar: controlar o Mac a partir do Windows
-
-1. **No Mac**, no Terminal: `./HextRemote host`.
-   Na primeira vez o macOS pede duas permissões para o **Terminal** (é ele que "abre" o Hext Remote):
-   - **Gravação de Tela** — para enviar a imagem;
-   - **Acessibilidade** — para receber mouse e teclado.
-
-   Libere as duas em **Ajustes do Sistema → Privacidade e Segurança**, **feche o Terminal por completo
-   (Cmd+Q)** e abra de novo. O host avisa no terminal se alguma faltar.
-2. **No Windows**: `.\HextRemote.exe view <IP-do-Mac> --code ... --key ...` (o comando aparece no Mac).
-
-- **Teclado:** no Windows, **Ctrl funciona como Command** (Ctrl+C copia no Mac) e a tecla Windows vira Control.
-  Para manter o Ctrl normal: `view ... --ctrl-key ctrl`.
-- **Codificador:** o Mac usa o próprio chip de vídeo (VideoToolbox) e volta para o processador se ele
-  falhar; `host --encoder software` força o processador, para comparar. O título da janela no Windows
-  mostra `(GPU)` ou `(CPU)` ao lado do tempo de encode.
-- A imagem é capturada no tamanho "lógico" da tela (ex.: 1920×1080 num monitor 4K Retina), o que deixa
-  tudo mais leve.
-
-### Limitações atuais
-
-- No Linux o host ainda transmite só uma imagem de teste (`--test-pattern`).
-- No Mac a imagem ainda passa pela memória do sistema (1,5 bytes por pixel, já em NV12); no Windows ela vai direto da captura para o encoder pela GPU (zero-copy), exceto em placas sem processador de vídeo D3D11 ou com o encoder em outra placa (ex.: notebooks com duas GPUs), que voltam ao caminho pela memória.
-- Janelas abertas como administrador, a tela de UAC e a tela de bloqueio não recebem controle (precisam do serviço, na F4).
+Ao contribuir, você concorda em licenciar a sua contribuição sob a mesma licença do projeto.
 
 ## Licença
 
