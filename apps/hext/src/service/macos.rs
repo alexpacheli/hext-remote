@@ -445,9 +445,18 @@ pub fn remember_id(id: &str) {
     }
 }
 
+/// A line in the audit log, for the owner of the computer; also for the
+/// account's Atividade screen, while bound to one.
 fn audit(entry: &str) {
     super::kept::audit_to(super::user_log_file("audit"), entry);
+    if let Some(activity) = ACTIVITY.get() {
+        let _ = activity.send(entry.to_owned());
+    }
 }
+
+/// Where the installed app sends what the audit writes (unset elsewhere).
+static ACTIVITY: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>> =
+    std::sync::OnceLock::new();
 
 // ------------------------------------------------------- unattended access
 
@@ -577,6 +586,9 @@ pub fn login_access(key: &Arc<DeviceKey>, hub: &UiHub) -> Option<super::LoginAcc
     let access = access().ok()?;
     let owners = access.owners(key.clone());
     access.show_on(hub, &owners);
+    let (activity, activity_out) = tokio::sync::mpsc::unbounded_channel();
+    let _ = ACTIVITY.set(activity);
+    tokio::spawn(crate::owners::report_activity(owners.clone(), activity_out));
     let (attempts, attempts_out) = tokio::sync::mpsc::unbounded_channel();
     Some(super::LoginAccess {
         unattended: UnattendedAccess {
