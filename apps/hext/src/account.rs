@@ -1276,6 +1276,18 @@ mod tests {
         // ...and a technician with the password cannot take it over.
         assert!(owners.bind_asked([7; 32], &me).await.is_err());
         assert_eq!(owners.bound().unwrap().0, chain);
+        // Unless that account is gone: then another one may bind it.
+        let other = other_account(&mut world, "outro@example.com").await;
+        let other_chain = other.chain_id().unwrap();
+        let other_key = other.key().unwrap().public_key();
+        assert!(owners.bind_asked(other_chain, &other_key).await.is_err());
+        world
+            .state
+            .db
+            .tamper("DELETE FROM account_chain_ids WHERE chain_id IN (SELECT chain_id FROM account_chain_ids ORDER BY account_id LIMIT 1)")
+            .unwrap();
+        assert!(owners.bind_asked(other_chain, &other_key).await.unwrap());
+        assert_eq!(owners.bound().unwrap().0, other_chain);
 
         // Reinstalled (a new key, the same ID): the old one leaves the list.
         let new_key = DeviceKey::generate().unwrap().public_key().to_string();

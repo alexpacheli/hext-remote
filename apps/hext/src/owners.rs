@@ -127,7 +127,8 @@ impl Owners {
         let checked = self.0.checked.lock().expect("lock").clone();
         let Some(checked) = checked else {
             return self.stored().map(|_| {
-                "Vinculado a uma conta, mas a lista dela não confere: ninguém entra por ela agora."
+                "Vinculado a uma conta cuja lista não veio do servidor ou não confere (a conta pode \
+                 ter sido excluída): ninguém entra por ela agora."
                     .to_owned()
             });
         };
@@ -205,25 +206,34 @@ impl Owners {
     /// must be a device of that chain. This computer need not be on its list
     /// yet (the technician's app puts it there right after), but nobody
     /// comes in by the account until it is. Bound to another account by an
-    /// administrator: refused (they unbind first); one bound with the
+    /// administrator: refused (they unbind first), unless that account is
+    /// gone (deleted: the server has no list for it). One bound with the
     /// password is replaced (whoever has the password could do it anyway).
     /// Whether it bound now (`false`: it was bound to this one already).
     pub async fn bind_asked(&self, id: ChainId, viewer: &PublicKey) -> Result<bool> {
         let _busy = self.0.busy.lock().await;
+        let mut ask = vec![id];
+        let mut held_by = None;
         if let Some(stored) = self.stored() {
             if stored.chain == id {
                 return Ok(false);
             }
             if !stored.by_password {
-                bail!(
-                    "este computador já está vinculado a outra conta por um administrador: ele \
-                     desvincula antes (HextRemote service account --off)"
-                );
+                held_by = Some(stored.chain);
+                ask.push(stored.chain);
             }
         }
-        let chains = tokio::time::timeout(FETCH_TIME, self.fetch(&[id]))
+        let chains = tokio::time::timeout(FETCH_TIME, self.fetch(&ask))
             .await
             .context("servidor de sinalização: sem resposta")??;
+        if let Some(held_by) = held_by
+            && chains.iter().any(|(chain, _)| chain.id == held_by)
+        {
+            bail!(
+                "este computador já está vinculado a outra conta por um administrador: ele \
+                 desvincula antes (HextRemote service account --off)"
+            );
+        }
         let own = chains
             .iter()
             .find(|(chain, _)| chain.id == id)
