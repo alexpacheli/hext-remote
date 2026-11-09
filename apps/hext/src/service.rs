@@ -11,9 +11,9 @@ use hext_session::host::Restart;
 
 use crate::ServiceAction;
 
-#[cfg(windows)]
 #[cfg(any(windows, target_os = "macos"))]
 mod access;
+#[cfg(windows)]
 mod banner;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 mod kept;
