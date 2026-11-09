@@ -424,6 +424,12 @@ impl Account {
             let Some((_, chain)) = self.chain(link).await? else {
                 return Err("A conta ainda não tem a lista de dispositivos.".into());
             };
+            // Changes to the list are signed by a device on it (or the
+            // recovery key): said plainly, before the list's own refusal.
+            let by = signer.public_key();
+            if by != chain.recovery && !chain.is_device(&by) {
+                return Err(NOT_ON_THE_LIST.into());
+            }
             let entry = chain.sign(op.clone(), signer);
             let mut after = chain.clone();
             after
@@ -752,6 +758,9 @@ fn answer_error(reply: &AccountReply) -> String {
         _ => "resposta inesperada do servidor".to_owned(),
     }
 }
+
+/// Why a device that is not on the account's list changes nothing.
+const NOT_ON_THE_LIST: &str = "Este computador não está em Dispositivos da conta, e só um dispositivo de lá pode mudar a conta. Inclua este em Conta → Dispositivos, com o código mostrado em outro dispositivo da lista ou com o código de recuperação.";
 
 /// What to tell the user.
 pub fn message(error: AccountError) -> &'static str {
