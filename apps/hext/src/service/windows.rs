@@ -508,7 +508,22 @@ pub fn name(change: super::NameChange) -> Result<()> {
 /// Turns unattended access on (with a new password) or `off`. It takes an
 /// administrator, because it holds for the whole computer. The service reads
 /// the file on each request: nothing to restart.
-pub fn password(off: bool) -> Result<()> {
+pub fn password(off: bool, window: bool) -> Result<()> {
+    if window {
+        // Opened by the app (as administrator, with no console): one of its
+        // own, to type the password in, which stays until it is read.
+        own_console();
+        let done = password(off, false);
+        match &done {
+            Ok(()) => std::thread::sleep(std::time::Duration::from_secs(2)),
+            Err(e) => {
+                eprintln!("Erro: {e:#}");
+                eprintln!("Pressione Enter para fechar.");
+                let _ = std::io::stdin().read_line(&mut String::new());
+            }
+        }
+        return done;
+    }
     require_admin()?;
     if !exists() {
         bail!("instale o serviço primeiro (HextRemote service install)");
@@ -536,6 +551,19 @@ pub fn password(off: bool) -> Result<()> {
     println!("Acesso não assistido ligado.");
     println!("Durante a sessão, este computador mostra quem está conectado.");
     Ok(())
+}
+
+/// A console window for this process, if it has none (started by the app,
+/// not from a terminal).
+#[allow(unsafe_code)] // Win32 calls
+fn own_console() {
+    use windows::Win32::System::Console::{AllocConsole, GetConsoleWindow, SetConsoleTitleW};
+    unsafe {
+        if GetConsoleWindow().is_invalid() {
+            let _ = AllocConsole();
+        }
+        let _ = SetConsoleTitleW(windows::core::w!("Hext Remote: senha de acesso"));
+    }
 }
 
 /// The technicians bound under the old password: a new one (or none)
@@ -1062,6 +1090,17 @@ async fn serve() -> Result<()> {
     let (activity, activity_out) = tokio::sync::mpsc::unbounded_channel();
     let _ = ACTIVITY.set(activity);
     tokio::spawn(crate::owners::report_activity(owners.clone(), activity_out));
+    // Whether the password is on, for the home screen (it changes from the
+    // command line or the app's button).
+    let watched = ui.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(3));
+        loop {
+            tick.tick().await;
+            let on = MachinePassword(watched.clone(), None).verifier().is_some();
+            watched.set_password(on);
+        }
+    });
     let shown = ui.clone();
     tokio::spawn(crate::owners::keep_fresh(
         owners.clone(),

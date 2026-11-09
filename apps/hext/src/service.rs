@@ -153,7 +153,7 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ServiceAction::Install { name } => windows::install(name),
             ServiceAction::Uninstall { purge } => windows::uninstall(purge),
             ServiceAction::Status => windows::status(),
-            ServiceAction::Password { off } => windows::password(off),
+            ServiceAction::Password { off, window } => windows::password(off, window),
             ServiceAction::Technicians { revoke, revoke_all } => {
                 windows::technicians(revoke.as_deref(), revoke_all)
             }
