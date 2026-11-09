@@ -1,10 +1,12 @@
-# Servidor na VM (F3, marco 6)
+# Servidor (systemd)
 
-Uma VM roda tudo o que o Hext Remote precisa na internet:
+Uma VM roda tudo o que o Hext Remote precisa na internet. Este guia instala direto no sistema, com o
+`deploy/install.sh`; com Docker, veja a seção "Servidor próprio" do [README](../README.md). Os exemplos usam o
+domínio do servidor oficial, `hext.com.br`: troque pelo seu.
 
 ```
-Internet ──443/TCP──► Caddy ─┬─ signal.hext.com.br ─► hext-server (127.0.0.1:8080)
-                             └─ relay.hext.com.br  ─► iroh-relay  (127.0.0.1:3340)
+Internet ──443/TCP──► Caddy ─┬─ signal.<domínio> ─► hext-server (127.0.0.1:8080)
+                             └─ relay.<domínio>  ─► iroh-relay  (127.0.0.1:3340)
          ──7842/UDP─────────────────────────────────► iroh-relay  (descoberta de endereço, QUIC)
 
 iroh-relay ──"este computador pode usar o relay?"──► hext-server (/v1/relay-access)
@@ -33,8 +35,11 @@ iroh-relay ──"este computador pode usar o relay?"──► hext-server (/v1/
    git clone https://github.com/alexpacheli/remote-control.git   # se ainda não clonou
    cd remote-control
    git pull
-   ./deploy/install.sh
+   HEXT_DOMAIN=hext.com.br ./deploy/install.sh
    ```
+
+   (Se os nomes não seguirem o padrão `signal.` e `relay.`, informe cada um:
+   `SIGNAL_HOST=… RELAY_HOST=… ./deploy/install.sh`.) Os nomes ficam guardados em `/etc/hext/hosts.env`.
 
    O script:
    - instala o Caddy;
@@ -54,8 +59,9 @@ iroh-relay ──"este computador pode usar o relay?"──► hext-server (/v1/
    Na primeira vez, o `iroh-relay` pode reiniciar algumas vezes, até o Caddy obter o certificado (menos
    de um minuto).
 
-A partir daí, o app usa esse servidor por padrão: `HextRemote host` mostra o ID, e
-`HextRemote view <ID>` conecta, sem `--server`.
+A versão oficial do app usa o servidor de `hext.com.br`. Para o seu domínio, compile o app com `HEXT_SERVER` e
+`HEXT_RELAY` (seção "O app para o seu servidor" do [README](../README.md)), ou teste com
+`--server wss://signal.<domínio> --relay https://relay.<domínio>` no `host` e no `view`.
 
 ## Atualizar
 
@@ -63,7 +69,8 @@ A partir daí, o app usa esse servidor por padrão: `HextRemote host` mostra o I
 cd remote-control && git pull && ./deploy/install.sh
 ```
 
-O banco e o segredo continuam os mesmos. Os computadores reconectam sozinhos depois do reinício.
+O domínio, o banco e o segredo continuam os mesmos. Os computadores reconectam sozinhos depois do reinício.
+(Num servidor instalado antes de o domínio ser uma opção, o script reconhece os nomes de `hext.com.br`.)
 
 ## Acompanhar
 

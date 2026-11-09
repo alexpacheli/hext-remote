@@ -25,6 +25,12 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   HEXT_UPDATE_KEY: ${{ vars.HEXT_UPDATE_KEY }}
+  # The app looks for updates in the releases of the repository that built it.
+  HEXT_RELEASES: https://github.com/${{ github.repository }}/releases
+  # A copy of the project with its own server sets these variables (Settings,
+  # Variables): wss://signal.<domain> and https://relay.<domain>. Empty, ours.
+  HEXT_SERVER: ${{ vars.HEXT_SERVER }}
+  HEXT_RELAY: ${{ vars.HEXT_RELAY }}
 
 jobs:
   version:

@@ -52,12 +52,34 @@ use hext_proto::DEFAULT_PORT;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Our relay (São Paulo), for when the two computers cannot connect directly.
-const DEFAULT_RELAY: &str = "https://relay.hext.com.br";
+/// A setting fixed when compiling: the environment variable `HEXT_SERVER`,
+/// `HEXT_RELAY` or `HEXT_RELEASES` of the build, so that whoever runs their
+/// own server builds the app for it without changing the code; unset or
+/// empty, ours.
+pub(crate) const fn built_or(value: Option<&'static str>, ours: &'static str) -> &'static str {
+    match value {
+        Some(value) if !value.is_empty() => value,
+        _ => ours,
+    }
+}
 
-/// The relay to use: the `--relay` option, except that our relay serves only
-/// devices registered with our server, so with another server (or none)
-/// the default relay is left out.
+/// The relay, for when the two computers cannot connect directly (ours is in
+/// São Paulo).
+const DEFAULT_RELAY: &str = relay_built(option_env!("HEXT_SERVER"), option_env!("HEXT_RELAY"));
+
+/// The relay of the build: `HEXT_RELAY`; with another server and no relay of
+/// its own, none (ours admits only devices of our server); otherwise ours.
+const fn relay_built(server: Option<&'static str>, relay: Option<&'static str>) -> &'static str {
+    match (server, relay) {
+        (_, Some(relay)) if !relay.is_empty() => relay,
+        (Some(server), _) if !server.is_empty() => "off",
+        _ => "https://relay.hext.com.br",
+    }
+}
+
+/// The relay to use: the `--relay` option, except that the default relay
+/// serves only devices registered with the default server, so with another
+/// server (or none) it is left out.
 fn relay_for(value: &str, server: Option<&str>) -> Result<Option<hext_net::RelayUrl>> {
     if value == DEFAULT_RELAY && server != Some(DEFAULT_SERVER) {
         tracing::info!(
@@ -68,8 +90,8 @@ fn relay_for(value: &str, server: Option<&str>) -> Result<Option<hext_net::Relay
     relay(value)
 }
 
-/// Our signaling server: IDs, presence and connection requests.
-const DEFAULT_SERVER: &str = "wss://signal.hext.com.br";
+/// The signaling server: IDs, presence and connection requests.
+const DEFAULT_SERVER: &str = built_or(option_env!("HEXT_SERVER"), "wss://signal.hext.com.br");
 
 /// The `--server` option: a URL, or `off` (no IDs; connecting by IP only).
 fn server(value: &str) -> Option<&str> {
@@ -458,4 +480,34 @@ fn parse_addr(addr: &str) -> Result<SocketAddr> {
         .parse()
         .with_context(|| format!("endereço inválido: {addr}"))?;
     Ok(SocketAddr::new(ip, DEFAULT_PORT))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{built_or, relay_built};
+
+    #[test]
+    fn a_build_setting_left_empty_is_ours() {
+        assert_eq!(built_or(None, "ours"), "ours");
+        // (A variable of the repository that is not set comes as empty.)
+        assert_eq!(built_or(Some(""), "ours"), "ours");
+        assert_eq!(
+            built_or(Some("wss://signal.example.org"), "ours"),
+            "wss://signal.example.org"
+        );
+    }
+
+    #[test]
+    fn another_server_does_not_use_our_relay() {
+        assert_eq!(relay_built(None, None), "https://relay.hext.com.br");
+        assert_eq!(relay_built(Some(""), Some("")), "https://relay.hext.com.br");
+        assert_eq!(relay_built(Some("wss://signal.example.org"), None), "off");
+        assert_eq!(
+            relay_built(
+                Some("wss://signal.example.org"),
+                Some("https://relay.example.org")
+            ),
+            "https://relay.example.org"
+        );
+    }
 }

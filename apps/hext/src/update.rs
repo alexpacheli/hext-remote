@@ -16,8 +16,12 @@ use anyhow::{Context, Result, bail};
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 
-/// Where the releases are.
-const RELEASES: &str = "https://github.com/alexpacheli/remote-control/releases";
+/// Where the releases are (`HEXT_RELEASES` when compiling, for a copy of the
+/// project that publishes its own).
+const RELEASES: &str = crate::built_or(
+    option_env!("HEXT_RELEASES"),
+    "https://github.com/alexpacheli/remote-control/releases",
+);
 
 /// The public half of the key that signs the releases (64 hex digits).
 const KEY: Option<&str> = option_env!("HEXT_UPDATE_KEY");

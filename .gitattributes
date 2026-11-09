@@ -1,0 +1,4 @@
+# The server files run on Linux (and in Docker): Unix line endings even in
+# a clone made on Windows.
+*.sh text eol=lf
+deploy/** text eol=lf

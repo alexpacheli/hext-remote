@@ -1,0 +1,21 @@
+# iroh-relay in Docker, behind Caddy: plain HTTP inside the compose network
+# (Caddy does TLS on 443), and QUIC address discovery on UDP 7842 with the
+# certificate Caddy keeps for the relay's name ({$RELAY_HOST}, written in by
+# relay-start.sh), reloaded as Caddy renews it.
+
+enable_relay = true
+http_bind_addr = "0.0.0.0:3340"
+enable_quic_addr_discovery = true
+
+[tls]
+cert_mode = "Reloading"
+manual_cert_path = "/caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_HOST}/{$RELAY_HOST}.crt"
+manual_key_path = "/caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_HOST}/{$RELAY_HOST}.key"
+quic_bind_addr = "0.0.0.0:7842"
+# HTTPS is Caddy's job: the relay serves HTTP only (QUIC keeps its TLS).
+dangerous_http_only = true
+
+# Only devices registered with hext-server may use the relay. The secret is
+# IROH_RELAY_HTTP_BEARER_TOKEN (HEXT_RELAY_TOKEN in .env).
+[access.http]
+url = "http://hext-server:8080/v1/relay-access"
