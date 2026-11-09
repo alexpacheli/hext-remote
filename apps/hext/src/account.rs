@@ -1259,8 +1259,16 @@ mod tests {
         assert!(!technician.adopt(&hex_key, &id, "Cliente").await.unwrap());
         owners.refresh().await.unwrap();
         assert_eq!(owners.way(&me).unwrap().via, "entrou como dono");
-        // Asking again changes nothing; another account is refused.
+        // Asking again changes nothing; a list the server lacks is refused.
         assert!(!owners.bind_asked(chain, &me).await.unwrap());
+        assert!(owners.bind_asked([7; 32], &me).await.is_err());
+        assert_eq!(owners.bound().unwrap().0, chain);
+        // A new password undoes it; a binding by an administrator stays.
+        assert!(owners.unbind_if_by_password().unwrap());
+        assert_eq!(owners.bound(), None);
+        owners.bind(chain).await.unwrap();
+        assert!(!owners.unbind_if_by_password().unwrap());
+        // ...and a technician with the password cannot take it over.
         assert!(owners.bind_asked([7; 32], &me).await.is_err());
         assert_eq!(owners.bound().unwrap().0, chain);
 

@@ -550,6 +550,10 @@ fn revoke_bound() -> Result<()> {
         ));
         println!("Os técnicos vinculados ({had}) voltam a precisar da senha.");
     }
+    if owners()?.unbind_if_by_password()? {
+        audit("conta vinculada com a senha desvinculada com a troca da senha");
+        println!("A conta vinculada por um técnico com a senha foi desvinculada.");
+    }
     Ok(())
 }
 

@@ -1104,17 +1104,17 @@ fn put_in_account(app: AppHandle, id: String, name: String) {
                         "{name} foi posto em Meus computadores. Com o Hext instalado nele \
                          (Windows), os dispositivos da conta passam a entrar sem senha."
                     ));
+                    if !view.computers.iter().any(|c| c.id == id) {
+                        view.computers.push(Computer {
+                            id: id.clone(),
+                            name: name.clone(),
+                        });
+                    }
                 }
                 Err(e) => {
                     view.viewer_failure =
                         Some(format!("{name} não foi posto em Meus computadores: {e}"));
                 }
-            }
-            if !view.computers.iter().any(|c| c.id == id) {
-                view.computers.push(Computer {
-                    id: id.clone(),
-                    name: name.clone(),
-                });
             }
         }
         changed(&app);

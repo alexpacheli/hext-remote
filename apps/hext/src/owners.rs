@@ -35,6 +35,11 @@ struct Stored {
     entries: Vec<Entry>,
     #[serde(default)]
     shared: Vec<Vec<Entry>>,
+    /// Bound by a technician with the unattended password
+    /// ([`Owners::bind_asked`]), not by an administrator: changing or
+    /// turning off the password undoes it, as it does the technicians.
+    #[serde(default)]
+    by_password: bool,
 }
 
 /// The chains, checked.
@@ -178,6 +183,7 @@ impl Owners {
             chain: id,
             entries: own.1.clone(),
             shared: shared_of(&own.0, &self.host(), &chains, &[]),
+            by_password: false,
         };
         self.store(&stored)?;
         self.load();
@@ -189,19 +195,22 @@ impl Owners {
     /// consent, as for a technician who asks to be remembered). `viewer`
     /// must be a device of that chain. This computer need not be on its list
     /// yet (the technician's app puts it there right after), but nobody
-    /// comes in by the account until it is. Bound to another account
-    /// already: refused (an administrator unbinds first). Whether it bound
-    /// now (`false`: it was bound to this one already).
+    /// comes in by the account until it is. Bound to another account by an
+    /// administrator: refused (they unbind first); one bound with the
+    /// password is replaced (whoever has the password could do it anyway).
+    /// Whether it bound now (`false`: it was bound to this one already).
     pub async fn bind_asked(&self, id: ChainId, viewer: &PublicKey) -> Result<bool> {
         let _busy = self.0.busy.lock().await;
         if let Some(stored) = self.stored() {
             if stored.chain == id {
                 return Ok(false);
             }
-            bail!(
-                "este computador já está vinculado a outra conta: um administrador desvincula \
-                 antes (HextRemote service account --off)"
-            );
+            if !stored.by_password {
+                bail!(
+                    "este computador já está vinculado a outra conta por um administrador: ele \
+                     desvincula antes (HextRemote service account --off)"
+                );
+            }
         }
         let chains = tokio::time::timeout(FETCH_TIME, self.fetch(&[id]))
             .await
@@ -217,9 +226,20 @@ impl Owners {
             chain: id,
             entries: own.1.clone(),
             shared: shared_of(&own.0, &self.host(), &chains, &[]),
+            by_password: true,
         };
         self.store(&stored)?;
         self.load();
+        Ok(true)
+    }
+
+    /// Unbinds if a technician bound it with the password (the password
+    /// changes or goes off). Whether it did.
+    pub fn unbind_if_by_password(&self) -> Result<bool> {
+        if !self.stored().is_some_and(|stored| stored.by_password) {
+            return Ok(false);
+        }
+        self.unbind()?;
         Ok(true)
     }
 
@@ -264,6 +284,7 @@ impl Owners {
             chain: stored.chain,
             entries: entries.clone(),
             shared,
+            by_password: stored.by_password,
         };
         // Unbound (or bound again) from the command line meanwhile: that
         // stands.
