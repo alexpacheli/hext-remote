@@ -33,6 +33,10 @@ const ARGON2_LANES: u32 = 1;
 
 /// File header, and the size after it once unsealed.
 const MAGIC: &[u8; 8] = b"HEXTPWD1";
+/// Where nothing seals for the machine (macOS: the user's app keeps it, in
+/// their folder): the verifier as is, in a file only that user reads, like
+/// the device key.
+const MAGIC_PLAIN: &[u8; 8] = b"HEXTPWD0";
 const STORED_LEN: usize = SALT_LEN + SECRET_LEN;
 /// More than any sealed file takes.
 const MAX_FILE_LEN: u64 = 4096;
@@ -97,8 +101,15 @@ impl Verifier {
         if bytes.len() as u64 > MAX_FILE_LEN {
             return Err(bad());
         }
-        let sealed = bytes.strip_prefix(MAGIC).ok_or_else(bad)?;
-        let stored = protect::unseal(sealed).map_err(|_| bad())?;
+        let stored = match bytes.strip_prefix(MAGIC) {
+            Some(sealed) => protect::unseal(sealed).map_err(|_| bad())?,
+            // (Only where sealing does not exist: on Windows, a plain file
+            // was not written by this program.)
+            None if !protect::AVAILABLE => {
+                Zeroizing::new(bytes.strip_prefix(MAGIC_PLAIN).ok_or_else(bad)?.to_vec())
+            }
+            None => return Err(bad()),
+        };
         if stored.len() != STORED_LEN {
             return Err(bad());
         }
@@ -111,6 +122,7 @@ impl Verifier {
 
     /// Stores this, sealed for the machine, replacing what is in `path`. The
     /// folder must be closed to all but the system and administrators.
+    /// Where nothing seals (macOS), as is, readable only by this user.
     pub fn save(&self, path: &Path) -> Result<()> {
         let io = |source| CryptoError::Io {
             path: path.to_owned(),
@@ -119,12 +131,20 @@ impl Verifier {
         let mut stored = Zeroizing::new(Vec::with_capacity(STORED_LEN));
         stored.extend_from_slice(&self.salt);
         stored.extend_from_slice(self.secret.as_slice());
-        let sealed = protect::seal(&stored, true).map_err(io)?;
-        let mut file = MAGIC.to_vec();
-        file.extend_from_slice(&sealed);
+        let file = if protect::AVAILABLE {
+            let sealed = protect::seal(&stored, true).map_err(io)?;
+            let mut file = Zeroizing::new(MAGIC.to_vec());
+            file.extend_from_slice(&sealed);
+            file
+        } else {
+            let mut file = Zeroizing::new(MAGIC_PLAIN.to_vec());
+            file.extend_from_slice(&stored);
+            file
+        };
         // All of it or none: a half-written file must not turn the access off.
         let new: PathBuf = path.with_extension("new");
-        fs::write(&new, file).map_err(io)?;
+        let _ = fs::remove_file(&new);
+        crate::store::write_private(&new, &file, true).map_err(io)?;
         fs::rename(&new, path).map_err(io)
     }
 
@@ -322,5 +342,34 @@ mod tests {
         assert_eq!(loaded.salt(), verifier.salt());
         assert_eq!(loaded.secret.as_slice(), verifier.secret.as_slice());
         assert!(corrupt.is_err());
+    }
+
+    #[test]
+    fn a_saved_verifier_comes_back_and_only_its_user_reads_it() {
+        let dir = std::env::temp_dir().join(format!("hext-pake-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("unattended.key");
+        assert!(Verifier::load(&path).unwrap().is_none());
+
+        let verifier = Verifier::new("uma senha bem longa").unwrap();
+        verifier.save(&path).unwrap();
+        let back = Verifier::load(&path).unwrap().expect("saved");
+        assert_eq!(back.salt, verifier.salt);
+        assert_eq!(*back.secret, *verifier.secret);
+        // Saved again over it (a new password): replaced.
+        Verifier::new("outra senha bem longa")
+            .unwrap()
+            .save(&path)
+            .unwrap();
+        assert!(Verifier::load(&path).unwrap().is_some());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        Verifier::remove(&path).unwrap();
+        assert!(Verifier::load(&path).unwrap().is_none());
     }
 }

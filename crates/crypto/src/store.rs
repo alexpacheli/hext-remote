@@ -268,7 +268,7 @@ impl FileKeyStore {
 }
 
 /// A file readable only by this user (`exclusive`: fails if it exists).
-fn write_private(path: &Path, contents: &[u8], exclusive: bool) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, contents: &[u8], exclusive: bool) -> std::io::Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true);
     if exclusive {
