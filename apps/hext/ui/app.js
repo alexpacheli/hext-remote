@@ -518,6 +518,7 @@ function startAccount() {
     if (!confirm("Os dispositivos da conta voltam a precisar de aceite. Desligar?")) return;
     try {
       await invoke("account_unbind");
+      showStatus("Entrada sem aceite desligada: os acessos voltam a pedir aceite.");
     } catch (message) {
       showStatus(String(message), true);
     }

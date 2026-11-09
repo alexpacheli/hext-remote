@@ -411,21 +411,35 @@ impl hext_session::host::Owners for Owners {
     }
 }
 
+/// How often the file is read again, for the home screen to follow a
+/// binding changed from the command line (or the button) at once.
+const FILE_CHECK: Duration = Duration::from_secs(3);
+
 /// Keeps the binding fresh: every `every`, the chains again; `show` gets
-/// what the home screen says of it.
+/// what the home screen says of it, also soon after the file changes.
 pub async fn keep_fresh(owners: Owners, every: Duration, show: impl Fn(Option<String>)) {
-    let mut tick = tokio::time::interval(every);
+    let mut tick = tokio::time::interval(FILE_CHECK.min(every));
+    let mut last: Option<std::time::Instant> = None;
+    let mut was: Option<ChainId> = None;
     loop {
         tick.tick().await;
         owners.load();
-        if owners.bound().is_none() && owners.stored().is_none() {
+        let now = owners.stored().map(|stored| stored.chain);
+        if now.is_none() {
+            was = None;
             show(None);
             continue;
         }
-        if let Err(e) = owners.refresh().await {
-            warn!("conta vinculada: {e:#}");
-        } else {
-            info!("conta vinculada: lista conferida");
+        // Bound anew (or to another account): the list at once.
+        let due = now != was || last.is_none_or(|at| at.elapsed() >= every);
+        was = now;
+        if due {
+            last = Some(std::time::Instant::now());
+            if let Err(e) = owners.refresh().await {
+                warn!("conta vinculada: {e:#}");
+            } else {
+                info!("conta vinculada: lista conferida");
+            }
         }
         show(owners.summary());
     }

@@ -1258,16 +1258,25 @@ fn account_bind(shared: State<'_, Shared>, chain: String) -> Result<(), String> 
 }
 
 /// Unbinds this computer from the account: every access asks again. It
-/// takes an administrator: Windows asks.
+/// takes an administrator: Windows asks. Waits for it, to tell how it went
+/// (the home screen follows within seconds).
 #[tauri::command]
-fn account_unbind() -> Result<(), String> {
+async fn account_unbind() -> Result<(), String> {
     #[cfg(windows)]
-    return run_elevated(
-        "service account --off",
-        "Nada mudou: é preciso permitir como administrador.",
-    );
+    let result = {
+        let done =
+            tauri::async_runtime::spawn_blocking(|| run_elevated_wait("service account --off"))
+                .await
+                .map_err(|e| e.to_string())?;
+        match done {
+            Ok(0) => Ok(()),
+            Ok(code) => Err(format!("Não foi possível desligar ({code}).")),
+            Err(_) => Err("Nada mudou: é preciso permitir como administrador.".to_owned()),
+        }
+    };
     #[cfg(not(windows))]
-    Err("Só com o serviço instalado.".to_owned())
+    let result = Err("Só com o serviço instalado.".to_owned());
+    result
 }
 
 /// Opens one of the account's computers to another account (marco 6).
