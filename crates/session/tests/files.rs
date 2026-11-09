@@ -157,6 +157,7 @@ async fn session_answering(
             remember: false,
             bound: false,
             via: None,
+            account: None,
         },
     );
     let (choose, chosen) = mpsc::unbounded_channel();

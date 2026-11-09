@@ -114,6 +114,13 @@ pub trait UnattendedPassword: Send + Sync {
     fn bind(&self, _viewer: &PublicKey, _grant: &crate::Grant) -> bool {
         false
     }
+    /// `viewer` got in with the password and asked this computer to bind to
+    /// its account, chain `chain` ([`crate::Grant::account`]): from then on
+    /// that account's devices come in without it, once this computer is on
+    /// the account's list. Done in the background (it fetches the chain);
+    /// the implementation audits the outcome. Where there is no binding (not
+    /// installed, macOS), nothing happens.
+    fn bind_account(&self, _viewer: &PublicKey, _chain: [u8; 32], _grant: &crate::Grant) {}
 }
 
 /// The session going on, as the host's user is shown it.
@@ -592,6 +599,11 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                 access
                     .password
                     .audit(&format!("técnico vinculado: {}", who(grant)));
+            }
+            if let Some(grant) = grant.as_ref().filter(|_| !resumed)
+                && let Some(chain) = grant.account
+            {
+                access.password.bind_account(&viewer, chain, grant);
             }
             done
         }

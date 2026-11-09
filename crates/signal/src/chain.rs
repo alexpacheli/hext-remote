@@ -35,6 +35,7 @@ const SIGNED: &[u8] = b"hext-chain-v1\0";
 const HASHED: &[u8] = b"hext-chain-entry-v1\0";
 const RECOVERY: &[u8] = b"hext-chain-recovery-v1\0";
 const JOIN: &[u8] = b"hext-chain-join-v1\0";
+const BIND: &[u8] = b"hext-chain-bind-v1\0";
 
 /// A chain's ID: the hash of its first entry.
 pub type ChainId = [u8; 32];
@@ -103,6 +104,43 @@ pub enum Op {
         #[serde(with = "crate::hex_array")]
         with: ChainId,
     },
+}
+
+/// A technician asks a computer, with its unattended password, to bind
+/// itself to the technician's account (the chain `chain`): from then on the
+/// account's devices come in without the password, once the computer is on
+/// the account's list. Signed by the technician's key for that computer's
+/// ID, so a server passing the request on cannot point it at a chain of its
+/// own (it has no such signature) nor at another computer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindAsk {
+    #[serde(with = "crate::hex_array")]
+    pub chain: ChainId,
+    #[serde(with = "crate::hex_sig")]
+    pub signature: Signature,
+}
+
+impl BindAsk {
+    /// `key` (the technician's) asks computer `host` to bind to `chain`.
+    pub fn new(key: &DeviceKey, chain: ChainId, host: DeviceId) -> Self {
+        Self {
+            chain,
+            signature: key.sign(&bind_bytes(&chain, host)),
+        }
+    }
+
+    /// Whether `viewer` (the key the connection proves) asked it, of
+    /// computer `host`.
+    pub fn holds(&self, viewer: &PublicKey, host: DeviceId) -> bool {
+        viewer.verify(&bind_bytes(&self.chain, host), &self.signature)
+    }
+}
+
+fn bind_bytes(chain: &ChainId, host: DeviceId) -> Vec<u8> {
+    let mut bytes = BIND.to_vec();
+    bytes.extend(chain);
+    bytes.extend(host.get().to_be_bytes());
+    bytes
 }
 
 /// One signed entry.
@@ -794,5 +832,26 @@ mod tests {
             "PC",
             &proof
         ));
+    }
+
+    #[test]
+    fn an_ask_to_bind_holds_only_as_signed() {
+        let technician = key();
+        let host = DeviceId::new(482_913_557).unwrap();
+        let ask = BindAsk::new(&technician, [5; 32], host);
+        assert!(ask.holds(&technician.public_key(), host));
+        // Not from another key, for another computer, nor to another chain.
+        assert!(!ask.holds(&key().public_key(), host));
+        assert!(!ask.holds(
+            &technician.public_key(),
+            DeviceId::new(111_222_333).unwrap()
+        ));
+        let moved = BindAsk {
+            chain: [6; 32],
+            ..ask.clone()
+        };
+        assert!(!moved.holds(&technician.public_key(), host));
+        let json = serde_json::to_string(&ask).unwrap();
+        assert_eq!(serde_json::from_str::<BindAsk>(&json).unwrap(), ask);
     }
 }

@@ -7,7 +7,9 @@
 //! Bound by an administrator (`service account <chain>`), with the chain's
 //! ID from the app of a device in the account: a chain the server made up
 //! has another ID. The file (`owners.json`, in the computer's folder) is
-//! theirs only to change.
+//! theirs only to change. Or by a technician who got in with the unattended
+//! password, which an administrator set ([`Owners::bind_asked`]): the ask
+//! is signed by the technician's key, so the server cannot change the chain.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -33,6 +35,11 @@ struct Stored {
     entries: Vec<Entry>,
     #[serde(default)]
     shared: Vec<Vec<Entry>>,
+    /// Bound by a technician with the unattended password
+    /// ([`Owners::bind_asked`]), not by an administrator: changing or
+    /// turning off the password undoes it, as it does the technicians.
+    #[serde(default)]
+    by_password: bool,
 }
 
 /// The chains, checked.
@@ -106,19 +113,30 @@ impl Owners {
         Some((checked.own.id, name))
     }
 
+    /// Bound, and this computer on the bound account's list (as last
+    /// checked).
+    pub fn listed(&self) -> bool {
+        let checked = self.0.checked.lock().expect("lock");
+        checked
+            .as_ref()
+            .is_some_and(|checked| checked.own.computer(&self.host()).is_some())
+    }
+
     /// What the home screen says of the binding (`None`: not bound).
     pub fn summary(&self) -> Option<String> {
         let checked = self.0.checked.lock().expect("lock").clone();
         let Some(checked) = checked else {
             return self.stored().map(|_| {
-                "Vinculado a uma conta, mas a lista dela não confere: ninguém entra por ela agora."
+                "Vinculado a uma conta cuja lista não veio do servidor ou não confere (a conta pode \
+                 ter sido excluída): ninguém entra por ela agora."
                     .to_owned()
             });
         };
         let host = self.host();
         if checked.own.computer(&host).is_none() {
             return Some(
-                "Vinculado a uma conta que tirou este computador da lista: ninguém entra por ela."
+                "Vinculado a uma conta, mas este computador não está em Meus computadores dela: \
+                 ninguém entra por ela."
                     .to_owned(),
             );
         }
@@ -167,7 +185,7 @@ impl Owners {
             .context("o servidor não entregou a lista dessa conta")?;
         if own.0.computer(&self.host()).is_none() {
             bail!(
-                "este computador não está em Meus computadores dessa conta: ponha-o na lista pelo \
+                "este computador não está em Meus computadores dessa conta: insira-o na lista pelo \
                  app antes"
             );
         }
@@ -175,10 +193,73 @@ impl Owners {
             chain: id,
             entries: own.1.clone(),
             shared: shared_of(&own.0, &self.host(), &chains, &[]),
+            by_password: false,
         };
         self.store(&stored)?;
         self.load();
         Ok(own.0.clone())
+    }
+
+    /// Binds this computer to chain `id` at the ask of `viewer`, who got in
+    /// with the unattended password (an administrator set it: that is their
+    /// consent, as for a technician who asks to be remembered). `viewer`
+    /// must be a device of that chain. This computer need not be on its list
+    /// yet (the technician's app puts it there right after), but nobody
+    /// comes in by the account until it is. Bound to another account by an
+    /// administrator: refused (they unbind first), unless that account is
+    /// gone (deleted: the server has no list for it). One bound with the
+    /// password is replaced (whoever has the password could do it anyway).
+    /// Whether it bound now (`false`: it was bound to this one already).
+    pub async fn bind_asked(&self, id: ChainId, viewer: &PublicKey) -> Result<bool> {
+        let _busy = self.0.busy.lock().await;
+        let mut ask = vec![id];
+        let mut held_by = None;
+        if let Some(stored) = self.stored() {
+            if stored.chain == id {
+                return Ok(false);
+            }
+            if !stored.by_password {
+                held_by = Some(stored.chain);
+                ask.push(stored.chain);
+            }
+        }
+        let chains = tokio::time::timeout(FETCH_TIME, self.fetch(&ask))
+            .await
+            .context("servidor de sinalização: sem resposta")??;
+        if let Some(held_by) = held_by
+            && chains.iter().any(|(chain, _)| chain.id == held_by)
+        {
+            bail!(
+                "este computador já está vinculado a outra conta por um administrador: ele \
+                 desvincula antes (HextRemote service account --off)"
+            );
+        }
+        let own = chains
+            .iter()
+            .find(|(chain, _)| chain.id == id)
+            .context("o servidor não entregou a lista dessa conta")?;
+        if !own.0.is_device(viewer) {
+            bail!("quem pediu não está na lista de dispositivos dessa conta");
+        }
+        let stored = Stored {
+            chain: id,
+            entries: own.1.clone(),
+            shared: shared_of(&own.0, &self.host(), &chains, &[]),
+            by_password: true,
+        };
+        self.store(&stored)?;
+        self.load();
+        Ok(true)
+    }
+
+    /// Unbinds if a technician bound it with the password (the password
+    /// changes or goes off). Whether it did.
+    pub fn unbind_if_by_password(&self) -> Result<bool> {
+        if !self.stored().is_some_and(|stored| stored.by_password) {
+            return Ok(false);
+        }
+        self.unbind()?;
+        Ok(true)
     }
 
     /// Unbinds: nobody comes in by the account any more.
@@ -222,6 +303,7 @@ impl Owners {
             chain: stored.chain,
             entries: entries.clone(),
             shared,
+            by_password: stored.by_password,
         };
         // Unbound (or bound again) from the command line meanwhile: that
         // stands.
@@ -329,21 +411,35 @@ impl hext_session::host::Owners for Owners {
     }
 }
 
+/// How often the file is read again, for the home screen to follow a
+/// binding changed from the command line (or the button) at once.
+const FILE_CHECK: Duration = Duration::from_secs(3);
+
 /// Keeps the binding fresh: every `every`, the chains again; `show` gets
-/// what the home screen says of it.
+/// what the home screen says of it, also soon after the file changes.
 pub async fn keep_fresh(owners: Owners, every: Duration, show: impl Fn(Option<String>)) {
-    let mut tick = tokio::time::interval(every);
+    let mut tick = tokio::time::interval(FILE_CHECK.min(every));
+    let mut last: Option<std::time::Instant> = None;
+    let mut was: Option<ChainId> = None;
     loop {
         tick.tick().await;
         owners.load();
-        if owners.bound().is_none() && owners.stored().is_none() {
+        let now = owners.stored().map(|stored| stored.chain);
+        if now.is_none() {
+            was = None;
             show(None);
             continue;
         }
-        if let Err(e) = owners.refresh().await {
-            warn!("conta vinculada: {e:#}");
-        } else {
-            info!("conta vinculada: lista conferida");
+        // Bound anew (or to another account): the list at once.
+        let due = now != was || last.is_none_or(|at| at.elapsed() >= every);
+        was = now;
+        if due {
+            last = Some(std::time::Instant::now());
+            if let Err(e) = owners.refresh().await {
+                warn!("conta vinculada: {e:#}");
+            } else {
+                info!("conta vinculada: lista conferida");
+            }
         }
         show(owners.summary());
     }

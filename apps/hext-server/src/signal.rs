@@ -584,7 +584,8 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
             to,
             unattended,
             remember,
-        } => connect(state, me, request, to, (unattended, remember))
+            account,
+        } => connect(state, me, request, to, (unattended, remember, account))
             .await
             .err()
             .map(|reason| ServerMsg::Rejected { request, reason }),
@@ -721,7 +722,7 @@ async fn connect(
     me: &mut Session,
     request: u64,
     to: DeviceId,
-    (unattended, remember): (bool, bool),
+    (unattended, remember, account): (bool, bool, Option<hext_signal::chain::BindAsk>),
 ) -> Result<(), Rejection> {
     let now = Instant::now();
     if !state.connects_by_device.allow(&me.id, now) || !state.connects_by_ip.allow(&me.ip, now) {
@@ -789,6 +790,8 @@ async fn connect(
         from_name: me.name.clone(),
         unattended,
         remember: remember && unattended,
+        // Only with the password, as remembering.
+        account: account.filter(|_| unattended),
     };
     if !state.send_to(to, host_session, ask).await {
         state.pending.lock().expect("lock").remove(&server_request);

@@ -91,6 +91,10 @@ pub enum ServerMsg {
         /// without it (F4 marco 12). The host decides.
         #[serde(default)]
         remember: bool,
+        /// With the password, the viewer asks the computer to bind to its
+        /// account. The host checks the signature and decides.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<chain::BindAsk>,
     },
     /// (To a viewer) the host accepted: connect to it, and expect its key.
     Accepted {
@@ -153,6 +157,10 @@ pub enum ClientMsg {
         /// host decides).
         #[serde(default)]
         remember: bool,
+        /// With the password: the computer binds to this account (the host
+        /// decides; see [`chain::BindAsk`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<chain::BindAsk>,
     },
     /// (Host) accept a [`ServerMsg::Request`]: where to connect, and the
     /// one-time code the viewer will present.
@@ -318,6 +326,7 @@ mod tests {
                 to: id,
                 unattended: true,
                 remember: false,
+                account: None,
             },
             ClientMsg::NoUnattended { request: 7 },
             ClientMsg::Waiting { request: 7 },

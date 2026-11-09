@@ -34,6 +34,11 @@ pub struct Grant {
     /// ("entrou como dono", "por compartilhamento de …"). The session ends
     /// once [`crate::host::Owners`] no longer lets that viewer in.
     pub via: Option<String>,
+    /// With the password: the viewer asks this computer to bind to its
+    /// account, the chain with this ID (signature already checked:
+    /// `hext_signal::chain::BindAsk`). See
+    /// [`crate::host::UnattendedPassword::bind_account`].
+    pub account: Option<[u8; 32]>,
 }
 
 /// A code, the viewer it was issued to, when, and what it grants.
@@ -99,6 +104,7 @@ mod tests {
             remember: false,
             bound: false,
             via: None,
+            account: None,
         }
     }
 

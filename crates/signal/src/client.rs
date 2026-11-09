@@ -159,6 +159,7 @@ impl Client {
         &mut self,
         to: DeviceId,
         (unattended, remember): (bool, bool),
+        account: Option<crate::chain::BindAsk>,
         mut on_waiting: impl FnMut(),
     ) -> Result<Result<Access, Rejection>> {
         let request = self.next_request;
@@ -168,6 +169,7 @@ impl Client {
             to,
             unattended,
             remember: remember && unattended,
+            account: account.filter(|_| unattended),
         })
         .await?;
         let answer = async {

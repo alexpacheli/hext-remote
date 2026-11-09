@@ -89,6 +89,7 @@ async fn accepted_by_id_then_streams() {
                         remember: false,
                         bound: false,
                         via: None,
+                        account: None,
                     },
                 ),
             })
@@ -103,7 +104,7 @@ async fn accepted_by_id_then_streams() {
         .await
         .unwrap();
     let access = viewer_signal
-        .request_access(host_id, (false, false), || {})
+        .request_access(host_id, (false, false), None, || {})
         .await
         .unwrap()
         .unwrap();

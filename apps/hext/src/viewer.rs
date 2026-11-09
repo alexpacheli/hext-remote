@@ -25,6 +25,7 @@ use hext_render::{
 use hext_session::client::{self, ClientHandle};
 use hext_session::files::{Confirm, OwnFiles, Stage, Transfer, size_text};
 use hext_session::{NETWORK_GRACE, ResumeToken, SessionError};
+use hext_signal::chain::BindAsk;
 use hext_signal::{DeviceId, KnownHosts};
 use tracing::{info, warn};
 use winit::application::ApplicationHandler;
@@ -482,8 +483,13 @@ impl Viewers {
                 id,
                 password,
                 remember,
+                account,
             } => {
-                let login = password.map(|password| Login { password, remember });
+                let login = password.map(|password| Login {
+                    password,
+                    remember,
+                    account,
+                });
                 self.open(session, Target::Id(id), login);
             }
             ToViewer::Focus(n) => {
@@ -1642,7 +1648,7 @@ async fn try_back(back: &Back, endpoint: &Endpoint, token: ResumeToken) -> Resul
     };
     let client = crate::signaling::login(server, &net.key, &device_name()).await?;
     let (conn, code) =
-        crate::signaling::connect(client, id, known, endpoint, (true, false), || {}).await?;
+        crate::signaling::connect(client, id, known, endpoint, (true, false, None), || {}).await?;
     let hello = Hello {
         peer: PeerInfo::local(APP_VERSION, device_name()),
         access_code: code,
@@ -1742,24 +1748,36 @@ fn read_password(args: &ViewArgs) -> Result<Option<Login>> {
     if password.is_empty() {
         bail!("a senha está vazia");
     }
+    let account = match &args.account {
+        Some(text) => Some(crate::owners::parse_id(text)?),
+        None => None,
+    };
     Ok(Some(Login {
         password,
         remember: args.remember,
+        account,
     }))
 }
 
 /// The unattended password, and whether to ask to be trusted from then on,
-/// without it.
+/// without it, or that the computer bind to an account (the chain's ID).
 struct Login {
     password: Zeroizing<String>,
     remember: bool,
+    account: Option<[u8; 32]>,
 }
+
+/// What a request asks for: with the password, to be remembered, and that
+/// the computer bind to an account.
+type Asks = (bool, bool, Option<[u8; 32]>);
 
 impl Login {
     /// What to ask the server for: with the password, and whether to be
-    /// remembered.
-    fn asks(login: Option<&Login>) -> (bool, bool) {
-        login.map_or((false, false), |login| (true, login.remember))
+    /// remembered or bound to.
+    fn asks(login: Option<&Login>) -> Asks {
+        login.map_or((false, false, None), |login| {
+            (true, login.remember, login.account)
+        })
     }
 }
 
@@ -1787,7 +1805,7 @@ fn explain(e: SessionError) -> anyhow::Error {
 async fn reach(
     net: &Arc<Net>,
     target: Target,
-    asks: (bool, bool),
+    (unattended, remember, account): Asks,
     on_waiting: impl FnMut() + Send,
 ) -> Result<(Connection, String, Option<Route>)> {
     match target {
@@ -1799,6 +1817,10 @@ async fn reach(
             // before the endpoint reaches the relay.
             let client = crate::signaling::login(server, &net.key, &device_name()).await?;
             let endpoint = net.endpoint().await?;
+            // Signed here, for this computer: the server cannot point it at
+            // another account.
+            let account = account.map(|chain| BindAsk::new(&net.key, chain, id));
+            let asks = (unattended, remember, account);
             let (conn, code) =
                 crate::signaling::connect(client, id, known, endpoint, asks, on_waiting).await?;
             let route = Route {

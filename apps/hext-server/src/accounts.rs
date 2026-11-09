@@ -327,6 +327,30 @@ impl Db {
         Ok(())
     }
 
+    /// Deletes `account` and everything kept of it.
+    fn delete_account(&self, account: i64) -> rusqlite::Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for table in [
+            "account_codes",
+            "recovery_codes",
+            "account_chain",
+            "account_members",
+            "account_computers",
+            "account_chain_ids",
+            "account_shares",
+            "account_events",
+            "account_sessions",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE account_id = ?1"),
+                params![account],
+            )?;
+        }
+        tx.execute("DELETE FROM accounts WHERE id = ?1", params![account])?;
+        tx.commit()
+    }
+
     fn close_session(&self, account: i64, device: DeviceId) -> rusqlite::Result<()> {
         self.conn().execute(
             "DELETE FROM account_sessions WHERE account_id = ?1 AND device_id = ?2",
@@ -1121,6 +1145,25 @@ async fn run(
                 })
                 .await?;
             info!("conta {id}: senha trocada");
+            Ok(AccountReply::Ok)
+        }
+        AccountCall::DeleteAccount { password, second } => {
+            let account = logged_in(state, login, device).await?;
+            *guessed = Some(limited(state, ip, &account.email)?);
+            let stored = account.password.clone();
+            if !blocking(move || verify_password(&password, &stored)).await {
+                return Err(AccountError::WrongCredentials.into());
+            }
+            if let Some(secret) = &account.totp {
+                let Some(second) = second else {
+                    return Ok(AccountReply::NeedsSecondFactor);
+                };
+                second_factor(state, &account, secret, &second).await?;
+            }
+            let id = account.id;
+            state.db(move |db| db.delete_account(id)).await?;
+            *login = None;
+            info!("conta {id}: excluída");
             Ok(AccountReply::Ok)
         }
     }

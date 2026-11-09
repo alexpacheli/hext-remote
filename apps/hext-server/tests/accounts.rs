@@ -545,3 +545,76 @@ async fn the_server_keeps_only_a_chain_that_holds() {
         error(AccountError::NotLoggedIn)
     );
 }
+
+#[tokio::test]
+async fn deleting_the_account_takes_everything_with_it() {
+    use hext_signal::chain::{Entry, recovery_key};
+    let (url, inbox) = server().await;
+    let key = DeviceKey::generate().unwrap();
+    let mut pc = device(&url, &key).await;
+    let mut notebook = device(&url, &DeviceKey::generate().unwrap()).await;
+    account(&mut pc, &inbox).await;
+    token(call(&mut pc, login(PASSWORD, None)).await);
+    let AccountReply::Totp { secret, .. } = call(&mut pc, AccountCall::TotpSetup).await else {
+        panic!("no secret");
+    };
+    let code = totp_code(&secret, now()).unwrap();
+    let AccountReply::RecoveryCodes { codes } =
+        call(&mut pc, AccountCall::TotpEnable { code }).await
+    else {
+        panic!("no recovery codes");
+    };
+    let recovery = recovery_key("ABCD-EFGH-JKLM-NPQR-STUV").public_key();
+    let first = Entry::create(&key, "PC", recovery);
+    assert_eq!(
+        call(&mut pc, AccountCall::ChainAppend { entry: first }).await,
+        AccountReply::Ok
+    );
+    let theirs = token(call(&mut notebook, login(PASSWORD, Some(&codes[0]))).await);
+
+    let delete = |password: &str, second: Option<&str>| AccountCall::DeleteAccount {
+        password: password.into(),
+        second: second.map(Into::into),
+    };
+    assert_eq!(
+        call(&mut pc, delete("senha errada errada", Some(&codes[1]))).await,
+        error(AccountError::WrongCredentials)
+    );
+    assert_eq!(
+        call(&mut pc, delete(PASSWORD, None)).await,
+        AccountReply::NeedsSecondFactor
+    );
+    assert_eq!(
+        call(&mut pc, delete(PASSWORD, Some("000000"))).await,
+        error(AccountError::WrongCode)
+    );
+    assert_eq!(
+        call(&mut pc, delete(PASSWORD, Some(&codes[1]))).await,
+        AccountReply::Ok
+    );
+
+    // Nobody is logged in to it any more, and it does not log in.
+    assert_eq!(
+        call(&mut pc, AccountCall::Me).await,
+        error(AccountError::NotLoggedIn)
+    );
+    assert_eq!(
+        call(&mut notebook, AccountCall::Me).await,
+        error(AccountError::NotLoggedIn)
+    );
+    assert_eq!(
+        call(&mut notebook, AccountCall::Resume { token: theirs }).await,
+        error(AccountError::NotLoggedIn)
+    );
+    assert_eq!(
+        call(&mut pc, login(PASSWORD, Some(&codes[2]))).await,
+        error(AccountError::WrongCredentials)
+    );
+    // The address is free: a new account starts with no chain.
+    account(&mut pc, &inbox).await;
+    token(call(&mut pc, login(PASSWORD, None)).await);
+    assert_eq!(
+        call(&mut pc, AccountCall::ChainGet).await,
+        AccountReply::Chain { entries: vec![] }
+    );
+}

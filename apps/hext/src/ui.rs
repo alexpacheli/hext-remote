@@ -100,6 +100,10 @@ struct ViewerItem {
     /// Which viewer process holds it.
     #[serde(skip)]
     hub: u64,
+    /// Asked, with the password, to bind to the account: once connected,
+    /// it goes in the account's list (Meus computadores).
+    #[serde(skip)]
+    to_account: bool,
 }
 
 /// What the pages show.
@@ -115,6 +119,8 @@ struct View {
     viewers: Vec<ViewerItem>,
     /// Why the last one that failed did.
     viewer_failure: Option<String>,
+    /// What the last one to open did besides (put in the account).
+    viewer_news: Option<String>,
     /// The computers this one accessed, the latest first.
     recent: Vec<Computer>,
     /// The IDs on that list that are online; `None`: not known.
@@ -1017,9 +1023,18 @@ fn connect(
     id: String,
     password: Option<String>,
     remember: Option<bool>,
+    account: Option<bool>,
 ) -> Result<(), String> {
     let password = password.filter(|p| !p.is_empty()).map(Zeroizing::new);
     let remember = remember.unwrap_or(false) && password.is_some();
+    // With the password, the computer can bind to this device's account
+    // (it checks the ask, signed by this device, and the account's list).
+    let account = match account.unwrap_or(false) && password.is_some() {
+        true => Some(the_account(&shared)?.chain_id().ok_or(
+            "Para inserir o computador na conta, entre na conta e crie a lista de dispositivos.",
+        )?),
+        false => None,
+    };
     let id: DeviceId = id.parse().map_err(|e| format!("{e}"))?;
     let shown = id.to_string();
     let n = shared.next_viewer.fetch_add(1, Ordering::Relaxed);
@@ -1036,6 +1051,7 @@ fn connect(
             return Err("Feche uma das conexões antes de abrir outra.".into());
         }
         view.viewer_failure = None;
+        view.viewer_news = None;
         view.viewers.push(ViewerItem {
             session: n,
             id: shown,
@@ -1043,9 +1059,10 @@ fn connect(
             asking: true,
             locked: false,
             hub: 0,
+            to_account: account.is_some(),
         });
     }
-    if let Err(e) = open_viewer(&app, n, id, (password, remember)) {
+    if let Err(e) = open_viewer(&app, n, id, (password, remember, account)) {
         let message = format!("Não foi possível abrir a conexão: {e:#}");
         let mut view = shared.view.lock().expect("lock");
         view.viewers.retain(|v| v.session != n);
@@ -1056,6 +1073,53 @@ fn connect(
     }
     changed(&app);
     Ok(())
+}
+
+/// Puts computer `id`, called `name`, which a session just reached with its
+/// password (asking it to bind to the account), in the account's list: from
+/// then on the account's devices come in without the password. Its key is
+/// the one the connection proved (kept in `known_hosts`). The outcome shows
+/// on the home screen.
+fn put_in_account(app: AppHandle, id: String, name: String) {
+    tauri::async_runtime::spawn(async move {
+        let shared = app.state::<Shared>();
+        let done = async {
+            let key = hext_crypto::config_dir()
+                .ok()
+                .and_then(|dir| {
+                    let known = hext_signal::KnownHosts::new(dir.join("known_hosts"));
+                    known.get(id.parse().ok()?).ok()?
+                })
+                .ok_or_else(|| "a chave do computador não ficou guardada".to_owned())?;
+            the_account(&shared)?
+                .adopt(&key.to_string(), &id, &name)
+                .await
+        };
+        let outcome = done.await;
+        {
+            let mut view = shared.view.lock().expect("lock");
+            match outcome {
+                Ok(_) => {
+                    view.viewer_news = Some(format!(
+                        "{name} foi inserido em Meus computadores. Com o Hext instalado nele \
+                         (Windows), os dispositivos da conta passam a entrar sem senha."
+                    ));
+                    if !view.computers.iter().any(|c| c.id == id) {
+                        view.computers.push(Computer {
+                            id: id.clone(),
+                            name: name.clone(),
+                        });
+                    }
+                }
+                Err(e) => {
+                    view.viewer_failure =
+                        Some(format!("{name} não foi inserido em Meus computadores: {e}"));
+                }
+            }
+        }
+        changed(&app);
+        shared.presence.notify_one();
+    });
 }
 
 /// Takes a computer off the list.
@@ -1095,7 +1159,10 @@ async fn account(
     {
         let mut view = shared.view.lock().expect("lock");
         match &answer {
-            _ if !account.kept() => view.account = None,
+            _ if !account.kept() => {
+                view.account = None;
+                view.computers.clear();
+            }
             Ok(AccountReply::LoggedIn { account, .. } | AccountReply::Account(account)) => {
                 view.account = Some(account.clone());
             }
@@ -1191,16 +1258,25 @@ fn account_bind(shared: State<'_, Shared>, chain: String) -> Result<(), String> 
 }
 
 /// Unbinds this computer from the account: every access asks again. It
-/// takes an administrator: Windows asks.
+/// takes an administrator: Windows asks. Waits for it, to tell how it went
+/// (the home screen follows within seconds).
 #[tauri::command]
-fn account_unbind() -> Result<(), String> {
+async fn account_unbind() -> Result<(), String> {
     #[cfg(windows)]
-    return run_elevated(
-        "service account --off",
-        "Nada mudou: é preciso permitir como administrador.",
-    );
+    let result = {
+        let done =
+            tauri::async_runtime::spawn_blocking(|| run_elevated_wait("service account --off"))
+                .await
+                .map_err(|e| e.to_string())?;
+        match done {
+            Ok(0) => Ok(()),
+            Ok(code) => Err(format!("Não foi possível desligar ({code}).")),
+            Err(_) => Err("Nada mudou: é preciso permitir como administrador.".to_owned()),
+        }
+    };
     #[cfg(not(windows))]
-    Err("Só com o serviço instalado.".to_owned())
+    let result = Err("Só com o serviço instalado.".to_owned());
+    result
 }
 
 /// Opens one of the account's computers to another account (marco 6).
@@ -1385,7 +1461,7 @@ fn open_viewer(
     app: &AppHandle,
     n: u64,
     id: DeviceId,
-    (password, remember): (Option<Zeroizing<String>>, bool),
+    (password, remember, account): (Option<Zeroizing<String>>, bool, Option<[u8; 32]>),
 ) -> Result<()> {
     let shared = app.state::<Shared>();
     let asked = ToViewer::Open {
@@ -1393,6 +1469,7 @@ fn open_viewer(
         id,
         password,
         remember,
+        account,
     };
     let running = shared.hub.lock().expect("lock").as_ref().map(|(g, _)| *g);
     let generation = match running {
@@ -1400,12 +1477,15 @@ fn open_viewer(
         // None running, or it just left.
         _ => {
             let ToViewer::Open {
-                password, remember, ..
+                password,
+                remember,
+                account,
+                ..
             } = asked
             else {
                 unreachable!("an open");
             };
-            start_viewer(app, n, id, (password, remember))?
+            start_viewer(app, n, id, (password, remember, account))?
         }
     };
     let mut view = shared.view.lock().expect("lock");
@@ -1421,7 +1501,7 @@ fn start_viewer(
     app: &AppHandle,
     n: u64,
     id: DeviceId,
-    (password, remember): (Option<Zeroizing<String>>, bool),
+    (password, remember, account): (Option<Zeroizing<String>>, bool, Option<[u8; 32]>),
 ) -> Result<u64> {
     // Not the key the portable host is using: our relay serves one
     // connection per key, so the two would keep knocking each other off.
@@ -1447,7 +1527,9 @@ fn start_viewer(
     if password.is_some() {
         // Through its input: an argument could be read in the process list.
         command.arg("--password-stdin");
-        if remember {
+        if let Some(chain) = account {
+            command.arg("--account").arg(hex::encode(chain));
+        } else if remember {
             command.arg("--remember");
         }
     }
@@ -1525,7 +1607,7 @@ fn viewer_said(app: &AppHandle, n: u64, line: &str) {
         let name = name.trim().to_owned();
         let chat = Chat::new(name.clone());
         shared.chats.lock().expect("lock").insert(label, chat);
-        let id = {
+        let (id, to_account) = {
             let mut view = shared.view.lock().expect("lock");
             let Some(item) = view.viewers.iter_mut().find(|v| v.session == n) else {
                 return;
@@ -1533,9 +1615,12 @@ fn viewer_said(app: &AppHandle, n: u64, line: &str) {
             item.asking = false;
             item.locked = false;
             item.name = Some(name.clone());
-            item.id.clone()
+            (item.id.clone(), std::mem::take(&mut item.to_account))
         };
         remember(app, &id, &name);
+        if to_account {
+            put_in_account(app.clone(), id, name);
+        }
         changed(app);
     } else if line == VIEWER_CHAT_OPEN {
         open_chat(app, label, true);

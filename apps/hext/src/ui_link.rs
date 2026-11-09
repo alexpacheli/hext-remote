@@ -91,6 +91,9 @@ pub fn of_session_line(line: &str) -> Option<(u64, &str)> {
 const OPEN: &str = "open";
 /// An open with the password, asking to be trusted from then on.
 const OPEN_REMEMBER: &str = "open-remember";
+/// An open with the password, asking the computer to bind to the account
+/// (the chain's ID in hex, before the password).
+const OPEN_ACCOUNT: &str = "open-account";
 const FOCUS: &str = "focus";
 const CLOSE: &str = "close";
 
@@ -99,12 +102,14 @@ const CLOSE: &str = "close";
 pub enum ToViewer {
     /// Another computer, as session `session`; with `password`, nobody there
     /// needs to accept, and with `remember` (and the password), it trusts
-    /// this technician from then on, without it.
+    /// this technician from then on, without it. With `account` (and the
+    /// password), it binds to that account instead (the chain's ID).
     Open {
         session: u64,
         id: DeviceId,
         password: Option<Zeroizing<String>>,
         remember: bool,
+        account: Option<[u8; 32]>,
     },
     /// Bring the session's window forward.
     Focus(u64),
@@ -128,7 +133,20 @@ impl ToViewer {
                 session,
                 id,
                 password: Some(password),
+                account: Some(chain),
+                ..
+            } => format!(
+                "{OPEN_ACCOUNT} {session} {} {} {}",
+                id.get(),
+                hex::encode(chain),
+                password.as_str()
+            ),
+            Self::Open {
+                session,
+                id,
+                password: Some(password),
                 remember,
+                account: None,
             } => {
                 let verb = if *remember { OPEN_REMEMBER } else { OPEN };
                 format!("{verb} {session} {} {}", id.get(), password.as_str())
@@ -142,6 +160,20 @@ impl ToViewer {
     /// A line of [`ToViewer::line`] (its end already gone).
     pub fn parse(line: &str) -> Option<Self> {
         let open = |verb: &str| line.strip_prefix(verb).and_then(|r| r.strip_prefix(' '));
+        if let Some(rest) = open(OPEN_ACCOUNT) {
+            let mut parts = rest.splitn(4, ' ');
+            let session = parts.next()?.parse().ok()?;
+            let id = parts.next()?.parse().ok()?;
+            let chain = hex::decode(parts.next()?).ok()?.try_into().ok()?;
+            let password = parts.next().filter(|p| !p.is_empty())?;
+            return Some(Self::Open {
+                session,
+                id,
+                password: Some(Zeroizing::new(password.to_owned())),
+                remember: false,
+                account: Some(chain),
+            });
+        }
         let (remember, open) = match open(OPEN_REMEMBER) {
             Some(rest) => (true, Some(rest)),
             None => (false, open(OPEN)),
@@ -159,6 +191,7 @@ impl ToViewer {
                 id,
                 remember: remember && password.is_some(),
                 password,
+                account: None,
             });
         }
         let (session, rest) = of_session_line(line)?;
@@ -680,6 +713,7 @@ mod tests {
             id: id(),
             password: Some(Zeroizing::new("uma senha  com espaços ".to_owned())),
             remember: false,
+            account: None,
         };
         let line = open.line();
         assert_eq!(line.as_str(), "open 3 482913557 uma senha  com espaços ");
@@ -688,6 +722,7 @@ mod tests {
             id: back,
             password: Some(password),
             remember: false,
+            account: None,
         }) = ToViewer::parse(&line)
         else {
             panic!("an open with a password");
@@ -706,9 +741,38 @@ mod tests {
             id: id(),
             password: Some(Zeroizing::new("senha".to_owned())),
             remember: true,
+            account: None,
         };
         let line = remembered.line();
         assert_eq!(line.as_str(), "open-remember 6 482913557 senha");
+        let bound = ToViewer::Open {
+            session: 8,
+            id: id(),
+            password: Some(Zeroizing::new("a senha".to_owned())),
+            remember: false,
+            account: Some([0xab; 32]),
+        };
+        let bound_line = bound.line();
+        assert_eq!(
+            bound_line.as_str(),
+            format!("open-account 8 482913557 {} a senha", "ab".repeat(32))
+        );
+        let Some(ToViewer::Open {
+            session: 8,
+            password: Some(password),
+            account: Some(chain),
+            remember: false,
+            ..
+        }) = ToViewer::parse(&bound_line)
+        else {
+            panic!("an open binding to an account");
+        };
+        assert_eq!((password.as_str(), chain), ("a senha", [0xab; 32]));
+        // Without the password, or with a broken ID, it is no open.
+        assert!(
+            ToViewer::parse(&format!("open-account 8 482913557 {}", "ab".repeat(32))).is_none()
+        );
+        assert!(ToViewer::parse("open-account 8 482913557 abcd senha").is_none());
         assert!(matches!(
             ToViewer::parse(&line),
             Some(ToViewer::Open {
