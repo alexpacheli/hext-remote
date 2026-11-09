@@ -141,6 +141,12 @@ impl Verifier {
             file.extend_from_slice(&stored);
             file
         };
+        // In the clear (where nothing seals), it is as good as the password
+        // to whoever reads it: its folder, the app's own, is this user's only.
+        #[cfg(unix)]
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            crate::store::private_dir(dir).map_err(io)?;
+        }
         // All of it or none: a half-written file must not turn the access off.
         let new: PathBuf = path.with_extension("new");
         let _ = fs::remove_file(&new);
@@ -368,6 +374,8 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
+            let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
         }
         Verifier::remove(&path).unwrap();
         assert!(Verifier::load(&path).unwrap().is_none());

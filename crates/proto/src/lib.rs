@@ -167,6 +167,31 @@ pub struct Hello {
     pub access_code: String,
     /// Coming back to a session: the token it gave ([`Control::ResumeToken`]).
     pub resume: Option<[u8; 32]>,
+    /// What the viewer itself asks of the host, end to end: the server's
+    /// word alone is not enough. Last on purpose: a viewer from before it
+    /// sends nothing here and gets the default (asks nothing), and a host
+    /// from before ignores the bytes after the fields it knows.
+    #[serde(default, deserialize_with = "absent_is_default")]
+    pub asks: HelloAsks,
+}
+
+/// What a viewer that got in with the unattended password asks the host for.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HelloAsks {
+    /// To be trusted from now on, without the password.
+    pub remember: bool,
+    /// That the host bind to this account (the chain's ID).
+    pub account: Option<[u8; 32]>,
+}
+
+/// The value, or its default when the peer sent nothing (an older version:
+/// postcard has no field names, so a missing last field is the end of input).
+fn absent_is_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(T::deserialize(deserializer).unwrap_or_default())
 }
 
 /// Messages on the reliable control stream.
@@ -464,6 +489,10 @@ mod tests {
                 peer: PeerInfo::local("0.1.0", "desk"),
                 access_code: "123456789".into(),
                 resume: Some([7; 32]),
+                asks: HelloAsks {
+                    remember: true,
+                    account: Some([3; 32]),
+                },
             }),
             Control::RequestKeyframe,
             Control::ResendVideo {
@@ -629,6 +658,47 @@ mod tests {
         assert_eq!(StreamKind::from_byte(0), None);
         // The old video stream is refused.
         assert_eq!(StreamKind::from_byte(1), None);
+    }
+
+    /// A Hello from a version before [`HelloAsks`]: the same fields, minus
+    /// the last.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct OldHello {
+        peer: PeerInfo,
+        access_code: String,
+        resume: Option<[u8; 32]>,
+    }
+
+    #[test]
+    fn hellos_travel_between_versions() {
+        let old = OldHello {
+            peer: PeerInfo::local("0.6.1", "desk"),
+            access_code: "123456789".into(),
+            resume: None,
+        };
+        // An older viewer asks nothing.
+        let hello: Hello = decode(&encode(&old).unwrap()).unwrap();
+        assert_eq!(hello.asks, HelloAsks::default());
+        assert_eq!(hello.access_code, old.access_code);
+        // An older host reads what it knows.
+        let new = Hello {
+            peer: old.peer.clone(),
+            access_code: old.access_code.clone(),
+            resume: Some([1; 32]),
+            asks: HelloAsks {
+                remember: true,
+                account: Some([2; 32]),
+            },
+        };
+        let read: OldHello = decode(&encode(&new).unwrap()).unwrap();
+        assert_eq!(read.resume, Some([1; 32]));
+        // Inside a control frame, too.
+        let mut buf =
+            frame::encode_frame(&Control::Hello(new.clone()), frame::MAX_FRAME_LEN).unwrap();
+        let back: Control = frame::take_frame(&mut buf, frame::MAX_FRAME_LEN)
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, Control::Hello(new));
     }
 
     #[test]

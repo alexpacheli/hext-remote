@@ -593,7 +593,12 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         (Ok(done), Some(access)) => {
             access.lockout.succeeded(&viewer);
             report(access, grant.as_ref(), true);
-            if let Some(grant) = grant.as_ref().filter(|grant| grant.remember && !resumed)
+            // Only what the viewer asked itself, end to end, too: the server
+            // could add it to a request, or replay a signed ask.
+            let asked = done.1.asks;
+            if let Some(grant) = grant
+                .as_ref()
+                .filter(|grant| grant.remember && asked.remember && !resumed)
                 && access.password.bind(&viewer, grant)
             {
                 access
@@ -601,7 +606,7 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                     .audit(&format!("técnico vinculado: {}", who(grant)));
             }
             if let Some(grant) = grant.as_ref().filter(|_| !resumed)
-                && let Some(chain) = grant.account
+                && let Some(chain) = grant.account.filter(|&chain| asked.account == Some(chain))
             {
                 access.password.bind_account(&viewer, chain, grant);
             }

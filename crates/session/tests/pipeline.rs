@@ -75,6 +75,7 @@ async fn streams_and_decodes_video() {
             peer: PeerInfo::local("test", "client"),
             access_code: "111 222 333".into(),
             resume: None,
+            asks: Default::default(),
         },
         None,
         // Hardware where the machine has it (CI Macs may), else OpenH264.
@@ -120,6 +121,7 @@ async fn another_display_comes_through_at_its_own_size() {
             peer: PeerInfo::local("test", "client"),
             access_code: "111 222 333".into(),
             resume: None,
+            asks: Default::default(),
         },
         None,
         DecoderPreference::Auto,
@@ -193,6 +195,7 @@ async fn host_ending_the_session_is_not_an_error() {
             peer: PeerInfo::local("test", "client"),
             access_code: CODE.into(),
             resume: None,
+            asks: Default::default(),
         },
         None,
         DecoderPreference::Software,

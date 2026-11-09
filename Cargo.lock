@@ -2551,6 +2551,8 @@ version = "0.6.1"
 dependencies = [
  "arboard",
  "hext-proto",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "tracing",
  "windows",
 ]
@@ -2701,6 +2703,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tracing",
  "webpki-roots 0.26.11",
+ "zeroize",
 ]
 
 [[package]]

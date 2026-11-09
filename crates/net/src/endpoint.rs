@@ -45,6 +45,8 @@ pub async fn bind(key: &DeviceKey, config: &EndpointConfig) -> Result<Endpoint> 
         .build();
     // Minimal: no address lookup through third parties; peers learn each
     // other's addresses from our own signaling.
+    // (iroh keeps its own copy of the seed, which we cannot wipe; ours,
+    // in the DeviceKey, is wiped when it drops.)
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::from_bytes(key.seed()))
         .transport_config(transport)

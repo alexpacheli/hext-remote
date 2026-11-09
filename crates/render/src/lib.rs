@@ -218,6 +218,8 @@ pub struct Renderer {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     planes: Option<Planes>,
+    /// The size of the last picture dropped as too big (logged once).
+    refused: Option<(u32, u32)>,
     button_enter: wgpu::RenderPipeline,
     button_leave: wgpu::RenderPipeline,
     /// The button on screen, if any.
@@ -390,6 +392,7 @@ impl Renderer {
             layout,
             sampler,
             planes: None,
+            refused: None,
             button_enter,
             button_leave,
             button: None,
@@ -449,6 +452,22 @@ impl Renderer {
     }
 
     pub fn upload(&mut self, frame: &YuvFrame) {
+        // What the host sends decides the size: one the GPU cannot hold (or
+        // a picture that lacks its bytes) is dropped, not a crash.
+        let max = self.device.limits().max_texture_dimension_2d;
+        if !fits(frame, max) {
+            let size = (frame.width, frame.height);
+            if self.refused != Some(size) {
+                tracing::warn!(
+                    "quadro de {}x{} descartado: fora do que esta GPU aceita (até {max})",
+                    size.0,
+                    size.1
+                );
+                self.refused = Some(size);
+            }
+            return;
+        }
+        self.refused = None;
         if !matches!(&self.planes, Some(p) if (p.width, p.height) == (frame.width, frame.height)) {
             self.planes = Some(self.create_planes(frame.width, frame.height));
         }
@@ -632,9 +651,54 @@ impl Renderer {
     }
 }
 
+/// Whether `frame` can be shown on a GPU whose textures go up to `max` on a
+/// side: a size with room for the half-size color planes, and the bytes for
+/// all three.
+fn fits(frame: &YuvFrame, max: u32) -> bool {
+    let (w, h) = (frame.width, frame.height);
+    let len = |w: u32, h: u32| usize::try_from(u64::from(w) * u64::from(h)).unwrap_or(usize::MAX);
+    (2..=max).contains(&w)
+        && (2..=max).contains(&h)
+        && frame.y.len() >= len(w, h)
+        && frame.u.len() >= len(w / 2, h / 2)
+        && frame.v.len() >= len(w / 2, h / 2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(width: u32, height: u32) -> YuvFrame {
+        let len = |w: u32, h: u32| (w * h) as usize;
+        YuvFrame {
+            width,
+            height,
+            y: vec![0; len(width, height)],
+            u: vec![0; len(width / 2, height / 2)],
+            v: vec![0; len(width / 2, height / 2)],
+        }
+    }
+
+    #[test]
+    fn only_pictures_the_gpu_holds_are_shown() {
+        assert!(fits(&frame(1920, 1080), 8192));
+        assert!(fits(&frame(8192, 2), 8192));
+        // Too big, too small for the color planes, or short of bytes.
+        assert!(!fits(&frame(8194, 2), 8192));
+        assert!(!fits(&frame(1, 1080), 8192));
+        assert!(!fits(&frame(0, 0), 8192));
+        let mut short = frame(64, 64);
+        short.v.pop();
+        assert!(!fits(&short, 8192));
+        let huge = YuvFrame {
+            width: u32::MAX,
+            height: u32::MAX,
+            y: Vec::new(),
+            u: Vec::new(),
+            v: Vec::new(),
+        };
+        assert!(!fits(&huge, u32::MAX));
+    }
 
     #[test]
     fn the_button_sits_at_the_top_center() {
