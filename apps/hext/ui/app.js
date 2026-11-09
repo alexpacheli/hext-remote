@@ -584,12 +584,19 @@ function startAccount() {
     }
   });
   on("install-here", async () => {
-    if (!confirm("Instalar o Hext Remote neste computador? O Windows vai pedir permissão de administrador. Instalado, ele abre com o Windows e o ID passa a ser o da instalação.")) return;
+    const question = onMac
+      ? "Instalar o Hext Remote neste Mac? Instalado, ele abre sozinho a cada login, e o ID passa a ser o da instalação. Na primeira vez, o macOS pede Gravação de Tela e Acessibilidade para o Hext Remote."
+      : "Instalar o Hext Remote neste computador? O Windows vai pedir permissão de administrador. Instalado, ele abre com o Windows e o ID passa a ser o da instalação.";
+    if (!confirm(question)) return;
     $("install-here").disabled = true;
     showStatus("Instalando…");
     try {
       await invoke("install_here");
-      showStatus("Instalado. Esta janela fecha, e o Hext Remote instalado abre no lugar dela.");
+      showStatus(
+        onMac
+          ? "Esta janela fecha, e o Hext Remote instalado abre no lugar dela em alguns segundos."
+          : "Instalado. Esta janela fecha, e o Hext Remote instalado abre no lugar dela.",
+      );
     } catch (message) {
       showStatus(String(message), true);
       $("install-here").disabled = false;
