@@ -144,9 +144,10 @@ registrados) está em [deploy.md](deploy.md): um script faz tudo.
 
 O servidor manda os e-mails da conta por SMTP, sempre criptografado (STARTTLS na porta 587, TLS direto na
 465). Qualquer provedor serve; o nosso é a Brevo. Na VM, crie `/etc/hext/mail.env`, que só o `hext-server`
-lê:
+lê. O arquivo é criado vazio, com permissão 600, antes de receber a senha:
 
 ```sh
+sudo install -m 600 -o root -g root /dev/null /etc/hext/mail.env
 sudo tee /etc/hext/mail.env >/dev/null <<'FIM'
 HEXT_SMTP_HOST=smtp-relay.brevo.com
 HEXT_SMTP_PORT=587
@@ -154,7 +155,6 @@ HEXT_SMTP_USER=<o login SMTP da Brevo>
 HEXT_SMTP_PASSWORD=<a chave SMTP da Brevo>
 HEXT_MAIL_FROM=Hext Remote <nao-responda@seu-dominio.com.br>
 FIM
-sudo chmod 600 /etc/hext/mail.env
 sudo systemctl restart hext-server
 journalctl -u hext-server -n 20      # "SMTP: conexão e login ok"
 ```

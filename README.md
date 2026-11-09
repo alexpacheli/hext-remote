@@ -96,7 +96,8 @@ qualidade a isso. Para acompanhar o tráfego do mês e o uso do relay: `./deploy
 
 ### Opção 1: Docker
 
-Com o [Docker](https://docs.docker.com/engine/install/) instalado no servidor:
+Com o [Docker](https://docs.docker.com/engine/install/) 26 ou mais novo instalado no servidor (o relay monta só a
+pasta do próprio certificado, com `subpath`):
 
 ```sh
 git clone https://github.com/alexpacheli/remote-control.git

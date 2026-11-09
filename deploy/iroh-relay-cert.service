@@ -1,0 +1,10 @@
+# Started by iroh-relay-cert.path when Caddy writes a new certificate for the
+# relay. The pause lets Caddy finish writing both files (certificate and
+# key) before the relay copies them.
+[Unit]
+Description=Restart iroh-relay with the certificate Caddy renewed
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 5
+ExecStart=/bin/systemctl try-restart iroh-relay.service

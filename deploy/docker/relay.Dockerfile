@@ -11,5 +11,7 @@ COPY --from=build /out/bin/iroh-relay /usr/local/bin/iroh-relay
 COPY iroh-relay.toml /etc/hext/iroh-relay.toml.in
 COPY relay-start.sh /usr/local/bin/relay-start.sh
 EXPOSE 3340 7842/udp
-# As root, to read Caddy's certificate in its volume (mounted read only).
+# As root, to read the key Caddy writes as root (mode 600), but without any
+# capability, with a read-only filesystem and only the folder of the relay's
+# own certificate mounted (compose.yml).
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/relay-start.sh"]

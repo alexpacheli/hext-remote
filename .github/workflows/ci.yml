@@ -8,6 +8,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Builds and tests only: reading the code is enough.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -40,10 +44,10 @@ jobs:
             targets: x86_64-unknown-linux-gnu
             artifact: hext-remote-linux-x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Reads rust-toolchain.toml and caches the cargo registry and target dir.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           target: ${{ matrix.targets }}
 
@@ -96,7 +100,7 @@ jobs:
         shell: bash
         run: for bin in dist/*; do "$bin" --version; done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact }}
           path: dist/
