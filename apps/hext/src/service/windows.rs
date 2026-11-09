@@ -36,19 +36,26 @@ use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOpti
 use tokio::sync::{Notify, Semaphore};
 use tracing::{info, warn};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_SERVICE_SPECIFIC_ERROR, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0,
+    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SERVICE_SPECIFIC_ERROR, HANDLE, HLOCAL, LUID,
+    LocalFree, WAIT_OBJECT_0,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
     GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows::Win32::Security::{
-    DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser, IsWellKnownSid,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, RevertToSelf, SECURITY_ATTRIBUTES,
-    SecurityImpersonation, SetTokenInformation, TOKEN_ALL_ACCESS, TOKEN_USER, TokenPrimary,
-    TokenSessionId, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, DuplicateTokenEx, GetAce,
+    GetTokenInformation, INHERIT_ONLY_ACE, ImpersonateLoggedOnUser, IsWellKnownSid,
+    LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    PSID, RevertToSelf, SE_SHUTDOWN_NAME, SECURITY_ATTRIBUTES, SecurityImpersonation,
+    SetTokenInformation, TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_USER, TokenPrimary,
+    TokenPrivileges, TokenSessionId, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
 };
+use windows::Win32::Storage::FileSystem::CreateDirectoryW;
 use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW, SetDefaultDllDirectories,
+};
 use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use windows::Win32::System::RemoteDesktop::{
     WTS_CURRENT_SERVER_HANDLE, WTS_SESSIONSTATE_LOCK, WTSFreeMemory, WTSGetActiveConsoleSessionId,
@@ -67,9 +74,10 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Shell::IsUserAnAdmin;
 use windows::Win32::UI::WindowsAndMessaging::{
-    IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MESSAGEBOX_RESULT,
+    IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+    MESSAGEBOX_RESULT,
 };
-use windows::core::{PCWSTR, PWSTR, w};
+use windows::core::{PCWSTR, PWSTR, s, w};
 use zeroize::Zeroizing;
 
 use crate::agent::{AgentHub, Indicator, Stream};
@@ -81,8 +89,67 @@ const SERVICE: &str = "HextRemote";
 /// Where the policy that lets services send Ctrl+Alt+Del lives.
 const POLICY_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System";
 const SAS_VALUE: &str = "SoftwareSASGeneration";
+/// The policy that lets the sign-in screen shut the computer down.
+const SHUTDOWN_WITHOUT_LOGON: &str = "shutdownwithoutlogon";
+/// The computer's folder: the administrators' (as owner), open only to them
+/// and the system, passed on to all inside, nothing inherited from above.
+const MACHINE_DIR_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+/// The rights that change a file or folder (or what is in it), or who may.
+const WRITE_RIGHTS: u32 = 0x0002 // write data, add file
+    | 0x0004 // append, add subfolder
+    | 0x0010 // write extended attributes
+    | 0x0040 // delete child
+    | 0x0100 // write attributes
+    | 0x0001_0000 // delete
+    | 0x0004_0000 // write DAC
+    | 0x0008_0000 // write owner
+    | 0x0200_0000 // maximum allowed
+    | 0x1000_0000 // generic all
+    | 0x4000_0000; // generic write
+/// What in the computer's folder lets someone in or says who this computer is:
+/// read only when the system or the administrators alone wrote it.
+const SENSITIVE: [&str; 6] = [
+    "device.key",
+    "unattended.key",
+    "technicians.json",
+    "owners.json",
+    "resume.json",
+    "lockout.txt",
+];
 
-windows_core::link!("sas.dll" "system" fn SendSAS(asuser: windows_core::BOOL));
+/// Ctrl+Alt+Del, from the system's own `sas.dll`: loaded when needed and from
+/// System32 only, never from beside this program (an import would be looked
+/// for there first, and the installer runs elevated from Downloads).
+fn send_sas() -> Result<()> {
+    type SendSas = unsafe extern "system" fn(windows_core::BOOL);
+    let module = unsafe { LoadLibraryExW(w!("sas.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+        .context("sas.dll")?;
+    let found = unsafe { GetProcAddress(module, s!("SendSAS")) }.context("SendSAS")?;
+    // (The signature `sas.h` gives it.)
+    let send: SendSas = unsafe { std::mem::transmute(found) };
+    unsafe { send(false.into()) };
+    Ok(())
+}
+
+/// From here on, libraries this process loads by name come from System32
+/// only. For the service's commands, which may run elevated from wherever
+/// the program was downloaded to (Downloads, with whatever else is there).
+/// Not for the interface: WebView2 brings its own.
+pub fn harden_dll_search() {
+    if let Err(e) = unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) } {
+        warn!("SetDefaultDllDirectories: {e}");
+    }
+}
+
+/// A program of the system's own folder: nothing beside this program (in
+/// Downloads, say) or on PATH gets to run in its place, elevated.
+fn system_tool(name: &str) -> PathBuf {
+    let root = std::env::var_os("SystemRoot")
+        .filter(|root| !root.is_empty())
+        .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    root.join("System32").join(name)
+}
+
 /// How long the user has to answer a request (the server gives up at 60 s).
 const ANSWER_SECS: u32 = crate::signaling::ANSWER_TIME.as_secs() as u32;
 
@@ -95,7 +162,7 @@ fn id_file() -> Result<PathBuf> {
 /// binding, in the computer's folder, which only the system and the
 /// administrators reach: nobody else can put a key of their own there.
 fn access() -> Result<Access> {
-    Ok(Access::new(machine_dir()?, audit))
+    Ok(Access::new(machine_dir()?, audit).trusting(trusted_file))
 }
 
 fn technicians_store() -> Result<crate::technicians::Technicians> {
@@ -112,7 +179,7 @@ fn program_dir() -> Result<PathBuf> {
 
 fn sc(args: &[&str]) -> Result<String> {
     // (No console of its own: the interface has none to share.)
-    let out = Command::new("sc.exe")
+    let out = Command::new(system_tool("sc.exe"))
         .args(args)
         .creation_flags(CREATE_NO_WINDOW.0)
         .output()
@@ -156,7 +223,7 @@ fn require_admin() -> Result<()> {
 }
 
 fn icacls(args: &[&str]) -> Result<()> {
-    let out = Command::new("icacls")
+    let out = Command::new(system_tool("icacls.exe"))
         .args(args)
         .output()
         .context("icacls")?;
@@ -170,35 +237,185 @@ fn icacls(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Whether `path` belongs to the system or the administrators (not to an
-/// account that could have put a key of its own there).
-fn owned_by_admins(path: &Path) -> Result<bool> {
+/// Whether `sid` is the system or the administrators.
+fn is_admins(sid: PSID) -> bool {
+    unsafe {
+        IsWellKnownSid(sid, WinLocalSystemSid).as_bool()
+            || IsWellKnownSid(sid, WinBuiltinAdministratorsSid).as_bool()
+    }
+}
+
+/// Who may change a file or folder, as far as trusting it goes.
+struct Trust {
+    /// It belongs to the system or the administrators.
+    owner: bool,
+    /// Nobody else may change it.
+    writers: bool,
+}
+
+/// The [`Trust`] of `path`.
+fn trust_of(path: &Path) -> Result<Trust> {
+    /// Freed with its owner.
+    struct Descriptor(PSECURITY_DESCRIPTOR);
+    impl Drop for Descriptor {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = LocalFree(Some(HLOCAL(self.0.0)));
+            }
+        }
+    }
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let mut owner = PSID::default();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     let status = unsafe {
         GetNamedSecurityInfoW(
             PCWSTR(wide.as_ptr()),
             SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             Some(&mut owner),
             None,
-            None,
+            Some(&mut dacl),
             None,
             &mut descriptor,
         )
     };
     if status.is_err() {
-        bail!("dono de {}: {status:?}", path.display());
+        bail!("segurança de {}: {status:?}", path.display());
     }
-    let trusted = unsafe {
-        IsWellKnownSid(owner, WinLocalSystemSid).as_bool()
-            || IsWellKnownSid(owner, WinBuiltinAdministratorsSid).as_bool()
+    let descriptor = Descriptor(descriptor);
+    let owner = is_admins(owner);
+    // (No list at all lets everyone in.)
+    let mut writers = !dacl.is_null();
+    let count = if dacl.is_null() {
+        0
+    } else {
+        unsafe { (*dacl).AceCount }
     };
+    for index in 0..u32::from(count) {
+        let mut ace: *mut c_void = std::ptr::null_mut();
+        unsafe { GetAce(dacl, index, &mut ace) }?;
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        if u32::from(header.AceFlags) & INHERIT_ONLY_ACE.0 != 0 {
+            continue; // only for what is created inside
+        }
+        match header.AceType {
+            // Allowed: to whom, and what.
+            0 => {
+                let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+                let sid = PSID((&raw const allowed.SidStart).cast_mut().cast());
+                if allowed.Mask & WRITE_RIGHTS != 0 && !is_admins(sid) {
+                    writers = false;
+                }
+            }
+            // Denied: takes nothing away from trusting it.
+            1 => {}
+            // Anything else (conditional, object): not something this
+            // program writes.
+            _ => writers = false,
+        }
+    }
+    drop(descriptor);
+    Ok(Trust { owner, writers })
+}
+
+/// Whether `path` belongs to the system or the administrators (not to an
+/// account that could have put a key of its own there).
+fn owned_by_admins(path: &Path) -> Result<bool> {
+    Ok(trust_of(path)?.owner)
+}
+
+/// Whether the file at `path` may be believed: the system's or the
+/// administrators', and nobody else may change it. Anything else could have
+/// been put there, or changed, by another account of this computer.
+fn trusted_file(path: &Path) -> bool {
+    match trust_of(path) {
+        Ok(trust) => trust.owner && trust.writers,
+        Err(e) => {
+            warn!("{e:#}");
+            false
+        }
+    }
+}
+
+/// Makes `dir` closed from the start (see [`MACHINE_DIR_SDDL`]): there is no
+/// moment in which another account could put something in it. Whether it is
+/// new (`false`: it was there already).
+fn create_locked_dir(dir: &Path) -> Result<bool> {
+    let sddl: Vec<u16> = MACHINE_DIR_SDDL.encode_utf16().chain([0]).collect();
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )
+    }?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: false.into(),
+    };
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+    let made = unsafe { CreateDirectoryW(PCWSTR(wide.as_ptr()), Some(&raw const attributes)) };
     unsafe {
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
     }
-    Ok(trusted)
+    match made {
+        Ok(()) => Ok(true),
+        Err(e) if e.code() == ERROR_ALREADY_EXISTS.to_hresult() => Ok(false),
+        Err(e) => Err(e).with_context(|| dir.display().to_string()),
+    }
+}
+
+/// Takes out of `dir` what the system or the administrators did not put
+/// there (`strict`: or that someone else may change), before anything in it
+/// is believed. Whether all of it went.
+fn remove_foreign(dir: &Path, strict: bool) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return true;
+    };
+    let mut clean = true;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let foreign = match trust_of(&path) {
+            Ok(trust) => !trust.owner || (strict && !trust.writers),
+            Err(_) => true,
+        };
+        if !foreign {
+            continue;
+        }
+        // A link goes, not what it leads to.
+        let removed = match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                std::fs::remove_dir(&path).or_else(|_| std::fs::remove_file(&path))
+            }
+            Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&path),
+            _ => std::fs::remove_file(&path),
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        match removed {
+            Ok(()) => {
+                warn!("{}: de origem desconhecida, removido", path.display());
+                audit(&format!(
+                    "arquivo de origem desconhecida removido da pasta do computador: {name}"
+                ));
+            }
+            Err(e) => {
+                warn!(
+                    "{}: de origem desconhecida, e não saiu: {e}",
+                    path.display()
+                );
+                audit(&format!(
+                    "arquivo de origem desconhecida na pasta do computador não pôde ser removido: \
+                     {name}"
+                ));
+                clean = false;
+            }
+        }
+    }
+    clean
 }
 
 /// The computer's folder (the key, the ID and the logs), open only to the
@@ -221,7 +438,31 @@ fn prepare_machine_dir() -> Result<PathBuf> {
             aside.display()
         );
     }
-    std::fs::create_dir_all(&data).with_context(|| data.display().to_string())?;
+    if create_locked_dir(&data)? {
+        // Closed since it was made: anything in it was not put there by us.
+        if std::fs::read_dir(&data)?.next().is_some() {
+            bail!(
+                "{} apareceu com arquivos que não são do Hext Remote; nada foi instalado",
+                data.display()
+            );
+        }
+        return Ok(data);
+    }
+    lock_existing_dir(&data)?;
+    Ok(data)
+}
+
+/// Closes a computer's folder already there (from an earlier install, which
+/// may have left it open for a moment), after taking out what another account
+/// put in it: taking ownership of all inside would hide who made it.
+fn lock_existing_dir(data: &Path) -> Result<()> {
+    if !remove_foreign(data, false) {
+        bail!(
+            "{} tem arquivos de outra conta que não puderam ser removidos (em uso?); feche os \
+             programas ou reinicie, e tente de novo",
+            data.display()
+        );
+    }
     let folder = data.display().to_string();
     icacls(&[&folder, "/setowner", "*S-1-5-32-544", "/T", "/C", "/Q"])?;
     // The folder alone: only the system and the administrators, passed on
@@ -236,11 +477,35 @@ fn prepare_machine_dir() -> Result<PathBuf> {
     ])?;
     // What is already inside (the key of an earlier install) inherits
     // exactly that, and nothing of its own.
-    if std::fs::read_dir(&data)?.next().is_some() {
+    if std::fs::read_dir(data)?.next().is_some() {
         let inside = data.join("*").display().to_string();
         icacls(&[&inside, "/reset", "/T", "/C", "/Q"])?;
     }
-    Ok(data)
+    Ok(())
+}
+
+/// At the service's start: the computer's folder closed, and nothing in it
+/// believed that another account put or may change there. A key or binding
+/// of someone else's that does not go is an error: better no service than
+/// one that is someone else's.
+fn check_machine_dir() -> Result<()> {
+    let data = machine_dir()?;
+    if !trusted_file(&data) {
+        warn!("{}: aberta a outras contas; fechando", data.display());
+        audit("a pasta do computador estava aberta a outras contas: fechada");
+        lock_existing_dir(&data)?;
+    }
+    remove_foreign(&data, true);
+    for name in SENSITIVE {
+        let path = data.join(name);
+        if path.exists() && !trusted_file(&path) {
+            bail!(
+                "{}: de origem desconhecida, e não saiu; o serviço não inicia com ele",
+                path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn install(name: Option<String>) -> Result<()> {
@@ -344,8 +609,14 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// The policy value that lets programs send Ctrl+Alt+Del (bit 1:
 /// services), if set.
 fn sas_policy() -> Option<u32> {
-    let out = Command::new("reg")
-        .args(["query", POLICY_KEY, "/v", SAS_VALUE])
+    policy(SAS_VALUE)
+}
+
+/// The value `name` of the system's policies, if set (a number).
+fn policy(name: &str) -> Option<u32> {
+    let out = Command::new(system_tool("reg.exe"))
+        .args(["query", POLICY_KEY, "/v", name])
+        .creation_flags(CREATE_NO_WINDOW.0)
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -369,7 +640,10 @@ fn set_sas_policy(value: Option<u32>) -> Result<()> {
         ],
         None => vec!["delete", POLICY_KEY, "/v", SAS_VALUE, "/f"],
     };
-    let out = Command::new("reg").args(&args).output().context("reg")?;
+    let out = Command::new(system_tool("reg.exe"))
+        .args(&args)
+        .output()
+        .context("reg")?;
     if !out.status.success() {
         bail!("reg {}", args.join(" "));
     }
@@ -399,6 +673,10 @@ fn allow_secure_attention() -> Result<()> {
 /// Puts the policy back as it was before the install.
 fn restore_secure_attention() {
     let Ok(backup) = sas_backup() else { return };
+    // (What another account wrote does not set a policy.)
+    if backup.exists() && !trusted_file(&backup) {
+        return;
+    }
     let Ok(text) = std::fs::read_to_string(&backup) else {
         return; // the install did not change it
     };
@@ -693,24 +971,53 @@ pub fn account(chain: Option<&str>, off: bool) -> Result<()> {
     access()?.bind_account(&owners, chain.unwrap_or_default())
 }
 
-/// Takes back the token kept before a restart, if it is still good.
-fn restore_resume(resumes: &ResumeTokens) {
-    if let Ok(dir) = machine_dir() {
-        super::kept::restore(&dir, resumes);
+/// Takes back the token kept before a restart, if it is still good: kept by
+/// the system, and the way its viewer came in (the password, the technician)
+/// still holds.
+fn restore_resume(resumes: &ResumeTokens, access: &Access) {
+    let Ok(dir) = machine_dir() else { return };
+    let file = super::kept::kept_file(&dir);
+    if file.exists() && !trusted_file(&file) {
+        warn!("{}: de origem desconhecida, ignorado", file.display());
+        super::kept::revoke(&dir);
+        return;
+    }
+    super::kept::restore_if(&dir, resumes, |kept, password| {
+        access.still(&kept.viewer, &kept.grant, password)
+    });
+}
+
+/// Whether the user at this computer could restart it themselves: the
+/// service restarts as the system, which must not be a way around that. With
+/// nobody signed in, as the sign-in screen allows.
+fn console_may_restart() -> std::result::Result<(), String> {
+    let refused = "quem usa este computador não tem permissão para reiniciá-lo".to_owned();
+    match UserToken::of(unsafe { WTSGetActiveConsoleSessionId() }) {
+        Some(user) => match user.holds(SE_SHUTDOWN_NAME) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(refused),
+            Err(e) => Err(format!("permissão para reiniciar: {e:#}")),
+        },
+        None if policy(SHUTDOWN_WITHOUT_LOGON) == Some(0) => Err(refused),
+        None => Ok(()),
     }
 }
 
 /// Restarts this computer, with the token waiting on the other side.
-struct MachineRestart;
+struct MachineRestart(Access);
 
 impl Restart for MachineRestart {
     fn restart(&self, kept: &KeptResume, who: &str) -> std::result::Result<(), String> {
+        if let Err(e) = console_may_restart() {
+            audit(&format!("reinício pedido por {who} recusado: {e}"));
+            return Err(e);
+        }
         let dir = machine_dir().map_err(|e| e.to_string())?;
-        super::kept::keep(&dir, kept)?;
+        let password = self.0.verifier().map(|verifier| *verifier.salt());
+        super::kept::keep_with(&dir, kept, password.as_ref())?;
         audit(&format!("reinício pedido: {who}"));
         // From the system's own folder: nothing on PATH gets to run as SYSTEM.
-        let root = std::env::var_os("SystemRoot").ok_or("SystemRoot não definido")?;
-        let done = Command::new(Path::new(&root).join("System32").join("shutdown.exe"))
+        let done = Command::new(system_tool("shutdown.exe"))
             .args(["/r", "/t", "5", "/d", "p:0:0"])
             .status()
             .map_err(|e| format!("shutdown: {e}"))?;
@@ -931,6 +1238,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
 /// through the interface, the screen through the agents.
 async fn serve() -> Result<()> {
     info!("serviço iniciado (v{APP_VERSION})");
+    check_machine_dir()?;
     let key =
         Arc::new(load_or_create(&FileKeyStore::machine(machine_dir()?.join("device.key")))?.0);
     let name = crate::name::in_dir(&machine_dir()?);
@@ -973,8 +1281,10 @@ async fn serve() -> Result<()> {
     let hub = AgentHub::new(
         || {
             if sas_policy().is_some_and(|v| v & 1 != 0) {
-                unsafe { SendSAS(false.into()) };
-                info!("Ctrl+Alt+Del enviado");
+                match send_sas() {
+                    Ok(()) => info!("Ctrl+Alt+Del enviado"),
+                    Err(e) => warn!("Ctrl+Alt+Del: {e:#}"),
+                }
             } else {
                 warn!("Ctrl+Alt+Del recusado: a política SoftwareSASGeneration não permite");
             }
@@ -994,9 +1304,10 @@ async fn serve() -> Result<()> {
     let encoder = EncoderSettings::default();
     let session_codes = SessionCodes::default();
     let resumes = ResumeTokens::default();
-    restore_resume(&resumes);
     let host_key = key.public_key();
     let access = access()?;
+    restore_resume(&resumes, &access);
+    tokio::spawn(drop_revoked_tokens(access.clone(), resumes.clone()));
     let owners = access.owners(key.clone());
     let (activity, activity_out) = tokio::sync::mpsc::unbounded_channel();
     let _ = ACTIVITY.set(activity);
@@ -1022,7 +1333,8 @@ async fn serve() -> Result<()> {
         })),
         unattended: Some(UnattendedAccess {
             key: host_key,
-            lockout: Lockout::default(),
+            // (On disk: restarting the service must not clear the waits.)
+            lockout: Lockout::kept_in(machine_dir()?.join("lockout.txt")),
             password: Arc::new(Password {
                 access: access.clone(),
                 ui: ui.clone(),
@@ -1031,7 +1343,7 @@ async fn serve() -> Result<()> {
             attempts,
         }),
         resumes: resumes.clone(),
-        restart: Some(Arc::new(MachineRestart)),
+        restart: Some(Arc::new(MachineRestart(access.clone()))),
         files: Some(Arc::new(UserFiles)),
     });
     let slot = Arc::new(Semaphore::new(1));
@@ -1053,6 +1365,29 @@ async fn serve() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(500)).await;
     endpoint.close().await;
     Ok(())
+}
+
+/// How often the tokens are checked against the password and the
+/// technicians, which the command line changes.
+const TOKEN_CHECK: Duration = Duration::from_secs(3);
+
+/// Drops the tokens whose way in no longer holds: a new password (or none)
+/// takes those of everyone who came in with the old one; a revoked
+/// technician, theirs. Nobody comes back by a way that was closed.
+async fn drop_revoked_tokens(access: Access, resumes: ResumeTokens) {
+    let mut password = access.verifier().map(|verifier| *verifier.salt());
+    let mut tick = tokio::time::interval(TOKEN_CHECK);
+    loop {
+        tick.tick().await;
+        let now = access.verifier().map(|verifier| *verifier.salt());
+        let changed = now != password;
+        password = now;
+        resumes.retain(|kept| {
+            let grant = &kept.grant;
+            let by_password = grant.needs_password && !grant.bound && grant.via.is_none();
+            !(changed && by_password) && access.still(&kept.viewer, grant, None)
+        });
+    }
 }
 
 fn write_id(id: DeviceId) {
@@ -1126,7 +1461,7 @@ async fn install_update(manifest: &crate::update::Manifest) -> Result<()> {
     // On its own, out of this service's job: it stops the service.
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-    let mut command = Command::new("msiexec.exe");
+    let mut command = Command::new(system_tool("msiexec.exe"));
     command
         .arg("/i")
         .arg(&msi)
@@ -1239,7 +1574,9 @@ async fn message_box(session: u32, name: &str, id: DeviceId) -> bool {
         .collect();
     let asked = tokio::task::spawn_blocking(move || {
         let mut answer = MESSAGEBOX_RESULT(0);
-        // Waits for the answer, or `ANSWER_SECS` (then it is a no).
+        // Waits for the answer, or `ANSWER_SECS` (then it is a no). "Não"
+        // is the button already chosen: an Enter or a space pressed by
+        // someone typing must not hand over the computer.
         let sent = unsafe {
             WTSSendMessageW(
                 Some(WTS_CURRENT_SERVER_HANDLE),
@@ -1248,7 +1585,7 @@ async fn message_box(session: u32, name: &str, id: DeviceId) -> bool {
                 (title.len() * 2) as u32,
                 PCWSTR(text.as_ptr()),
                 (text.len() * 2) as u32,
-                MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
+                MB_YESNO | MB_DEFBUTTON2 | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
                 ANSWER_SECS,
                 &mut answer,
                 true,
@@ -1420,6 +1757,38 @@ impl UserToken {
             let sid = text.to_string();
             let _ = LocalFree(Some(HLOCAL(text.0.cast())));
             Ok(sid?)
+        }
+    }
+
+    /// Whether this user has privilege `name` (enabled or not: a program of
+    /// theirs could enable it).
+    fn holds(&self, name: PCWSTR) -> Result<bool> {
+        unsafe {
+            let mut wanted = LUID::default();
+            LookupPrivilegeValueW(PCWSTR::null(), name, &mut wanted)?;
+            let mut size = 0;
+            // (Fails, saying how much it needs.)
+            let _ = GetTokenInformation(self.0, TokenPrivileges, None, 0, &mut size);
+            let mut buffer = vec![0u64; (size as usize).div_ceil(size_of::<u64>())];
+            GetTokenInformation(
+                self.0,
+                TokenPrivileges,
+                Some(buffer.as_mut_ptr().cast()),
+                size,
+                &mut size,
+            )?;
+            // (The list runs past the one entry the type declares: read
+            // from the buffer itself.)
+            let privileges = buffer.as_ptr().cast::<TOKEN_PRIVILEGES>();
+            let count = (*privileges).PrivilegeCount as usize;
+            let first = (&raw const (*privileges).Privileges).cast::<LUID_AND_ATTRIBUTES>();
+            let fits = (buffer.len() * size_of::<u64>())
+                .saturating_sub(std::mem::offset_of!(TOKEN_PRIVILEGES, Privileges))
+                / size_of::<LUID_AND_ATTRIBUTES>();
+            let all = std::slice::from_raw_parts(first, count.min(fits));
+            Ok(all
+                .iter()
+                .any(|p| p.Luid.LowPart == wanted.LowPart && p.Luid.HighPart == wanted.HighPart))
         }
     }
 

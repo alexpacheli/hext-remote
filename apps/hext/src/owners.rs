@@ -402,6 +402,21 @@ impl hext_session::host::Owners for Owners {
         self.load();
         self.way(viewer).is_some()
     }
+
+    fn still_with(&self, viewer: &PublicKey, permissions: &Permissions) -> bool {
+        self.load();
+        // Nor someone the account now lets do less than the session does.
+        self.way(viewer)
+            .is_some_and(|way| covers(&way.permissions, permissions))
+    }
+}
+
+/// Whether `now` allows everything `had` did.
+fn covers(now: &Permissions, had: &Permissions) -> bool {
+    (now.control || !had.control)
+        && (now.clipboard || !had.clipboard)
+        && (now.files || !had.files)
+        && (now.restart || !had.restart)
 }
 
 /// How often the file is read again, for the home screen to follow a
@@ -587,6 +602,21 @@ mod tests {
     use hext_signal::chain::{Allowed, Op};
 
     use super::*;
+
+    #[test]
+    fn fewer_permissions_than_the_session_had_do_not_cover_it() {
+        let all = Permissions {
+            control: true,
+            clipboard: true,
+            files: true,
+            restart: true,
+        };
+        assert!(covers(&all, &Permissions::CONTROL));
+        assert!(covers(&Permissions::CONTROL, &Permissions::CONTROL));
+        assert!(covers(&Permissions::VIEW_ONLY, &Permissions::VIEW_ONLY));
+        assert!(!covers(&Permissions::VIEW_ONLY, &Permissions::CONTROL));
+        assert!(!covers(&Permissions::CONTROL, &all));
+    }
 
     fn key() -> DeviceKey {
         DeviceKey::generate().unwrap()

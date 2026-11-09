@@ -211,9 +211,40 @@ pub async fn run(end: FileEnd) {
 /// nothing Windows would read as something else, nothing that hides what the
 /// name says. The other side chose it.
 pub fn safe_name(name: &str) -> bool {
-    const WINDOWS: [&str; 22] = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    // (Windows also reads the superscript digits as ports, and the console
+    // and the clock as devices.)
+    const WINDOWS: [&str; 31] = [
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+        "COM\u{b9}",
+        "COM\u{b2}",
+        "COM\u{b3}",
+        "LPT\u{b9}",
+        "LPT\u{b2}",
+        "LPT\u{b3}",
+        "CONIN$",
+        "CONOUT$",
+        "CLOCK$",
     ];
     let stem = name.split('.').next().unwrap_or(name).trim_end();
     !name.is_empty()
@@ -861,6 +892,8 @@ mod tests {
             ".gitignore",
             "a.tar.gz",
             "console.txt",
+            "COM10.txt",
+            "conin.txt",
         ] {
             assert!(safe_name(name), "{name}");
         }
@@ -881,6 +914,13 @@ mod tests {
             "NUL",
             "con.txt",
             "COM1.tar.gz",
+            "CONIN$",
+            "conout$.txt",
+            "Clock$",
+            "COM\u{b9}",
+            "com\u{b2}.log",
+            "lpt\u{b3}",
+            "LPT\u{b9}.txt",
             "ponto.",
             "espaço ",
             " espaço",
