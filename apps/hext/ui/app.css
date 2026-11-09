@@ -656,6 +656,10 @@ form.rename {
   background: var(--surface);
 }
 
+.rows:empty {
+  display: none;
+}
+
 .rows li {
   display: flex;
   gap: 12px;

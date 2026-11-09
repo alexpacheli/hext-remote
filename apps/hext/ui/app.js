@@ -653,7 +653,7 @@ function startAccount() {
   submit("account-forgot", async () => {
     const reply = await accountCall(
       { call: "forgot_password", email: $("forgot-email").value },
-      "Mandando…",
+      "Enviando…",
     );
     if (!reply) return;
     $("reset-code").value = "";
