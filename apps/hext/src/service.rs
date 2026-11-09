@@ -216,6 +216,8 @@ pub fn login_access(
 
 /// Sets the password typed in the app's screen (`Some`), or turns it off
 /// (`None`). On Windows, it takes an administrator: Windows asks.
+// (Linux has no app window: only the CLI.)
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub async fn set_password_from_app(password: Option<String>) -> Result<()> {
     let password = password.map(zeroize::Zeroizing::new);
     #[cfg(windows)]
