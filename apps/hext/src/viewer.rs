@@ -241,7 +241,17 @@ pub fn run(args: ViewArgs) -> Result<()> {
         return runtime.block_on(headless(net, target, &args, password));
     }
 
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = EventLoop::<UserEvent>::with_user_event();
+    // An app like any other while the session is open (in the Dock, in
+    // Cmd+Tab): the bundle says background (`LSUIElement`), and macOS keeps
+    // such an app's windows out of full screen and the Dock.
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        builder.with_activation_policy(ActivationPolicy::Regular);
+    }
+    let event_loop = builder.build()?;
     let proxy = event_loop.create_proxy();
     if args.report_to_ui {
         listen_to_ui(proxy.clone());

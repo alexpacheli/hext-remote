@@ -107,6 +107,7 @@ const pages = {
       const notice = $("notice");
       notice.hidden = !view.notice;
       notice.textContent = view.notice ?? "";
+      $("app-version").textContent = view.version ? `Versão ${view.version}` : "";
       $("install").hidden = !view.installable;
       $("update").hidden = !view.update;
       $("update-text").textContent = view.update
