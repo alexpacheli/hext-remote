@@ -91,7 +91,8 @@ e compila o app apontando para ele. O servidor e o relay são deste repositório
 
 **Quanto consome.** A sinalização é leve: ela só guarda IDs e presença e repassa os pedidos de conexão, e um
 servidor pequeno atende milhares de computadores conectados. O que custa é o **relay**: uma sessão que passa por
-ele usa de 0,5 a 3 Mbps (cerca de 0,2 a 1,3 GB por hora). A maioria das sessões é direta e não passa por ele.
+ele usa de 0,5 a 3 Mbps (cerca de 0,2 a 1,3 GB por hora). A maioria das sessões é direta e não passa por ele. Cada dispositivo envia no máximo 5 Mbit/s pelo relay, e o app ajusta a
+qualidade a isso. Para acompanhar o tráfego do mês e o uso do relay: `./deploy/uso.sh`, no servidor.
 
 ### Opção 1: Docker
 

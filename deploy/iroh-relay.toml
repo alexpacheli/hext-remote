@@ -6,6 +6,8 @@
 enable_relay = true
 http_bind_addr = "127.0.0.1:3340"
 enable_quic_addr_discovery = true
+# Usage counters (Prometheus), for deploy/uso.sh: this machine only.
+metrics_bind_addr = "127.0.0.1:9090"
 
 [tls]
 cert_mode = "Reloading"
@@ -14,6 +16,13 @@ manual_key_path = "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.l
 quic_bind_addr = "[::]:7842"
 # HTTPS is Caddy's job: the relay serves HTTP only (QUIC keeps its TLS).
 dangerous_http_only = true
+
+# Each device sends at most 5 Mbit/s through the relay (625 kB/s, with bursts
+# of up to a second): one heavy session cannot take the whole link, and the
+# app lowers its video to fit. Direct (P2P) sessions are not limited.
+[limits.client.rx]
+bytes_per_second = 625000
+max_burst_bytes = 625000
 
 # Only devices registered with hext-server may use the relay. The secret is
 # IROH_RELAY_HTTP_BEARER_TOKEN, from /etc/hext/secrets.env.

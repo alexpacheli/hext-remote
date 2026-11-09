@@ -41,6 +41,12 @@ done
 echo "sinalização: $SIGNAL_HOST"
 echo "relay:       $RELAY_HOST"
 
+step "vnstat (the month's traffic, for deploy/uso.sh)"
+if ! command -v vnstat >/dev/null; then
+    sudo apt-get install -y vnstat
+fi
+sudo systemctl enable --now vnstat
+
 step "Caddy"
 if ! command -v caddy >/dev/null; then
     sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
@@ -135,3 +141,4 @@ check "https://$RELAY_HOST/generate_204"
 systemctl --no-pager --lines=0 status caddy hext-server iroh-relay | grep -E '●|Active'
 echo
 echo "Logs: journalctl -u hext-server -u iroh-relay -u caddy -f"
+echo "Uso e tráfego: ./deploy/uso.sh"

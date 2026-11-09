@@ -82,6 +82,23 @@ sudo sqlite3 /var/lib/hext/hext-server.db \
   "SELECT datetime(at,'unixepoch'), from_id, to_id, event FROM audit ORDER BY id DESC LIMIT 20"
 ```
 
+### Uso e tráfego
+
+```sh
+./deploy/uso.sh
+```
+
+Mostra o tráfego da rede no mês (pelo `vnstat`, que o `install.sh` instala) comparado com o limite do provedor,
+e o relay desde que iniciou: quanto repassou, quantos dispositivos estão conectados e quantas conexões bateram no
+limite por dispositivo. O limite do provedor é de 10 TB por mês por padrão (o da Oracle);
+`HEXT_LIMITE_GB=5000 ./deploy/uso.sh` usa outro. Com Docker, o mesmo script funciona no servidor (o `vnstat`
+é opcional: `sudo apt install vnstat`).
+
+**Limite por dispositivo.** Cada dispositivo envia no máximo 5 Mbit/s pelo relay (`[limits.client.rx]` em
+`deploy/iroh-relay.toml`), para que uma sessão pesada não ocupe o link inteiro. O app baixa a qualidade do
+vídeo para caber. O limite vale para tudo o que passa pelo relay, inclusive arquivos. As sessões diretas (P2P) não têm limite. Se `conexões que bateram no limite` crescer muito e
+houver folga de tráfego, aumente o valor.
+
 ## Segurança
 
 - O `hext-server` e o `iroh-relay` escutam só em `127.0.0.1`. Da internet chegam só o Caddy (80/443) e a
