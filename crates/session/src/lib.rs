@@ -49,9 +49,31 @@ pub fn codes_match(expected: &str, given: &str) -> bool {
     hext_crypto::constant_time_eq(&normalize(expected), &normalize(given))
 }
 
+/// How much of a peer's name is shown.
+const MAX_SHOWN_NAME: usize = 64;
+
+/// A name as the other side sent it, made safe to show and log: nothing that
+/// moves a terminal's cursor or reverses text around it, and not too long.
+pub fn shown_name(name: &str) -> String {
+    name.chars()
+        .filter(|&c| {
+            !c.is_control()
+                && !matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+        })
+        .take(MAX_SHOWN_NAME)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_shown_lose_what_hides_them() {
+        assert_eq!(shown_name("abc\u{202E}gnp.exe\n"), "abcgnp.exe");
+        assert_eq!(shown_name(&"x".repeat(500)).len(), MAX_SHOWN_NAME);
+        assert_eq!(shown_name("Recepção"), "Recepção");
+    }
 
     #[test]
     fn access_codes() {

@@ -1,8 +1,9 @@
 # The second iroh-relay, without the per-device limit, for the accounts in
 # /etc/hext/relay-livre.txt (see docs/deploy.md). Like the first one: plain
 # HTTP on 127.0.0.1 behind Caddy, and QUIC address discovery on UDP 7843
-# (the first one has 7842) with the certificate Caddy keeps for its name.
-# {$RELAY_FULL_HOST} is its name: install.sh writes it in.
+# (the first one has 7842) with the certificate Caddy keeps for its name,
+# handed over by systemd as credentials (iroh-relay-full.service) and
+# renewed by iroh-relay-full-cert.path.
 
 enable_relay = true
 http_bind_addr = "127.0.0.1:3341"
@@ -11,9 +12,9 @@ enable_quic_addr_discovery = true
 metrics_bind_addr = "127.0.0.1:9091"
 
 [tls]
-cert_mode = "Reloading"
-manual_cert_path = "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_FULL_HOST}/{$RELAY_FULL_HOST}.crt"
-manual_key_path = "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_FULL_HOST}/{$RELAY_FULL_HOST}.key"
+cert_mode = "Manual"
+manual_cert_path = "/run/credentials/iroh-relay-full.service/cert"
+manual_key_path = "/run/credentials/iroh-relay-full.service/key"
 quic_bind_addr = "[::]:7843"
 # HTTPS is Caddy's job: the relay serves HTTP only (QUIC keeps its TLS).
 dangerous_http_only = true

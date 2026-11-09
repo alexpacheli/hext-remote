@@ -4,9 +4,13 @@ After=network-online.target caddy.service hext-server.service
 Wants=network-online.target
 
 [Service]
-# As Caddy's user, to read the certificate Caddy keeps for the relay's name.
-User=caddy
-Group=caddy
+# Like iroh-relay.service: its own throwaway user, with only the certificate
+# and key of its name, as credentials in /run/credentials/iroh-relay-full.service/
+# (see iroh-relay-full.toml); iroh-relay-full-cert.path restarts it when Caddy
+# renews them. {$RELAY_FULL_HOST} is its name: install.sh writes it in.
+DynamicUser=yes
+LoadCredential=cert:/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_FULL_HOST}/{$RELAY_FULL_HOST}.crt
+LoadCredential=key:/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_FULL_HOST}/{$RELAY_FULL_HOST}.key
 EnvironmentFile=/etc/hext/secrets.env
 ExecStart=/usr/local/bin/iroh-relay --config-path /etc/hext/iroh-relay-full.toml
 # Until Caddy has the first certificate, the relay cannot start: retry.

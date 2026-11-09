@@ -222,6 +222,7 @@ async fn session_with(permissions: Permissions) -> Running {
             peer: PeerInfo::local("test", "viewer"),
             access_code: code,
             resume: None,
+            asks: Default::default(),
         },
         None,
         DecoderPreference::Software,

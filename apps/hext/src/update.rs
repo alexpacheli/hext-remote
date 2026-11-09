@@ -102,20 +102,22 @@ pub fn verify(bytes: &[u8], signature: &str, key: &[u8; 32]) -> Result<Manifest>
 /// A new signing key: the seed (secret, for the pipeline) and the public
 /// half (built into the app), both in hex.
 pub fn keygen() -> Result<(String, String)> {
-    let mut seed = [0u8; 32];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut seed)
+    // (Our copies of the seed are wiped; ring's own, inside the pair, are
+    // out of reach.)
+    let mut seed = zeroize::Zeroizing::new([0u8; 32]);
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), seed.as_mut())
         .map_err(|_| anyhow::anyhow!("sem números aleatórios"))?;
-    let pair = Ed25519KeyPair::from_seed_unchecked(&seed)
+    let pair = Ed25519KeyPair::from_seed_unchecked(seed.as_ref())
         .map_err(|_| anyhow::anyhow!("chave inválida"))?;
     Ok((hex::encode(seed), hex::encode(pair.public_key().as_ref())))
 }
 
 /// `bytes` signed with `seed` (hex), in hex.
 pub fn sign(bytes: &[u8], seed: &str) -> Result<String> {
-    let mut raw = [0u8; 32];
-    hex::decode_to_slice(seed.trim(), &mut raw).context("chave de assinatura inválida")?;
-    let pair =
-        Ed25519KeyPair::from_seed_unchecked(&raw).map_err(|_| anyhow::anyhow!("chave inválida"))?;
+    let mut raw = zeroize::Zeroizing::new([0u8; 32]);
+    hex::decode_to_slice(seed.trim(), raw.as_mut()).context("chave de assinatura inválida")?;
+    let pair = Ed25519KeyPair::from_seed_unchecked(raw.as_ref())
+        .map_err(|_| anyhow::anyhow!("chave inválida"))?;
     Ok(hex::encode(pair.sign(bytes).as_ref()))
 }
 
@@ -209,6 +211,18 @@ pub async fn latest() -> Result<Manifest> {
     verify(&bytes, &String::from_utf8_lossy(&signature), &key)
 }
 
+/// Whether `name` is a plain file name, to be put inside a folder: no
+/// folders, no drive ("C:x" is relative to C:'s current folder), no stream
+/// ("x:y"), not hidden, not "..", and only one component.
+#[cfg_attr(not(windows), allow(dead_code))] // as download
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.contains(['/', '\\', ':', '\0'])
+        && !name.chars().any(char::is_control)
+        && std::path::Path::new(name).components().count() == 1
+}
+
 /// Downloads the file of `kind` into `dir`, checked against the manifest.
 #[cfg_attr(not(windows), allow(dead_code))] // the Windows service installs it
 pub async fn download(manifest: &Manifest, kind: &str, dir: &Path) -> Result<PathBuf> {
@@ -217,7 +231,7 @@ pub async fn download(manifest: &Manifest, kind: &str, dir: &Path) -> Result<Pat
         .get(kind)
         .with_context(|| format!("a versão {} não tem {kind}", manifest.version))?;
     // (Only a plain name: the manifest is signed, but still.)
-    if asset.name.contains(['/', '\\']) || asset.name.starts_with('.') {
+    if !plain_name(&asset.name) {
         bail!("nome de arquivo inválido: {}", asset.name);
     }
     let bytes = get(&http()?, &manifest.url(asset)).await?;
@@ -271,6 +285,26 @@ pub fn command(action: crate::UpdateAction) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_plain_file_names_are_downloaded() {
+        assert!(plain_name("HextRemote-0.6.2-x64.msi"));
+        for bad in [
+            "",
+            ".hidden",
+            "..",
+            "a/b.msi",
+            "a\\b.msi",
+            "C:x.msi",
+            "C:\\Windows\\x.msi",
+            "x.msi:stream",
+            "\\\\server\\share\\x.msi",
+            "x\u{0}.msi",
+            "x\n.msi",
+        ] {
+            assert!(!plain_name(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn versions_compare_by_number() {

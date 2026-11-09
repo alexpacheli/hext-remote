@@ -1,0 +1,8 @@
+# Started by iroh-relay-full-cert.path (see iroh-relay-cert.service).
+[Unit]
+Description=Restart iroh-relay-full with the certificate Caddy renewed
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 5
+ExecStart=/bin/systemctl try-restart iroh-relay-full.service

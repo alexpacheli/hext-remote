@@ -1,3 +1,12 @@
 /target
 /apps/hext/gen
 /deploy/docker/.env
+
+# Secrets and keys: never in the repository.
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.env
+mail.env
+.env

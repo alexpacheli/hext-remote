@@ -64,11 +64,20 @@ pub struct HostConfig {
 pub trait Owners: Send + Sync {
     /// Whether `viewer` is still let in, as the latest list says.
     fn still(&self, viewer: &PublicKey) -> bool;
+    /// Whether `viewer` is still let in with at least `permissions`: a
+    /// session the account now lets do less ends too.
+    fn still_with(&self, viewer: &PublicKey, _permissions: &Permissions) -> bool {
+        self.still(viewer)
+    }
 }
 
-/// How often a session let in by the account checks that its viewer still
-/// is.
-const OWNER_CHECK: Duration = Duration::from_secs(30);
+/// How often a session let in without anyone accepting (by the account, the
+/// password or as a trusted technician) checks that the way in still holds.
+const GRANT_CHECK: Duration = Duration::from_secs(10);
+
+/// The salt of the password a session came in with: a new password has
+/// another one.
+pub type PasswordSalt = [u8; hext_crypto::pake::SALT_LEN];
 
 /// What a restart takes on the host.
 pub trait Restart: Send + Sync {
@@ -121,6 +130,23 @@ pub trait UnattendedPassword: Send + Sync {
     /// the implementation audits the outcome. Where there is no binding (not
     /// installed, macOS), nothing happens.
     fn bind_account(&self, _viewer: &PublicKey, _chain: [u8; 32], _grant: &crate::Grant) {}
+    /// Whether a session `grant` let in without anyone accepting may still
+    /// go on: with the password, that it is still on and (`password`, when
+    /// known) the same one; as a trusted technician, that it was not revoked
+    /// (where there is no such list, it holds). Checked now and then, and
+    /// before a token brings the viewer back.
+    fn still(
+        &self,
+        _viewer: &PublicKey,
+        grant: &crate::Grant,
+        password: Option<&PasswordSalt>,
+    ) -> bool {
+        if grant.bound || !grant.needs_password {
+            return true;
+        }
+        self.verifier()
+            .is_some_and(|now| password.is_none_or(|salt| now.salt() == salt))
+    }
 }
 
 /// The session going on, as the host's user is shown it.
@@ -541,6 +567,31 @@ fn admit_with_password(
     })
 }
 
+/// Whether the way `grant` came in without anyone accepting still holds:
+/// the account still lets `viewer` in with as much, the password is the same
+/// (`password`, when known), the technician still trusted. With nothing to
+/// check against, it holds.
+fn still_holds(
+    config: &HostConfig,
+    viewer: &PublicKey,
+    grant: &crate::Grant,
+    password: Option<&PasswordSalt>,
+) -> bool {
+    if grant.via.is_some() {
+        return config
+            .owners
+            .as_ref()
+            .is_none_or(|owners| owners.still_with(viewer, &grant.permissions));
+    }
+    if grant.needs_password || grant.bound {
+        return config
+            .unattended
+            .as_ref()
+            .is_none_or(|access| access.password.still(viewer, grant, password));
+    }
+    true
+}
+
 /// Runs one session on an accepted connection until the client leaves.
 ///
 /// Returns the client's identity once the session ends normally.
@@ -550,6 +601,8 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     let viewer = hext_net::remote_key(&conn);
     let mut grant: Option<crate::Grant> = None;
     let mut resumed = false;
+    // The password the session came in with, to see it change.
+    let mut salt: Option<PasswordSalt> = None;
     let mut peer = config.peer.clone();
     if let Some(name) = config.presence.as_ref().and_then(|p| p.device_name()) {
         peer.device_name = name;
@@ -575,13 +628,32 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         let back = hello
             .resume
             .and_then(|token| config.resumes.take(&token, &viewer));
+        // (Only while the way it first came in holds: a password changed or a
+        // technician revoked since takes the token's worth with it.)
+        // (The password once: reading it may be slow.)
+        let back = back.filter(|back| {
+            if back.needs_password && !back.bound && back.via.is_none() {
+                salt = config
+                    .unattended
+                    .as_ref()
+                    .and_then(|access| access.password.verifier())
+                    .map(|verifier| *verifier.salt());
+                salt.is_some()
+            } else {
+                still_holds(&config, &viewer, back, None)
+            }
+        });
         if let Some(back) = back {
             let permissions = back.permissions;
             grant = Some(back);
             resumed = true;
             return Ok(Admission::Allow(permissions));
         }
-        admit_with_password(config.unattended.as_ref(), &viewer, granted)
+        let admitted = admit_with_password(config.unattended.as_ref(), &viewer, granted)?;
+        if let Admission::Password { verifier, .. } = &admitted {
+            salt = Some(*verifier.salt());
+        }
+        Ok(admitted)
     })
     .await;
     // What counts as a guess is known only now.
@@ -593,7 +665,12 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         (Ok(done), Some(access)) => {
             access.lockout.succeeded(&viewer);
             report(access, grant.as_ref(), true);
-            if let Some(grant) = grant.as_ref().filter(|grant| grant.remember && !resumed)
+            // Only what the viewer asked itself, end to end, too: the server
+            // could add it to a request, or replay a signed ask.
+            let asked = done.1.asks;
+            if let Some(grant) = grant
+                .as_ref()
+                .filter(|grant| grant.remember && asked.remember && !resumed)
                 && access.password.bind(&viewer, grant)
             {
                 access
@@ -601,7 +678,7 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                     .audit(&format!("técnico vinculado: {}", who(grant)));
             }
             if let Some(grant) = grant.as_ref().filter(|_| !resumed)
-                && let Some(chain) = grant.account
+                && let Some(chain) = grant.account.filter(|&chain| asked.account == Some(chain))
             {
                 access.password.bind_account(&viewer, chain, grant);
             }
@@ -621,7 +698,11 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         }
         (handshake, None) => handshake?,
     };
-    let client = hello.peer;
+    // The viewer chose these: shown on the indicator and written in the log,
+    // so nothing in them may hide or fake what is around them.
+    let mut client = hello.peer;
+    client.device_name = crate::shown_name(&client.device_name);
+    client.app_version = crate::shown_name(&client.app_version);
     // Every session the host let in is audited (a trusted technician like
     // the password; one accepted at the computer too).
     let audit = config
@@ -636,7 +717,11 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             .audit(&format!("sessão retomada: {}", who(grant)));
     }
     let returnable = grant.clone();
-    let via_account = grant.as_ref().is_some_and(|grant| grant.via.is_some());
+    // Let in without anyone accepting: checked now and then, so that leaving
+    // the account, a new password or a revoked technician ends it.
+    let revocable = grant
+        .clone()
+        .filter(|grant| grant.via.is_some() || grant.needs_password || grant.bound);
     let session = match grant {
         Some(grant) => {
             if let Some(audit) = audit.as_ref().filter(|_| !resumed) {
@@ -775,21 +860,28 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // Once: the system refuses a second restart while one is under way.
     let mut restarting = false;
     let mut chat_pace = ChatPace::new();
-    // Let in by the account: checked now and then.
-    let owners = config.owners.clone().filter(|_| via_account);
-    let mut owner_check = tokio::time::interval(OWNER_CHECK);
-    owner_check.tick().await;
+    let mut grant_check = tokio::time::interval(GRANT_CHECK);
+    // Back with a token by the account: checked at once against the latest
+    // list (it may have changed while the viewer was away).
+    let via_account = revocable.as_ref().is_some_and(|grant| grant.via.is_some());
+    if !(resumed && via_account) {
+        grant_check.tick().await;
+    }
 
     let result = loop {
         tokio::select! {
-            _ = owner_check.tick(), if owners.is_some() => {
-                if owners.as_ref().is_some_and(|owners| !owners.still(&viewer)) {
-                    info!("o técnico saiu da conta: sessão encerrada");
+            _ = grant_check.tick(), if revocable.is_some() => {
+                if let Some(grant) = &revocable
+                    && !still_holds(&config, &viewer, grant, salt.as_ref())
+                {
+                    let why = if grant.via.is_some() {
+                        "não está mais na conta, ou perdeu permissões"
+                    } else {
+                        "o acesso foi revogado (senha alterada ou técnico desvinculado)"
+                    };
+                    info!("sessão encerrada: {why}");
                     if let Some(audit) = &audit {
-                        audit.audit(&format!(
-                            "sessão encerrada: {} não está mais na conta",
-                            session.name
-                        ));
+                        audit.audit(&format!("sessão encerrada: {}: {why}", session.name));
                     }
                     let _ = control.send(&Control::Bye).await;
                     conn.close(0u32.into(), ENDED_ON_HOST);

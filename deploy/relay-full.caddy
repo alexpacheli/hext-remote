@@ -6,6 +6,12 @@
 	reverse_proxy 127.0.0.1:3341
 }
 
+# Plain HTTP only for iroh's captive-portal probe (see the Caddyfile).
 http://{$RELAY_FULL_HOST} {
-	reverse_proxy 127.0.0.1:3341
+	handle /generate_204 {
+		reverse_proxy 127.0.0.1:3341
+	}
+	handle {
+		redir https://{host}{uri} 308
+	}
 }

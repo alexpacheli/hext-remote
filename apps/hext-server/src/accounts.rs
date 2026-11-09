@@ -30,13 +30,46 @@ const CODE_TRIES: i64 = 5;
 const RECOVERY_CODES: usize = 10;
 /// TOTP: 30-second steps, 6 digits, one step of clock drift either way.
 const TOTP_STEP: u64 = 30;
-/// Wrong guesses (a password, a code) and e-mails sent, per address and per
-/// e-mail address. A right guess does not count.
+/// Wrong guesses (a password, a code), per address, and of a password (or
+/// 2FA code) per e-mail address. A right guess does not count.
 pub(crate) const GUESSES_PER_IP: usize = 30;
 pub(crate) const GUESSES_PER_EMAIL: usize = 10;
 pub(crate) const GUESS_WINDOW: Duration = Duration::from_secs(15 * 60);
+pub(crate) const HOUR: Duration = Duration::from_secs(3600);
+pub(crate) const DAY: Duration = Duration::from_secs(24 * 3600);
+/// Wrong e-mailed codes per e-mail address in a day, apart from the
+/// password's: whoever guesses codes does not lock the owner out of logging
+/// in. After the first few, each waits twice as long as the one before.
+pub(crate) const CODE_GUESSES_PER_DAY: usize = 20;
+const CODE_FREE_GUESSES: usize = 3;
+const CODE_MAX_WAIT: Duration = Duration::from_secs(15 * 60);
+/// E-mails sent per address asking and per e-mail address, and in all (the
+/// SMTP provider's quota; see [`State::set_mail_budget`]).
+pub(crate) const MAILS_PER_IP: usize = 5;
+pub(crate) const MAILS_PER_EMAIL: usize = 5;
+pub const MAILS_PER_HOUR: usize = 100;
+pub const MAILS_PER_DAY: usize = 250;
+/// Account calls per device, of any kind.
+pub(crate) const CALLS_PER_DEVICE: usize = 120;
+pub(crate) const CALL_WINDOW: Duration = Duration::from_secs(60);
+/// Accounts never confirmed are deleted after this.
+pub(crate) const UNCONFIRMED_FOR: Duration = DAY;
+/// How long a password check waits for its turn (Argon2 runs at most one
+/// per core at once).
+const ARGON_WAIT: Duration = Duration::from_secs(10);
+/// How long after a device of an account got into a computer with the
+/// password the computer may fetch that account's chain without being on
+/// it (it is binding itself at the device's ask).
+const BIND_ASK_FOR: i64 = 10 * 60;
+/// How long a computer's word that it is bound to an account holds, for
+/// presence (a computer bound and running says it every minute).
+const TRUST_FOR: i64 = 7 * 24 * 3600;
+/// Chains kept checked in memory, so an entry is checked alone.
+const CACHED_CHAINS: usize = 1024;
 /// Longest code or token taken (anything longer is wrong anyway).
 const MAX_CODE: usize = 128;
+/// Length of an e-mailed code.
+const EMAIL_CODE_LEN: usize = 8;
 
 /// Events kept for each account (the latest).
 const KEPT_EVENTS: i64 = 500;
@@ -46,13 +79,37 @@ pub trait Mailer: Send + Sync {
     fn send(&self, to: &str, subject: &str, body: &str);
 }
 
-/// E-mails written to the log, until a real sender is set up (F5 decision
-/// 3). The codes show there: for tests and trials only.
+/// E-mails written to the log, codes and all: for tests and trials only
+/// (the server takes it only with `--dev-mail-log`).
 pub struct LogMailer;
 
 impl Mailer for LogMailer {
     fn send(&self, to: &str, subject: &str, body: &str) {
         info!("e-mail para {to}: {subject}\n{body}");
+    }
+}
+
+/// No SMTP set up: the e-mails go nowhere, and the log says only that one
+/// was not sent (never its code).
+pub struct NoMailer;
+
+impl Mailer for NoMailer {
+    fn send(&self, to: &str, subject: &str, _body: &str) {
+        warn!(
+            "e-mail para {} não enviado (SMTP não configurado): {subject}",
+            mask_email(to)
+        );
+    }
+}
+
+/// An e-mail address for the log: its first letter and the domain.
+pub fn mask_email(email: &str) -> String {
+    match email.split_once('@') {
+        Some((local, domain)) => {
+            let first: String = local.chars().take(1).collect();
+            format!("{first}***@{domain}")
+        }
+        None => "***".to_owned(),
     }
 }
 
@@ -123,6 +180,12 @@ pub(crate) fn init(conn: &Connection) -> rusqlite::Result<()> {
              device_id INTEGER NOT NULL,
              created_at INTEGER NOT NULL,
              last_used INTEGER NOT NULL
+         ) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS computer_trust (
+             device_id INTEGER NOT NULL,
+             chain_id BLOB NOT NULL,
+             at INTEGER NOT NULL,
+             PRIMARY KEY (device_id, chain_id)
          ) WITHOUT ROWID;",
     )
 }
@@ -198,6 +261,36 @@ impl Db {
             params![email, password, crate::db::now()],
         )?;
         Ok((inserted == 1).then(|| conn.last_insert_rowid()))
+    }
+
+    /// Registered again, still unconfirmed: it counts as new.
+    fn restart_unconfirmed(&self, account: i64) -> rusqlite::Result<()> {
+        self.conn().execute(
+            "UPDATE accounts SET created_at = ?2 WHERE id = ?1 AND verified = 0",
+            params![account, crate::db::now()],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes the accounts never confirmed, registered over `age` seconds
+    /// ago; how many.
+    pub fn delete_unconfirmed(&self, age: i64) -> rusqlite::Result<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let old = "SELECT id FROM accounts WHERE verified = 0 AND created_at < ?1";
+        let before = crate::db::now() - age;
+        for table in ["account_codes", "account_sessions"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE account_id IN ({old})"),
+                params![before],
+            )?;
+        }
+        let deleted = tx.execute(
+            "DELETE FROM accounts WHERE verified = 0 AND created_at < ?1",
+            params![before],
+        )?;
+        tx.commit()?;
+        Ok(deleted)
     }
 
     fn set_code(&self, account: i64, purpose: &str, code: &str) -> rusqlite::Result<()> {
@@ -592,25 +685,108 @@ impl Db {
         rows.collect()
     }
 
-    /// Whether `viewer` is a device of an account that has computer `host`.
+    /// Whether `viewer` is a device of an account that has computer `host`
+    /// (or that one shares it with), and the computer itself says it is
+    /// bound to that account: a list naming a computer is not its consent.
     pub(crate) fn same_account(&self, host: DeviceId, viewer: DeviceId) -> rusqlite::Result<bool> {
+        let since = crate::db::now() - TRUST_FOR;
         self.conn()
             .query_row(
                 "SELECT 1 FROM account_computers c
                  JOIN account_members m ON m.account_id = c.account_id
                  JOIN devices v ON v.public_key = m.public_key
-                 WHERE c.device_id = ?1 AND v.id = ?2
+                 JOIN account_chain_ids i ON i.account_id = c.account_id
+                 JOIN computer_trust t ON t.device_id = c.device_id AND t.chain_id = i.chain_id
+                 WHERE c.device_id = ?1 AND v.id = ?2 AND t.at >= ?3
                  UNION
                  SELECT 1 FROM account_shares s
                  JOIN account_chain_ids i ON i.chain_id = s.with_chain
                  JOIN account_members m ON m.account_id = i.account_id
                  JOIN devices v ON v.public_key = m.public_key
-                 WHERE s.device_id = ?1 AND v.id = ?2",
-                params![host.get(), viewer.get()],
+                 JOIN account_chain_ids own ON own.account_id = s.account_id
+                 JOIN computer_trust t ON t.device_id = s.device_id AND t.chain_id = own.chain_id
+                 WHERE s.device_id = ?1 AND v.id = ?2 AND t.at >= ?3",
+                params![host.get(), viewer.get(), since],
                 |_| Ok(()),
             )
             .optional()
             .map(|found| found.is_some())
+    }
+
+    /// Computer `device` says it is bound to `chains` (and to no other).
+    fn set_trust(&self, device: DeviceId, chains: &[[u8; 32]]) -> rusqlite::Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM computer_trust WHERE device_id = ?1",
+            params![device.get()],
+        )?;
+        for chain in chains {
+            tx.execute(
+                "INSERT OR REPLACE INTO computer_trust (device_id, chain_id, at) VALUES (?1, ?2, ?3)",
+                params![device.get(), chain.as_slice(), crate::db::now()],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// Whether computer `device` (with `key`) may have the chain `entries`
+    /// of `account` (chain `chain`): it is on its list, or was (to see that
+    /// it is not anymore), or the account shares it with that chain, or a
+    /// device of the account just got into it with the password (it binds
+    /// itself at that device's ask, before it is on the list).
+    fn may_see_chain(
+        &self,
+        (account, chain): (i64, &[u8; 32]),
+        device: DeviceId,
+        key: &hext_crypto::PublicKey,
+        entries: &[Entry],
+    ) -> rusqlite::Result<bool> {
+        let was_on_it = entries
+            .iter()
+            .any(|e| matches!(&e.op, Op::AddComputer { host, .. } if host == key));
+        if was_on_it {
+            return Ok(true);
+        }
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT 1 FROM account_computers WHERE account_id = ?1 AND device_id = ?2
+             UNION
+             SELECT 1 FROM account_shares WHERE device_id = ?2 AND with_chain = ?3
+             UNION
+             SELECT 1 FROM entered e
+             JOIN devices v ON v.id = e.viewer_id
+             JOIN account_members m ON m.public_key = v.public_key
+             WHERE e.host_id = ?2 AND m.account_id = ?1 AND e.at >= ?4",
+            params![
+                account,
+                device.get(),
+                chain.as_slice(),
+                crate::db::now() - BIND_ASK_FOR
+            ],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|found| found.is_some())
+    }
+
+    /// How many entries `account`'s chain has, and the last one.
+    fn chain_tail(&self, account: i64) -> rusqlite::Result<(u64, Option<Entry>)> {
+        let conn = self.conn();
+        let len: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM account_chain WHERE account_id = ?1",
+            params![account],
+            |row| row.get(0),
+        )?;
+        let last: Option<String> = conn
+            .query_row(
+                "SELECT entry FROM account_chain WHERE account_id = ?1 ORDER BY seq DESC LIMIT 1",
+                params![account],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let last = last.and_then(|json| serde_json::from_str(&json).ok());
+        Ok((len as u64, last))
     }
 
     /// Adds `entry` as number `seq`; false if that place is taken (someone
@@ -673,6 +849,38 @@ impl Joins {
     }
 }
 
+/// The accounts' chains as last checked, so a new entry is checked alone
+/// (against the chain's end as stored: anything else checks it all again).
+#[derive(Default)]
+pub(crate) struct Chains(std::sync::Mutex<std::collections::HashMap<i64, Chain>>);
+
+impl Chains {
+    /// The chain of `account`, if the one kept ends at `last` (of `len`
+    /// entries).
+    fn get(&self, account: i64, len: u64, last: Option<&Entry>) -> Option<Chain> {
+        let last = last?;
+        let all = self.0.lock().expect("lock");
+        all.get(&account)
+            .filter(|chain| chain.len == len && chain.head == last.hash())
+            .cloned()
+    }
+
+    fn put(&self, account: i64, chain: Chain) {
+        let mut all = self.0.lock().expect("lock");
+        if all.len() >= CACHED_CHAINS && !all.contains_key(&account) {
+            // (Any one: they are only a shortcut.)
+            if let Some(&other) = all.keys().next() {
+                all.remove(&other);
+            }
+        }
+        all.insert(account, chain);
+    }
+
+    fn forget(&self, account: i64) {
+        self.0.lock().expect("lock").remove(&account);
+    }
+}
+
 /// Why a call failed.
 enum Fail {
     Reply(AccountError),
@@ -705,16 +913,23 @@ pub(crate) struct Caller<'a> {
 
 /// Answers `call`.
 pub(crate) async fn handle(state: &State, caller: Caller<'_>, call: AccountCall) -> AccountReply {
-    let ip = caller.ip;
-    // The address a password or code was tried for: counted if wrong.
+    if !state.account_calls.allow(&caller.device, Instant::now()) {
+        return AccountReply::error(AccountError::TooManyAttempts);
+    }
+    // A password or code tried: counted before the work (so calls at once
+    // cannot all get past the limit), and given back unless it was wrong.
     let mut guessed = None;
     let answer = run(state, caller, call, &mut guessed).await;
-    if let (
-        Some(email),
-        Err(Fail::Reply(AccountError::WrongCredentials | AccountError::WrongCode)),
-    ) = (&guessed, &answer)
+    let wrong = matches!(
+        answer,
+        Err(Fail::Reply(
+            AccountError::WrongCredentials | AccountError::WrongCode
+        ))
+    );
+    if let Some(guess) = guessed
+        && !wrong
     {
-        count(state, ip, email);
+        guess.refund(state);
     }
     match answer {
         Ok(reply) => reply,
@@ -730,7 +945,7 @@ async fn run(
     state: &State,
     caller: Caller<'_>,
     call: AccountCall,
-    guessed: &mut Option<String>,
+    guessed: &mut Option<Guess>,
 ) -> Answer {
     let Caller {
         device,
@@ -743,7 +958,7 @@ async fn run(
             let email = clean_email(&email).ok_or(AccountError::InvalidEmail)?;
             check_password(&password)?;
             sends(state, ip, &email)?;
-            let hash = blocking(move || hash_password(&password)).await;
+            let hash = argon(state, move || hash_password(&password)).await?;
             let created = {
                 let email = email.clone();
                 state.db(move |db| db.create_account(&email, &hash)).await?
@@ -758,7 +973,11 @@ async fn run(
                     match found {
                         // Created and never confirmed: a new code (the
                         // password is set when it is confirmed).
-                        Some(account) if !account.verified => Some(account.id),
+                        Some(account) if !account.verified => {
+                            let id = account.id;
+                            state.db(move |db| db.restart_unconfirmed(id)).await?;
+                            Some(id)
+                        }
                         Some(_) => {
                             state.mail(
                                 &email,
@@ -799,8 +1018,8 @@ async fn run(
         } => {
             let email = clean_email(&email).ok_or(AccountError::WrongCode)?;
             check_password(&password)?;
-            *guessed = Some(limited(state, ip, &email)?);
-            let code = clean_code(&code)?;
+            *guessed = Some(limited_code(state, ip, &email)?);
+            let code = clean_email_code(&code)?;
             let found = state.db(move |db| db.account_by_email(&email)).await?;
             // A confirmed account has no code to confirm: wrong, like an
             // unknown address.
@@ -816,7 +1035,7 @@ async fn run(
             }
             // The password is the one given with the code: whoever registered
             // the address first (without it) does not choose it.
-            let hash = blocking(move || hash_password(&password)).await;
+            let hash = argon(state, move || hash_password(&password)).await?;
             state
                 .db(move |db| {
                     db.set_password(id, &hash)?;
@@ -837,7 +1056,7 @@ async fn run(
             let stored = found
                 .as_ref()
                 .map_or_else(|| dummy_hash().to_owned(), |a| a.password.clone());
-            let right = blocking(move || verify_password(&password, &stored)).await;
+            let right = argon(state, move || verify_password(&password, &stored)).await?;
             let account = found
                 .filter(|_| right)
                 .ok_or(AccountError::WrongCredentials)?;
@@ -964,8 +1183,8 @@ async fn run(
         } => {
             let email = clean_email(&email).ok_or(AccountError::WrongCode)?;
             check_password(&password)?;
-            *guessed = Some(limited(state, ip, &email)?);
-            let code = clean_code(&code)?;
+            *guessed = Some(limited_code(state, ip, &email)?);
+            let code = clean_email_code(&code)?;
             let found = state.db(move |db| db.account_by_email(&email)).await?;
             let account = found.ok_or(AccountError::WrongCode)?;
             let id = account.id;
@@ -975,7 +1194,7 @@ async fn run(
             if checked != Code::Right {
                 return Err(AccountError::WrongCode.into());
             }
-            let hash = blocking(move || hash_password(&password)).await;
+            let hash = argon(state, move || hash_password(&password)).await?;
             state
                 .db(move |db| {
                     db.set_password(id, &hash)?;
@@ -989,29 +1208,39 @@ async fn run(
             Ok(AccountReply::Ok)
         }
         AccountCall::ChainHost { known } => {
-            // At most a handful; each is checked by the computer.
+            // At most a handful; each is checked by the computer. Only the
+            // chains this computer has a part in: knowing a chain's ID is
+            // not enough to read it.
             let chains = state
                 .db(move |db| {
                     // The chains asked for first, then the ones they share
                     // this computer with: nobody else's list crowds them out.
                     let mut accounts = Vec::new();
+                    let mut chains = Vec::new();
+                    let mut bound = Vec::new();
                     for id in known.iter().take(4) {
-                        if let Some(account) = db.account_of_chain(id)?
-                            && !accounts.contains(&account)
-                        {
+                        let Some(account) = db.account_of_chain(id)? else {
+                            continue;
+                        };
+                        if accounts.contains(&account) {
+                            continue;
+                        }
+                        let entries = db.chain(account)?;
+                        if db.may_see_chain((account, id), device, &key, &entries)? {
                             accounts.push(account);
+                            chains.push(entries);
+                            bound.push(*id);
                         }
                     }
+                    // What it asks for is what it is bound to: for presence.
+                    db.set_trust(device, &bound)?;
                     for account in accounts.clone() {
                         for other in db.shared_by(account, device)? {
-                            if !accounts.contains(&other) {
+                            if !accounts.contains(&other) && accounts.len() < 16 {
                                 accounts.push(other);
+                                chains.push(db.chain(other)?);
                             }
                         }
-                    }
-                    let mut chains = Vec::new();
-                    for account in accounts.into_iter().take(16) {
-                        chains.push(db.chain(account)?);
                     }
                     Ok(chains)
                 })
@@ -1019,15 +1248,12 @@ async fn run(
             Ok(AccountReply::HostChains { chains })
         }
         AccountCall::HostEvents { events, chain } => {
-            // Kept only for the accounts that list this computer.
+            // Kept only for the accounts that list this computer, made safe
+            // to show as names are.
             let events: Vec<String> = events
                 .into_iter()
                 .take(hext_signal::account::MAX_EVENTS)
-                .map(|e| {
-                    e.chars()
-                        .take(hext_signal::account::MAX_EVENT_LEN)
-                        .collect()
-                })
+                .map(|e| crate::signal::clean_to(&e, hext_signal::account::MAX_EVENT_LEN))
                 .collect();
             let at = crate::db::now();
             if let Some(chain) = chain {
@@ -1066,11 +1292,11 @@ async fn run(
         AccountCall::ChainAppend { entry } => {
             let account = logged_in(state, login, device).await?;
             let id = account.id;
-            let entries = state.db(move |db| db.chain(id)).await?;
-            if entry.seq != entries.len() as u64 {
+            let (len, last) = state.db(move |db| db.chain_tail(id)).await?;
+            if entry.seq != len {
                 return Err(AccountError::ChainConflict.into());
             }
-            if entries.is_empty() {
+            if len == 0 {
                 // The first: this device, by itself, with 2FA on.
                 if account.totp.is_none() {
                     return Err(AccountError::NeedsTotp.into());
@@ -1080,10 +1306,22 @@ async fn run(
                 }
             }
             // Checked here too, so the account keeps a chain its devices
-            // take (they check it all again anyway).
-            let mut all = entries;
-            all.push(entry.clone());
-            let chain = blocking(move || Chain::verify(&all)).await;
+            // take (they check it all again anyway): the new entry alone
+            // when the chain checked last time is the one stored.
+            let chain = match state.chains.get(id, len, last.as_ref()) {
+                Some(mut chain) => {
+                    let new = entry.clone();
+                    blocking(move || chain.apply(&new).map(|()| chain)).await
+                }
+                None => {
+                    let mut all = state.db(move |db| db.chain(id)).await?;
+                    if all.len() as u64 != len {
+                        return Err(AccountError::ChainConflict.into());
+                    }
+                    all.push(entry.clone());
+                    blocking(move || Chain::verify(&all)).await
+                }
+            };
             let chain = chain.map_err(|_| AccountError::ChainInvalid)?;
             let appended = {
                 let entry = entry.clone();
@@ -1096,6 +1334,7 @@ async fn run(
                 let chain = chain.clone();
                 state.db(move |db| db.index(id, &chain)).await?;
             }
+            state.chains.put(id, chain.clone());
             if let Op::AddDevice { device: added, .. } = &entry.op {
                 state.joins.joined(id, added);
             }
@@ -1133,10 +1372,10 @@ async fn run(
             check_password(&new)?;
             *guessed = Some(limited(state, ip, &account.email)?);
             let stored = account.password.clone();
-            if !blocking(move || verify_password(&old, &stored)).await {
+            if !argon(state, move || verify_password(&old, &stored)).await? {
                 return Err(AccountError::WrongCredentials.into());
             }
-            let hash = blocking(move || hash_password(&new)).await;
+            let hash = argon(state, move || hash_password(&new)).await?;
             let id = account.id;
             state
                 .db(move |db| {
@@ -1151,7 +1390,7 @@ async fn run(
             let account = logged_in(state, login, device).await?;
             *guessed = Some(limited(state, ip, &account.email)?);
             let stored = account.password.clone();
-            if !blocking(move || verify_password(&password, &stored)).await {
+            if !argon(state, move || verify_password(&password, &stored)).await? {
                 return Err(AccountError::WrongCredentials.into());
             }
             if let Some(secret) = &account.totp {
@@ -1162,6 +1401,7 @@ async fn run(
             }
             let id = account.id;
             state.db(move |db| db.delete_account(id)).await?;
+            state.chains.forget(id);
             *login = None;
             info!("conta {id}: excluída");
             Ok(AccountReply::Ok)
@@ -1213,33 +1453,113 @@ async fn logged_in(
     found.ok_or_else(|| AccountError::NotLoggedIn.into())
 }
 
-/// Refused once `ip` or `email` used up its wrong guesses; else `email`,
-/// to count if this guess is wrong too.
-fn limited(state: &State, ip: IpAddr, email: &str) -> Result<String, Fail> {
-    let now = Instant::now();
-    let email = email.to_owned();
-    if state.account_guesses_by_ip.full(&ip, now)
-        || state.account_guesses_by_email.full(&email, now)
-    {
-        Err(AccountError::TooManyAttempts.into())
-    } else {
-        Ok(email)
+/// A guess counted before it is checked: given back unless it was wrong.
+pub(crate) struct Guess {
+    ip: IpAddr,
+    email: String,
+    /// Of an e-mailed code (else of a password or a 2FA code).
+    code: bool,
+}
+
+impl Guess {
+    fn refund(self, state: &State) {
+        state.account_guesses_by_ip.refund(&self.ip);
+        if self.code {
+            state.code_guesses_by_email.refund(&self.email);
+        } else {
+            state.account_guesses_by_email.refund(&self.email);
+        }
     }
 }
 
-/// For calls that send an e-mail: within the limits, and counted.
+/// A password (or 2FA code) guess for `email`, counted; refused once `ip`
+/// or `email` used up its wrong guesses.
+fn limited(state: &State, ip: IpAddr, email: &str) -> Result<Guess, Fail> {
+    let now = Instant::now();
+    let email = email.to_owned();
+    if !state.account_guesses_by_ip.allow(&ip, now) {
+        return Err(AccountError::TooManyAttempts.into());
+    }
+    if !state.account_guesses_by_email.allow(&email, now) {
+        state.account_guesses_by_ip.refund(&ip);
+        return Err(AccountError::TooManyAttempts.into());
+    }
+    Ok(Guess {
+        ip,
+        email,
+        code: false,
+    })
+}
+
+/// An e-mailed code's guess for `email`, counted apart from the password's
+/// (with a growing wait between wrong ones, and a cap a day).
+fn limited_code(state: &State, ip: IpAddr, email: &str) -> Result<Guess, Fail> {
+    let now = Instant::now();
+    let email = email.to_owned();
+    if !state.account_guesses_by_ip.allow(&ip, now) {
+        return Err(AccountError::TooManyAttempts.into());
+    }
+    if !state
+        .code_guesses_by_email
+        .allow_spaced(&email, now, code_wait)
+    {
+        state.account_guesses_by_ip.refund(&ip);
+        return Err(AccountError::TooManyAttempts.into());
+    }
+    Ok(Guess {
+        ip,
+        email,
+        code: true,
+    })
+}
+
+/// How long after the last wrong code the next may be tried, with `wrong`
+/// of them in the day: none for the first few, then 2 s, 4 s, 8 s…
+fn code_wait(wrong: usize) -> Duration {
+    if wrong < CODE_FREE_GUESSES {
+        return Duration::ZERO;
+    }
+    let doublings = (wrong - CODE_FREE_GUESSES + 1).min(16) as u32;
+    Duration::from_secs(1 << doublings).min(CODE_MAX_WAIT)
+}
+
+/// For calls that send an e-mail: within the limits per address asking, per
+/// e-mail address and in all, and counted (whether or not one goes: the
+/// answer says nothing either way).
 fn sends(state: &State, ip: IpAddr, email: &str) -> Result<(), Fail> {
-    let email = limited(state, ip, email)?;
-    count(state, ip, &email);
+    let now = Instant::now();
+    let email = email.to_owned();
+    if !state.mails_by_ip.allow(&ip, now) {
+        return Err(AccountError::TooManyAttempts.into());
+    }
+    if !state.mails_by_email.allow(&email, now) {
+        state.mails_by_ip.refund(&ip);
+        return Err(AccountError::TooManyAttempts.into());
+    }
+    let hour = state.mails_per_hour.allow(&(), now);
+    if !hour || !state.mails_per_day.allow(&(), now) {
+        if hour {
+            state.mails_per_hour.refund(&());
+        }
+        state.mails_by_email.refund(&email);
+        state.mails_by_ip.refund(&ip);
+        warn!("contas: limite de e-mails do servidor atingido (por hora ou por dia)");
+        return Err(AccountError::TooManyAttempts.into());
+    }
     Ok(())
 }
 
-fn count(state: &State, ip: IpAddr, email: &str) {
-    let now = Instant::now();
-    state.account_guesses_by_ip.record(&ip, now);
-    state
-        .account_guesses_by_email
-        .record(&email.to_owned(), now);
+/// Runs Argon2 off the async threads, at most one per core at once (each
+/// takes a core and its memory); refused if its turn does not come soon.
+async fn argon<T: Send + 'static>(
+    state: &State,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Fail> {
+    let Ok(permit) = tokio::time::timeout(ARGON_WAIT, state.argon.acquire()).await else {
+        return Err(AccountError::TooManyAttempts.into());
+    };
+    let _permit = permit.expect("the semaphore stays open");
+    Ok(blocking(work).await)
 }
 
 /// Runs heavy work (Argon2) off the async threads.
@@ -1340,36 +1660,44 @@ fn token() -> String {
     hex::encode(random::<32>())
 }
 
-/// A code to e-mail: 6 digits, uniform.
+/// A code to e-mail: [`EMAIL_CODE_LEN`] letters and digits that do not look
+/// alike (about 40 bits).
 fn email_code() -> String {
-    let limit = u32::MAX - u32::MAX % 1_000_000;
-    loop {
-        let n = u32::from_le_bytes(random::<4>());
-        if n < limit {
-            return format!("{:06}", n % 1_000_000);
-        }
+    random_code(EMAIL_CODE_LEN)
+}
+
+/// An e-mailed code as given: upper case, without spaces or dashes. (A
+/// 6-digit one sent before stays as it was.)
+fn clean_email_code(given: &str) -> Result<String, Fail> {
+    let code = clean_recovery(given);
+    if code.is_empty() || code.len() > MAX_CODE {
+        return Err(AccountError::WrongCode.into());
     }
+    Ok(code)
 }
 
 /// Letters and digits that do not look alike (no 0/O, 1/I/L).
 const RECOVERY_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const RECOVERY_LEN: usize = 10;
 
-/// A recovery code, as shown: `XXXXX-XXXXX`.
-fn recovery_code() -> String {
-    let mut code = String::with_capacity(RECOVERY_LEN + 1);
+/// `len` characters of [`RECOVERY_ALPHABET`], uniform.
+fn random_code(len: usize) -> String {
+    let mut code = String::with_capacity(len);
     let limit = 256 - 256 % RECOVERY_ALPHABET.len();
-    while code.len() < RECOVERY_LEN + 1 {
+    while code.len() < len {
         let [b] = random::<1>();
-        if usize::from(b) >= limit {
-            continue;
+        if usize::from(b) < limit {
+            code.push(RECOVERY_ALPHABET[usize::from(b) % RECOVERY_ALPHABET.len()] as char);
         }
-        if code.len() == RECOVERY_LEN / 2 {
-            code.push('-');
-        }
-        code.push(RECOVERY_ALPHABET[usize::from(b) % RECOVERY_ALPHABET.len()] as char);
     }
     code
+}
+
+/// A recovery code, as shown: `XXXXX-XXXXX`.
+fn recovery_code() -> String {
+    let code = random_code(RECOVERY_LEN);
+    let (a, b) = code.split_at(RECOVERY_LEN / 2);
+    format!("{a}-{b}")
 }
 
 /// A recovery code as kept: upper case, without the dash or spaces.
@@ -1562,7 +1890,27 @@ mod tests {
     #[test]
     fn codes_look_right() {
         let code = email_code();
-        assert!(code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(code.len(), EMAIL_CODE_LEN);
+        assert!(
+            code.bytes().all(|c| RECOVERY_ALPHABET.contains(&c)),
+            "{code}"
+        );
+        assert_eq!(
+            clean_email_code(&format!(" {}-{} ", &code[..4], code[4..].to_lowercase()))
+                .ok()
+                .as_deref(),
+            Some(code.as_str())
+        );
+        assert_eq!(clean_email_code("123456").ok().as_deref(), Some("123456"));
+        assert!(clean_email_code(" - ").is_err());
+        assert_eq!(code_wait(0), Duration::ZERO);
+        assert_eq!(code_wait(CODE_FREE_GUESSES), Duration::from_secs(2));
+        assert_eq!(code_wait(CODE_FREE_GUESSES + 1), Duration::from_secs(4));
+        assert_eq!(code_wait(100), CODE_MAX_WAIT);
+        assert_eq!(
+            mask_email("ana.souza@exemplo.com.br"),
+            "a***@exemplo.com.br"
+        );
         let recovery = recovery_code();
         assert_eq!(recovery.len(), RECOVERY_LEN + 1);
         assert_eq!(recovery.as_bytes()[5], b'-');

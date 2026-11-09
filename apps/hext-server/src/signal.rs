@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 
 use crate::accounts::{self, LogMailer, Mailer};
 use crate::db::Db;
-use crate::limits::RateLimiter;
+use crate::limits::{Open, RateLimiter};
 use crate::relay_full::{Guests, RelayFull};
 
 /// How long a device has to answer the challenge.
@@ -70,6 +70,13 @@ const ATTEMPT_WINDOW: Duration = Duration::from_secs(5 * 60);
 /// on screen): past this, they go unanswered.
 const PRESENCE_PER_DEVICE: usize = 6;
 const PRESENCE_WINDOW: Duration = Duration::from_secs(60);
+/// Connections open at once from one address (an IPv6 /64) and with one
+/// key. Per address it is generous: an office behind one address keeps one
+/// connection open for each computer.
+pub const CONNECTIONS_PER_IP: usize = 256;
+pub const CONNECTIONS_PER_KEY: usize = 8;
+/// How often accounts never confirmed are looked for.
+const SWEEP_EVERY: Duration = Duration::from_secs(3600);
 
 /// Who is online, which requests are waiting, and the rate limits.
 pub struct State {
@@ -92,14 +99,32 @@ pub struct State {
     stranger_requests: RateLimiter<(DeviceId, DeviceId)>,
     /// Hosts closed to devices they do not trust, until when.
     locked_hosts: Mutex<HashMap<DeviceId, Instant>>,
-    /// (host, viewer): requests with the password the host let through, and
-    /// until when it may say the viewer got in.
-    open_attempts: Mutex<HashMap<(DeviceId, DeviceId), Instant>>,
+    /// (host, viewer): requests with the password the host let through.
+    open_attempts: Mutex<HashMap<(DeviceId, DeviceId), OpenAttempt>>,
+    /// Connections open at once, by address and by key.
+    connections_by_ip: Open<IpAddr>,
+    connections_by_key: Open<PublicKey>,
     /// Where account e-mails go.
     pub(crate) mailer: Arc<dyn Mailer>,
-    /// Account calls that guess a password or a code.
+    /// Account calls that guess a password (or a 2FA code).
     pub(crate) account_guesses_by_ip: RateLimiter<IpAddr>,
     pub(crate) account_guesses_by_email: RateLimiter<String>,
+    /// Wrong e-mailed codes per address, each wait longer than the last: a
+    /// guesser of codes does not lock the owner out of logging in.
+    pub(crate) code_guesses_by_email: RateLimiter<String>,
+    /// E-mails sent: per address asking, per e-mail address, and in all.
+    pub(crate) mails_by_ip: RateLimiter<IpAddr>,
+    pub(crate) mails_by_email: RateLimiter<String>,
+    pub(crate) mails_per_hour: RateLimiter<()>,
+    pub(crate) mails_per_day: RateLimiter<()>,
+    /// Account calls per device, of any kind.
+    pub(crate) account_calls: RateLimiter<DeviceId>,
+    /// Argon2 runs at once (each takes a core and its memory).
+    pub(crate) argon: tokio::sync::Semaphore,
+    /// The accounts' chains as last checked.
+    pub(crate) chains: accounts::Chains,
+    /// When unconfirmed accounts were last deleted.
+    swept: Mutex<Option<Instant>>,
     /// Devices asking to join an account's chain.
     pub(crate) joins: accounts::Joins,
     /// The relay without the per-device limit, if there is one.
@@ -115,6 +140,14 @@ struct HostLogin {
     /// Dropped when a newer host login of the same device replaces this
     /// one, which ends it.
     _kick: oneshot::Sender<()>,
+}
+
+/// A request with the password the host let through: until when it may say
+/// the viewer got in, and the two keys to let in on the relay without the
+/// limit once it does (a session with a listed account).
+struct OpenAttempt {
+    until: Instant,
+    relay: Option<[PublicKey; 2]>,
 }
 
 /// A request waiting for the host's answer.
@@ -169,6 +202,8 @@ impl State {
             presence_by_device: RateLimiter::new(PRESENCE_PER_DEVICE, PRESENCE_WINDOW),
             locked_hosts: Mutex::default(),
             open_attempts: Mutex::default(),
+            connections_by_ip: Open::new(CONNECTIONS_PER_IP),
+            connections_by_key: Open::new(CONNECTIONS_PER_KEY),
             mailer,
             account_guesses_by_ip: RateLimiter::new(
                 accounts::GUESSES_PER_IP,
@@ -178,6 +213,17 @@ impl State {
                 accounts::GUESSES_PER_EMAIL,
                 accounts::GUESS_WINDOW,
             ),
+            code_guesses_by_email: RateLimiter::new(accounts::CODE_GUESSES_PER_DAY, accounts::DAY),
+            mails_by_ip: RateLimiter::new(accounts::MAILS_PER_IP, accounts::HOUR),
+            mails_by_email: RateLimiter::new(accounts::MAILS_PER_EMAIL, accounts::HOUR),
+            mails_per_hour: RateLimiter::new(accounts::MAILS_PER_HOUR, accounts::HOUR),
+            mails_per_day: RateLimiter::new(accounts::MAILS_PER_DAY, accounts::DAY),
+            account_calls: RateLimiter::new(accounts::CALLS_PER_DEVICE, accounts::CALL_WINDOW),
+            argon: tokio::sync::Semaphore::new(
+                std::thread::available_parallelism().map_or(2, |n| n.get()),
+            ),
+            chains: accounts::Chains::default(),
+            swept: Mutex::default(),
             joins: accounts::Joins::default(),
             relay_full: None,
             relay_guests: Guests::default(),
@@ -187,6 +233,14 @@ impl State {
     /// With the relay without the limit, for the accounts on its list.
     pub fn set_relay_full(&mut self, relay: RelayFull) {
         self.relay_full = Some(relay);
+    }
+
+    /// At most `per_hour` and `per_day` account e-mails in all (the SMTP
+    /// provider's quota), instead of [`accounts::MAILS_PER_HOUR`] and
+    /// [`accounts::MAILS_PER_DAY`].
+    pub fn set_mail_budget(&mut self, per_hour: usize, per_day: usize) {
+        self.mails_per_hour = RateLimiter::new(per_hour, accounts::HOUR);
+        self.mails_per_day = RateLimiter::new(per_day, accounts::DAY);
     }
 
     pub(crate) fn has_relay_full(&self) -> bool {
@@ -277,6 +331,10 @@ impl State {
         self.presence_by_device.prune(now);
         self.account_guesses_by_ip.prune(now);
         self.account_guesses_by_email.prune(now);
+        self.code_guesses_by_email.prune(now);
+        self.mails_by_ip.prune(now);
+        self.mails_by_email.prune(now);
+        self.account_calls.prune(now);
         self.joins.prune(now);
         self.locked_hosts
             .lock()
@@ -285,7 +343,24 @@ impl State {
         self.open_attempts
             .lock()
             .expect("lock")
-            .retain(|_, &mut until| until > now);
+            .retain(|_, open| open.until > now);
+        // Now and then: accounts never confirmed.
+        let due = {
+            let mut swept = self.swept.lock().expect("lock");
+            let due = swept.is_none_or(|at| now.saturating_duration_since(at) >= SWEEP_EVERY);
+            if due {
+                *swept = Some(now);
+            }
+            due
+        };
+        if due {
+            let age = accounts::UNCONFIRMED_FOR.as_secs() as i64;
+            match self.db(move |db| db.delete_unconfirmed(age)).await {
+                Ok(0) => {}
+                Ok(n) => info!("contas: {n} não confirmadas em 24 h excluídas"),
+                Err(e) => warn!("banco de dados: {e}"),
+            }
+        }
     }
 
     /// Whether host `to` takes a request from `viewer` now (see
@@ -316,7 +391,9 @@ impl State {
             return false;
         }
         // Over its own share, a stranger is refused without adding to the
-        // host's count.
+        // host's count. (By design a few devices can still close a host to
+        // strangers for a while: that bounds password guesses; whoever the
+        // host trusts gets through.)
         if !self.stranger_requests.allow(&(to, viewer), now) {
             return false;
         }
@@ -444,6 +521,14 @@ async fn refuse(sink: &mut Sink, message: &str) {
 /// Serves one device's WebSocket, from `ip`, until it leaves.
 pub async fn handle(socket: WebSocket, state: &State, ip: IpAddr) {
     let (mut sink, mut stream) = socket.split();
+    let Some(_by_ip) = state.connections_by_ip.open(ip) else {
+        refuse(
+            &mut sink,
+            "conexões abertas demais a partir deste endereço; tente de novo em alguns minutos",
+        )
+        .await;
+        return;
+    };
     if !state.logins_by_ip.allow(&ip, Instant::now()) {
         refuse(
             &mut sink,
@@ -489,6 +574,14 @@ pub async fn handle(socket: WebSocket, state: &State, ip: IpAddr) {
         refuse(&mut sink, "assinatura inválida").await;
         return;
     }
+    let Some(_by_key) = state.connections_by_key.open(key) else {
+        refuse(
+            &mut sink,
+            "conexões abertas demais deste computador; feche o app em outras janelas ou tente de novo em alguns minutos",
+        )
+        .await;
+        return;
+    };
     let (name, version) = (clean(&device_name), clean(&app_version));
 
     let id = match login(state, key, &name, &version, ip).await {
@@ -640,20 +733,34 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
             let p = take_mine(state, me, request)?;
             let (host, viewer) = (p.host, p.viewer);
             // A session with an account on the relay's list: both sides may
-            // use the relay without the limit, which one of them is on.
-            if state.has_relay_full()
-                && (state.listed(me.key).await || state.listed(p.viewer_key).await)
-            {
-                state.relay_guests.let_in(&[me.key, p.viewer_key]);
+            // use the relay without the limit, which one of them is on. With
+            // the password, a viewer from outside the list only once the
+            // host says it got in (or it did within [`ENTERED_FOR`]): the
+            // host takes such requests by itself, so anyone could otherwise
+            // borrow the relay.
+            let mut relay_later = None;
+            if state.has_relay_full() {
+                let keys = [me.key, p.viewer_key];
+                let viewer_listed = state.listed(p.viewer_key).await;
+                if viewer_listed || state.listed(me.key).await {
+                    if !p.unattended || viewer_listed || entered_before(state, host, viewer).await {
+                        state.relay_guests.let_in(&keys);
+                    } else {
+                        relay_later = Some(keys);
+                    }
+                }
             }
             if p.unattended {
                 // This says nothing of the password yet: it must not make the
                 // viewer trusted, or its guesses would go unlimited. Only
                 // the host's word on the outcome does.
                 state.audit(viewer, host, "accepted_unattended");
-                let until = Instant::now() + ATTEMPT_WINDOW;
-                let mut open = state.open_attempts.lock().expect("lock");
-                open.insert((host, viewer), until);
+                let open = OpenAttempt {
+                    until: Instant::now() + ATTEMPT_WINDOW,
+                    relay: relay_later,
+                };
+                let mut attempts = state.open_attempts.lock().expect("lock");
+                attempts.insert((host, viewer), open);
             } else {
                 state.audit(viewer, host, "accepted");
                 if let Err(e) = state.db(move |db| db.remember_accepted(host, viewer)).await {
@@ -743,10 +850,15 @@ async fn attempt(state: &State, host: DeviceId, viewer: DeviceId, entered: bool)
         .lock()
         .expect("lock")
         .remove(&(host, viewer))
-        .is_some_and(|until| until > Instant::now());
+        .filter(|open| open.until > Instant::now());
+    let relay = open.as_ref().and_then(|open| open.relay);
+    let open = open.is_some();
     if entered && !open {
         debug!("{host} diz que {viewer} entrou, sem pedido aberto");
         return;
+    }
+    if entered && let Some(keys) = relay {
+        state.relay_guests.let_in(&keys);
     }
     let noted = state
         .db(move |db| match entered {
@@ -763,6 +875,19 @@ async fn attempt(state: &State, host: DeviceId, viewer: DeviceId, entered: bool)
         let event = if entered { "entered" } else { "wrong_password" };
         state.audit(viewer, host, event);
     }
+}
+
+/// Whether `viewer` got into `host` with the password within
+/// [`ENTERED_FOR`] (and has not got it wrong since).
+async fn entered_before(state: &State, host: DeviceId, viewer: DeviceId) -> bool {
+    let secs = ENTERED_FOR.as_secs() as i64;
+    state
+        .db(move |db| db.entered_within(host, viewer, secs))
+        .await
+        .unwrap_or_else(|e| {
+            warn!("banco de dados: {e}");
+            false
+        })
 }
 
 /// Asks host `to` about a viewer's request; the error is the answer to
@@ -894,7 +1019,7 @@ fn clean(text: &str) -> String {
 }
 
 /// [`clean`], up to `max` characters.
-fn clean_to(text: &str, max: usize) -> String {
+pub(crate) fn clean_to(text: &str, max: usize) -> String {
     text.chars()
         .filter(|&c| !c.is_control() && !invisible(c))
         .take(max)

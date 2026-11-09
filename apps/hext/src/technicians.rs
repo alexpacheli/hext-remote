@@ -33,11 +33,23 @@ pub struct Technician {
 #[derive(Debug, Clone)]
 pub struct Technicians {
     file: PathBuf,
+    /// Whether the file may be believed (see [`Self::trusting`]).
+    trusted: fn(&Path) -> bool,
 }
 
 impl Technicians {
     pub fn new(file: PathBuf) -> Self {
-        Self { file }
+        Self {
+            file,
+            trusted: |_| true,
+        }
+    }
+
+    /// Believes the file only if `trusted` says so (on Windows: written by
+    /// the system or the administrators alone): a list someone else put
+    /// there would trust their key.
+    pub fn trusting(self, trusted: fn(&Path) -> bool) -> Self {
+        Self { trusted, ..self }
     }
 
     /// Where it is kept.
@@ -48,6 +60,10 @@ impl Technicians {
     /// The technicians, the newest first. A file that cannot be read counts
     /// as none: nobody is trusted by mistake.
     pub fn list(&self) -> Vec<Technician> {
+        if self.file.exists() && !(self.trusted)(&self.file) {
+            warn!("{}: de origem desconhecida, ignorado", self.file.display());
+            return Vec::new();
+        }
         match std::fs::read(&self.file) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
                 warn!("{}: {e}", self.file.display());

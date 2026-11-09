@@ -85,9 +85,11 @@ impl Mailer for SmtpMailer {
         let sent = self
             .message(to, subject, body)
             .and_then(|message| Ok(self.transport.send(&message)?));
+        // (The body has the code, and the address is personal: neither goes
+        // to the log as it is.)
+        let to = crate::accounts::mask_email(to);
         match sent {
             Ok(_) => info!("e-mail enviado para {to}: {subject}"),
-            // (The body has the code: it stays out of the log.)
             Err(e) => warn!("e-mail para {to} não foi enviado: {e:#}"),
         }
     }

@@ -51,6 +51,13 @@ Técnico                  Servidor                   Host
     Quem entrou também fica de fora desses limites, por 7 dias desde a última entrada e só em pedidos com
     senha, e perde isso na primeira senha errada. A tabela `entered` guarda esses pares;
   - logins: até 30 por minuto por endereço IP; computadores novos (IDs entregues): até 10 por hora por IP;
+  - conexões abertas ao mesmo tempo: até 256 por endereço IP (generoso, porque um escritório atrás de um
+    IP só mantém uma conexão por computador) e até 8 por chave;
+  - "por endereço IP" quer dizer: o IPv4 como ele é (também escrito como IPv6, `::ffff:a.b.c.d`) e o IPv6
+    pelo seu /64, que um assinante costuma ter inteiro (trocar de endereço dentro dele não zera nada);
+  - o bloqueio do host é por desenho: alguns computadores desconhecidos (4, cada um com 3 pedidos) fecham o
+    host a desconhecidos por 15 minutos. Isso limita quem tenta adivinhar a senha; quem o host aceitou ou
+    quem entrou com a senha continua passando;
   - ID inexistente responde igual a ID offline, para não dar para sondar quais IDs existem;
   - nomes sem caracteres de controle nem invisíveis (como os que invertem a direção do texto), com até
     64 caracteres, porque o nome do técnico aparece para quem está no host.
@@ -59,7 +66,10 @@ Técnico                  Servidor                   Host
   `cancelled`, `offline`, `busy`, `rate_limited`, `host_locked`).
 - **Quem está online:** o técnico pergunta por uma lista de IDs (`presence {ids}`, até 50) e recebe os que
   estão online (`presence {online}`). Só aparecem os computadores que aceitaram esse técnico, ou em que ele
-  entrou com a senha, nos últimos 90 dias (as tabelas `accepted` e `entered`). Qualquer outro ID aparece
+  entrou com a senha, nos últimos 90 dias (as tabelas `accepted` e `entered`), e os computadores das contas
+  do técnico (ou compartilhados com elas) que estão vinculados a essas contas: estar em Meus computadores
+  não basta, o próprio computador diz a que conta está vinculado ao pedir a lista dela (`chain_host`;
+  tabela `computer_trust`, válida por 7 dias desde a última vez). Qualquer outro ID aparece
   sempre offline, como num pedido, para não dar para sondar IDs. Até 6 perguntas por minuto por computador:
   as seguintes ficam sem resposta. Um servidor antigo não diz `aceita presence`, e o app não pergunta.
 - **Inserir o computador numa conta pela senha (F6):** num pedido com senha, o técnico pode mandar
@@ -79,7 +89,7 @@ computador: `account {request, call}` e a resposta `account {request, reply}`. O
 
 | Chamada | O que faz |
 |---|---|
-| `register {email, password}` | Cria a conta e manda um código de 6 dígitos para o e-mail. Responde `ok` mesmo se o e-mail já tem conta (aí o dono recebe um aviso, e a senha não muda) |
+| `register {email, password}` | Cria a conta e envia um código de 8 letras e dígitos para o e-mail. Responde `ok` mesmo se o e-mail já tem conta (aí o dono recebe um aviso, e a senha não muda) |
 | `verify {email, code, password}` | Confirma o e-mail e define a senha (a de quem tem o código, não a de quem cadastrou primeiro). Sem isso, o login responde `not_verified` |
 | `login {email, password, second?}` | Entra **neste computador**. Com 2FA, sem `second` responde `needs_second_factor`. `second` é o código do app autenticador ou um código de recuperação |
 | `resume {token}` | Numa conexão nova, volta ao login anterior. O token só vale para o computador que fez o login, e cada computador tem um login só |
@@ -88,20 +98,30 @@ computador: `account {request, call}` e a resposta `account {request, reply}`. O
 | `forgot_password {email}`, `reset_password {email, code, password}` | Troca a senha por um código no e-mail. Sai de todos os computadores |
 | `change_password {old, new}` | Troca a senha sabendo a antiga. Sai dos outros computadores |
 | `chain_get`, `chain_append {entry}` | A lista de dispositivos da conta (a cadeia assinada, abaixo) e mais uma entrada no fim. A primeira exige 2FA e é assinada pelo próprio dispositivo |
-| `chain_host {known}` | Para um computador, sem login de conta (vale a chave com que ele se conectou): as cadeias das contas que o têm em Meus computadores, as das contas com quem elas o compartilham e as de `known` (as que ele vinculou, para ver se ainda o têm). Até 16; ele confere cada uma |
+| `chain_host {known}` | Para um computador, sem login de conta (vale a chave com que ele se conectou): as cadeias de `known` (as que ele vinculou) e as das contas com quem elas o compartilham. Só as que dizem respeito a ele: as que o têm em Meus computadores, as que já o tiveram (para ele ver que saiu), as que o recebem num compartilhamento, e a de um dispositivo da conta que entrou nele com a senha nos últimos 10 minutos (o vínculo pela senha, antes de ele estar na lista). Saber o ID de uma cadeia não basta. Até 16; ele confere cada uma. O que ele pede também fica como as contas a que está vinculado, para a presença |
 | `chain_shared` | As cadeias das contas que compartilham algum computador com a conta logada, para listar. Até 16; o app confere cada uma |
-| `host_events {events}` | Para um computador, sem login de conta: linhas da auditoria dele (até 20, de até 300 caracteres), guardadas para as contas que o têm em Meus computadores (as 500 mais novas de cada) |
+| `host_events {events}` | Para um computador, sem login de conta: linhas da auditoria dele (até 20, de até 300 caracteres, sem caracteres de controle nem invisíveis, como os nomes), guardadas para as contas que o têm em Meus computadores (as 500 mais novas de cada) |
 | `activity` | As linhas dos computadores da conta, as mais novas primeiro |
 | `chain_join {device, name, proof}`, `chain_pending` | Um dispositivo pede para entrar na lista (só por si mesmo), e o que mostra o código vê os pedidos (10 minutos, até 5) |
 | `delete_account {password, second?}` | Exclui a conta logada, com tudo dela: a cadeia, os computadores, os compartilhamentos, a atividade, os códigos e os logins de todos os computadores. Pede a senha e, com 2FA, `second` (sem ele, responde `needs_second_factor`). Os computadores vinculados deixam de aceitar entrada pela conta, porque a cadeia some. O e-mail fica livre |
 
 - **Guardado:** a senha como hash Argon2id; códigos, tokens e códigos de recuperação como SHA-256 (são
   aleatórios e longos). Tabelas `accounts`, `account_codes`, `recovery_codes` e `account_sessions`.
-- **Códigos:** o do e-mail vale 30 minutos e 5 tentativas; o TOTP (RFC 6238, 30 s, 6 dígitos) aceita um
+- **Códigos:** o do e-mail tem 8 letras e dígitos sem os que se confundem (sem 0/O, 1/I/L; maiúsculas ou
+  minúsculas, espaços e hífens são ignorados) e vale 30 minutos e 5 tentativas; o TOTP (RFC 6238, 30 s, 6 dígitos) aceita um
   passo de diferença no relógio e cada código vale uma vez; os de recuperação valem uma vez cada.
-- **Tentativas:** 10 erros por e-mail e 30 por IP em 15 minutos (`too_many_attempts`). Um acerto não conta,
-  e cada e-mail enviado conta. Um e-mail desconhecido leva o mesmo tempo e a mesma resposta que uma senha
-  errada.
+- **Tentativas:** senha (e código do 2FA): 10 erros por e-mail e 30 por IP em 15 minutos
+  (`too_many_attempts`). Códigos do e-mail (confirmação e troca de senha) contam à parte, para quem tenta
+  adivinhá-los não impedir o dono de entrar: até 20 erros por dia por e-mail, os 3 primeiros sem espera e
+  depois 2 s, 4 s, 8 s… (até 15 minutos) entre um erro e a próxima tentativa; os 30 por IP valem também.
+  Cada tentativa conta antes de ser conferida (tentativas ao mesmo tempo não passam do limite) e é
+  devolvida se acertou. Um e-mail desconhecido leva o mesmo tempo e a mesma resposta que uma senha errada.
+- **Argon2:** no máximo um hash de senha por núcleo ao mesmo tempo; quem espera mais de 10 s recebe
+  `too_many_attempts`.
+- **Chamadas:** até 120 por minuto por computador, de qualquer tipo (`too_many_attempts`).
+- **E-mails enviados:** até 5 por hora por IP que pede e 5 por hora por endereço de e-mail, e no total até
+  `HEXT_MAIL_PER_HOUR` (padrão 100) por hora e `HEXT_MAIL_PER_DAY` (padrão 250) por dia, a cota do SMTP
+  (`--mail-per-hour`, `--mail-per-day`). Contas nunca confirmadas são excluídas 24 horas depois do cadastro.
 - **Cadeia de dispositivos** (`crates/signal/src/chain.rs`): cada entrada é assinada por um dispositivo da
   conta (ou pela chave de recuperação, só para pôr ou tirar dispositivos) e cita o hash da anterior. O
   servidor guarda (`account_chain`) e confere, mas quem confia é o app e o host, que conferem tudo de novo.
@@ -110,7 +130,8 @@ computador: `account {request, call}` e a resposta `account {request, reply}`. O
 - **Entrar na lista:** o dispositivo novo prova a sua chave com um HMAC do código de 12 caracteres (cerca de
   60 bits) que aparece no dispositivo que já está nela. O código não passa pelo servidor, e vale 10 minutos.
 - **E-mail:** a confirmação do cadastro e a troca de senha vão por SMTP (veja "E-mail" abaixo). Sem o
-  SMTP configurado, vão só para o log do servidor, com um aviso ao iniciar.
+  SMTP configurado, não são enviados (o log diz só que um e-mail não foi enviado, sem o código). Só com
+  `--dev-mail-log` (ou `HEXT_DEV_MAIL_LOG=1`), para desenvolvimento, eles vão para o log com os códigos.
 
 ## Rodar
 
@@ -144,9 +165,10 @@ registrados) está em [deploy.md](deploy.md): um script faz tudo.
 
 O servidor manda os e-mails da conta por SMTP, sempre criptografado (STARTTLS na porta 587, TLS direto na
 465). Qualquer provedor serve; o nosso é a Brevo. Na VM, crie `/etc/hext/mail.env`, que só o `hext-server`
-lê:
+lê. O arquivo é criado vazio, com permissão 600, antes de receber a senha:
 
 ```sh
+sudo install -m 600 -o root -g root /dev/null /etc/hext/mail.env
 sudo tee /etc/hext/mail.env >/dev/null <<'FIM'
 HEXT_SMTP_HOST=smtp-relay.brevo.com
 HEXT_SMTP_PORT=587
@@ -154,7 +176,6 @@ HEXT_SMTP_USER=<o login SMTP da Brevo>
 HEXT_SMTP_PASSWORD=<a chave SMTP da Brevo>
 HEXT_MAIL_FROM=Hext Remote <nao-responda@seu-dominio.com.br>
 FIM
-sudo chmod 600 /etc/hext/mail.env
 sudo systemctl restart hext-server
 journalctl -u hext-server -n 20      # "SMTP: conexão e login ok"
 ```
@@ -162,7 +183,8 @@ journalctl -u hext-server -n 20      # "SMTP: conexão e login ok"
 - A senha só é lida da variável `HEXT_SMTP_PASSWORD`, nunca da linha de comando (lá ela apareceria no `ps`).
 - Com `HEXT_SMTP_HOST` e sem as outras, o servidor não sobe: uma configuração pela metade não cai em
   silêncio para o log.
-- O login é conferido ao iniciar. Um e-mail que falha fica no log ("não foi enviado"), sem o código.
+- O login é conferido ao iniciar. Um e-mail que falha fica no log ("não foi enviado"), sem o código. O
+  destinatário aparece mascarado no log (`a***@dominio`).
 - **O remetente precisa estar verificado na Brevo**, com o domínio autenticado (os registros DKIM e DMARC
   que a Brevo mostra em Remetentes e domínios, colocados no DNS do domínio). Sem isso, a Brevo recusa ou os
   e-mails caem no spam.

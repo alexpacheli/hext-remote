@@ -6,6 +6,9 @@ Wants=network-online.target
 [Service]
 DynamicUser=yes
 StateDirectory=hext
+# To read /etc/hext/relay-livre.txt (root:hext, 640): install.sh creates
+# the group.
+SupplementaryGroups=hext
 EnvironmentFile=/etc/hext/secrets.env
 # The SMTP login for the account e-mails (only this service reads it).
 EnvironmentFile=-/etc/hext/mail.env

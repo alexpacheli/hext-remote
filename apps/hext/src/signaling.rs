@@ -415,8 +415,9 @@ pub async fn login(server: &str, key: &DeviceKey, name: &str) -> Result<Client> 
 
 /// Viewer side: asks host `id` for access through `client` (logged in),
 /// checks its key against the one remembered for that ID, and connects from
-/// `endpoint` (directly or through the relay). Returns the connection and
-/// the one-time code to present. `unattended`: with the password, so nobody
+/// `endpoint` (directly or through the relay). Returns the connection, the
+/// one-time code to present, and the host's key to keep once the session
+/// gets in ([`Pin::keep`]). `unattended`: with the password, so nobody
 /// is asked; `remember`: and asking to be trusted from then on, without it.
 /// `on_waiting` runs if the host says its screen is locked.
 pub async fn connect(
@@ -426,7 +427,7 @@ pub async fn connect(
     endpoint: &Endpoint,
     (unattended, remember, account): (bool, bool, Option<hext_signal::chain::BindAsk>),
     on_waiting: impl FnMut() + Send,
-) -> Result<(Connection, String)> {
+) -> Result<(Connection, String, Pin)> {
     if unattended {
         println!("Conectando a {id} com a senha...");
     } else {
@@ -470,14 +471,39 @@ pub async fn connect(
         }
     };
     hext_net::log_paths(&conn, "visualizador");
-    // The handshake proved the host holds that key.
-    if check == Check::New {
-        known
-            .remember(id, &access.host_key)
-            .with_context(|| known.path().display().to_string())?;
-        info!("primeira conexão com {id}: chave guardada");
+    let pin = Pin {
+        known: known.clone(),
+        id,
+        key: access.host_key,
+        new: check == Check::New,
+    };
+    Ok((conn, access.session_code, pin))
+}
+
+/// A host's key, to remember for its ID once the session got in: holding
+/// the key (QUIC) is not all, it must also have let us in (and, with the
+/// password, proved it knows it). Until then, nothing is written: a server
+/// pointing at someone else's computer leaves no trace to trust later.
+pub struct Pin {
+    known: KnownHosts,
+    id: DeviceId,
+    key: PublicKey,
+    /// First connection to this ID.
+    new: bool,
+}
+
+impl Pin {
+    /// The session got in: the key is the host's. Written even when it was
+    /// known (the same key), so what is on file is what was proved last.
+    pub fn keep(self) -> Result<()> {
+        self.known
+            .remember(self.id, &self.key)
+            .with_context(|| self.known.path().display().to_string())?;
+        if self.new {
+            info!("primeira conexão com {}: chave guardada", self.id);
+        }
+        Ok(())
     }
-    Ok((conn, access.session_code))
 }
 
 fn rejection(reason: Rejection) -> &'static str {

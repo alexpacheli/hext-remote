@@ -10,6 +10,9 @@ name: Release
 #   macOS:   APPLE_CERTIFICATE (the Developer ID .p12 in base64), APPLE_CERTIFICATE_PASSWORD,
 #            APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_APP_PASSWORD, APPLE_TEAM_ID
 #   Update:  UPDATE_SIGNING_KEY (marco 2), with the public half in the variable HEXT_UPDATE_KEY
+#
+# Each secret reaches only the steps that use it, and none of them runs for a
+# pull request. The actions are pinned by commit (the tag in the comment).
 
 on:
   push:
@@ -19,8 +22,9 @@ on:
     paths: ["installer/**", ".github/workflows/release.yml", "apps/hext/Cargo.toml"]
   workflow_dispatch:
 
+# Reading only; the job that opens the release (publish) asks for writing.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -38,7 +42,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - id: version
         name: Version
         run: |
@@ -54,11 +58,12 @@ jobs:
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      # Whether to sign ("true" or "false"), not the certificate: that one only
+      # in the steps that sign, and never for a pull request.
+      SIGN: ${{ github.event_name != 'pull_request' && secrets.WINDOWS_CERTIFICATE != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           target: x86_64-pc-windows-msvc
 
@@ -70,16 +75,20 @@ jobs:
           cp target/x86_64-pc-windows-msvc/release/hext.exe dist/HextRemote.exe
 
       - name: Certificate
-        if: env.WINDOWS_CERTIFICATE != ''
+        if: github.event_name != 'pull_request' && env.SIGN == 'true'
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
         run: |
           [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
           "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
 
       - name: Sign the program
-        if: env.WINDOWS_CERTIFICATE != ''
+        if: github.event_name != 'pull_request' && env.SIGN == 'true'
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           & $env:SIGNTOOL sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
             /f "$env:RUNNER_TEMP\cert.pfx" /p $env:WINDOWS_CERTIFICATE_PASSWORD dist\HextRemote.exe
@@ -95,11 +104,14 @@ jobs:
           Remove-Item dist\*.wixpdb -ErrorAction SilentlyContinue
 
       - name: Sign the installer
-        if: env.WINDOWS_CERTIFICATE != ''
+        if: github.event_name != 'pull_request' && env.SIGN == 'true'
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
           & $env:SIGNTOOL sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
             /f "$env:RUNNER_TEMP\cert.pfx" /p $env:WINDOWS_CERTIFICATE_PASSWORD "dist\HextRemote-$env:VERSION-x64.msi"
+          Remove-Item "$env:RUNNER_TEMP\cert.pfx" -Force
 
       # Installs, checks the service, removes: what a user does.
       - name: Install test
@@ -118,7 +130,7 @@ jobs:
         shell: bash
         run: cp dist/HextRemote.exe "dist/HextRemote-$VERSION-portable.exe" && rm dist/HextRemote.exe
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-windows
           path: dist/
@@ -129,14 +141,12 @@ jobs:
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # Whether to sign ("true" or "false"), not the certificate: that one only
+      # in the steps that sign, and never for a pull request.
+      SIGN: ${{ github.event_name != 'pull_request' && secrets.APPLE_CERTIFICATE != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           target: aarch64-apple-darwin,x86_64-apple-darwin
 
@@ -150,7 +160,11 @@ jobs:
             target/x86_64-apple-darwin/release/hext
 
       - name: Certificate
-        if: env.APPLE_CERTIFICATE != ''
+        id: certificate
+        if: github.event_name != 'pull_request' && env.SIGN == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           keychain="$RUNNER_TEMP/build.keychain"
           password="$(openssl rand -hex 16)"
@@ -168,16 +182,24 @@ jobs:
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
           security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}" >> "$GITHUB_ENV"
+          echo "imported=true" >> "$GITHUB_OUTPUT"
 
+      # Signed and notarized only with the certificate in the keychain (the
+      # step above): otherwise these are empty and bundle.sh does neither.
       - name: App and disk image
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.certificate.outputs.imported == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ steps.certificate.outputs.imported == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_APP_PASSWORD: ${{ steps.certificate.outputs.imported == 'true' && secrets.APPLE_APP_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ steps.certificate.outputs.imported == 'true' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           installer/macos/bundle.sh dist/HextRemote "$VERSION" dist
           rm -rf dist/HextRemote "dist/Hext Remote.app"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-macos
           path: dist/
@@ -189,8 +211,8 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           target: x86_64-unknown-linux-gnu
 
@@ -206,12 +228,26 @@ jobs:
           cargo deb -p hext --target x86_64-unknown-linux-gnu --no-build --output dist/
           cargo generate-rpm -p apps/hext --target x86_64-unknown-linux-gnu --output dist/
 
+      # appimagetool and the runtime it puts at the head of the AppImage: fixed
+      # versions, checked against their hashes (the "continuous" release
+      # changes under the same name). The hashes are GitHub's digests of those
+      # files, the same as sha256sum gives for them.
       - name: AppImage
+        env:
+          APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+          RUNTIME_URL: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          RUNTIME_SHA256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
         run: |
-          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          curl -fsSL -o appimagetool "$APPIMAGETOOL_URL"
+          curl -fsSL -o runtime-x86_64 "$RUNTIME_URL"
+          printf '%s  appimagetool\n%s  runtime-x86_64\n' "$APPIMAGETOOL_SHA256" "$RUNTIME_SHA256" | sha256sum -c -
           chmod +x appimagetool
           sudo mv appimagetool /usr/local/bin/appimagetool-bin
-          printf '#!/bin/sh\nexec /usr/local/bin/appimagetool-bin --appimage-extract-and-run "$@"\n' | sudo tee /usr/local/bin/appimagetool
+          sudo install -m 644 runtime-x86_64 /usr/local/share/appimage-runtime-x86_64
+          rm runtime-x86_64
+          printf '#!/bin/sh\nexec /usr/local/bin/appimagetool-bin --appimage-extract-and-run --runtime-file /usr/local/share/appimage-runtime-x86_64 "$@"\n' |
+            sudo tee /usr/local/bin/appimagetool
           sudo chmod +x /usr/local/bin/appimagetool
           installer/linux/appimage.sh target/x86_64-unknown-linux-gnu/release/hext "$VERSION" dist
 
@@ -230,7 +266,7 @@ jobs:
           chmod +x dist/*.AppImage
           dist/HextRemote-$VERSION-x86_64.AppImage --appimage-extract-and-run --version
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-linux
           path: dist/
@@ -239,16 +275,28 @@ jobs:
   publish:
     if: github.ref_type == 'tag'
     needs: [version, windows, macos, linux]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    # The only job that writes: it opens the release.
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # No cache here: this job holds the update key.
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
+      # The program that signs the list, built here from the source (not the
+      # AppImage, whose runtime is someone else's code), and without the key:
+      # the build scripts never see it.
+      - name: Build the signer
+        run: cargo build --release --locked -p hext
       # The signed list the apps update from (none without the key).
       - name: Update manifest
         env:
@@ -258,9 +306,7 @@ jobs:
             echo "::warning::sem UPDATE_SIGNING_KEY: esta versão não vai para a atualização automática"
             exit 0
           fi
-          app="dist/HextRemote-$VERSION-x86_64.AppImage"
-          chmod +x "$app"
-          "$app" --appimage-extract-and-run update manifest dist "$VERSION"
+          target/release/hext update manifest dist "$VERSION"
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Draft release

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*"]
 
 [workspace.package]
-version = "0.6.1"
+version = "0.6.2"
 license = "AGPL-3.0-only"
 repository = "https://github.com/alexpacheli/remote-control"
 edition = "2024"
@@ -99,6 +99,14 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# The password's stretching is slow on purpose; unoptimized, it takes most of
+# the handshake's 10 s in tests and debug builds.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

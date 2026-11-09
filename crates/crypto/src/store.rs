@@ -301,6 +301,42 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
+/// Makes `dir` (one of the app's own: not a folder the user chose), open to
+/// this user only, even if it was made before without that (0700 where
+/// there are modes; on Windows, the user's profile already is).
+pub fn private_dir(dir: &Path) -> std::io::Result<()> {
+    create_private_dir(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(dir)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            fs::set_permissions(dir, fs::Permissions::from_mode(mode & 0o700))?;
+        }
+    }
+    Ok(())
+}
+
+/// Replaces `path` with `contents`, readable only by this user (0600 where
+/// there are modes, even if the file was there before; a folder made for it
+/// is 0700). For what holds a token or says who this user trusts.
+pub fn write_user_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        && !dir.exists()
+    {
+        create_private_dir(dir)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    restrict(&file)?;
+    file.write_all(contents)?;
+    file.sync_all()
+}
+
 /// The computer's folder for the app (a service's key and files):
 /// `%ProgramData%\HextRemote` on Windows; elsewhere, none yet.
 pub fn machine_dir() -> Result<PathBuf> {
@@ -341,6 +377,36 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hext-crypto-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn a_user_file_is_this_users_only_even_if_it_was_there() {
+        let dir = temp_dir("user-file");
+        let path = dir.join("sub").join("account.json");
+        write_user_file(&path, b"um").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&path), 0o600);
+            assert_eq!(mode(path.parent().unwrap()), 0o700);
+            // Made before, open to all: closed on the next write.
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+            private_dir(&dir).unwrap();
+            assert_eq!(mode(&dir), 0o700);
+        }
+        write_user_file(&path, b"dois").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"dois");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

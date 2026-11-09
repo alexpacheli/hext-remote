@@ -56,6 +56,13 @@ if [ -n "$RELAY_FULL_HOST" ] &&
     echo "RELAY_FULL_HOST inválido: $RELAY_FULL_HOST" >&2
     exit 1
 fi
+# The relays get their certificate as systemd credentials (LoadCredential):
+# systemd 247 or newer (Debian 11, Ubuntu 22.04).
+systemd_version=$(systemctl --version | awk 'NR == 1 {print $2}')
+if ! [ "${systemd_version%%[!0-9]*}" -ge 247 ] 2>/dev/null; then
+    echo "É necessário o systemd 247 ou mais novo (este tem: ${systemd_version:-?})." >&2
+    exit 1
+fi
 echo "sinalização: $SIGNAL_HOST"
 echo "relay:       $RELAY_HOST"
 echo "relay sem limite: ${RELAY_FULL_HOST:-(nenhum)}"
@@ -98,10 +105,22 @@ printf 'SIGNAL_HOST=%s\nRELAY_HOST=%s\nRELAY_FULL_HOST=%s\n' "$SIGNAL_HOST" "$RE
     sudo tee "$HOSTS" >/dev/null
 if ! sudo test -f /etc/hext/secrets.env; then
     # The secret the relay presents to hext-server when asking about a device.
+    # The file exists with mode 600 before the secret goes in.
     token=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    sudo install -m 600 -o root -g root /dev/null /etc/hext/secrets.env
     printf 'HEXT_RELAY_TOKEN=%s\nIROH_RELAY_HTTP_BEARER_TOKEN=%s\n' "$token" "$token" |
         sudo tee /etc/hext/secrets.env >/dev/null
-    sudo chmod 600 /etc/hext/secrets.env
+fi
+sudo chown root:root /etc/hext/secrets.env
+sudo chmod 600 /etc/hext/secrets.env
+if sudo test -f /etc/hext/mail.env; then
+    sudo chown root:root /etc/hext/mail.env
+    sudo chmod 600 /etc/hext/mail.env
+fi
+# The group that may read /etc/hext/relay-livre.txt: hext-server's
+# (SupplementaryGroups in hext-server.service).
+if ! getent group hext >/dev/null; then
+    sudo groupadd --system hext
 fi
 # The names into the files, in place of {$SIGNAL_HOST}, {$RELAY_HOST} and
 # {$RELAY_FULL_HOST}.
@@ -113,22 +132,41 @@ names deploy/iroh-relay.toml | sudo tee /etc/hext/iroh-relay.toml >/dev/null
 names deploy/Caddyfile | sudo tee /etc/caddy/Caddyfile >/dev/null
 sudo chmod 644 /etc/hext/iroh-relay.toml /etc/caddy/Caddyfile
 sudo install -m 644 deploy/hext-server.service /etc/systemd/system/hext-server.service
-sudo install -m 644 deploy/iroh-relay.service /etc/systemd/system/iroh-relay.service
+# A systemd unit with the names in it, mode 644.
+unit() {
+    names "deploy/$1" | sudo tee "/etc/systemd/system/$1" >/dev/null
+    sudo chmod 644 "/etc/systemd/system/$1"
+}
+# The relays no longer run as Caddy's user (reading all of Caddy's keys):
+# each one gets only its own certificate and key (LoadCredential), and a
+# path unit restarts it when Caddy renews them.
+unit iroh-relay.service
+unit iroh-relay-cert.path
+unit iroh-relay-cert.service
 if [ -n "$RELAY_FULL_HOST" ]; then
     names deploy/iroh-relay-full.toml | sudo tee /etc/hext/iroh-relay-full.toml >/dev/null
     names deploy/relay-full.caddy | sudo tee /etc/caddy/hext-relay-full.caddy >/dev/null
     sudo chmod 644 /etc/hext/iroh-relay-full.toml /etc/caddy/hext-relay-full.caddy
-    sudo install -m 644 deploy/iroh-relay-full.service /etc/systemd/system/iroh-relay-full.service
+    unit iroh-relay-full.service
+    unit iroh-relay-full-cert.path
+    unit iroh-relay-full-cert.service
     printf 'HEXT_RELAY_FULL_URL=https://%s\n' "$RELAY_FULL_HOST" |
         sudo tee /etc/hext/relay-full.env >/dev/null
     if ! sudo test -f /etc/hext/relay-livre.txt; then
+        sudo install -m 640 -o root -g hext /dev/null /etc/hext/relay-livre.txt
         printf '%s\n' "# Contas que usam o relay sem limite: um e-mail por linha." \
             "# Editar vale na hora, sem reiniciar nada." | sudo tee /etc/hext/relay-livre.txt >/dev/null
     fi
-    sudo chmod 644 /etc/hext/relay-livre.txt
 else
+    sudo systemctl disable --now iroh-relay-full-cert.path 2>/dev/null || true
     sudo systemctl disable --now iroh-relay-full 2>/dev/null || true
-    sudo rm -f /etc/caddy/hext-relay-full.caddy /etc/hext/relay-full.env
+    sudo rm -f /etc/caddy/hext-relay-full.caddy /etc/hext/relay-full.env \
+        /etc/systemd/system/iroh-relay-full-cert.path /etc/systemd/system/iroh-relay-full-cert.service
+fi
+# The list of accounts (e-mails): hext-server only, not everyone on the machine.
+if sudo test -f /etc/hext/relay-livre.txt; then
+    sudo chown root:hext /etc/hext/relay-livre.txt
+    sudo chmod 640 /etc/hext/relay-livre.txt
 fi
 sudo systemctl daemon-reload
 
@@ -164,9 +202,13 @@ sudo systemctl enable --now hext-server
 sudo systemctl restart hext-server
 sudo systemctl enable --now iroh-relay
 sudo systemctl restart iroh-relay
+sudo systemctl enable --now iroh-relay-cert.path
+sudo systemctl restart iroh-relay-cert.path
 if [ -n "$RELAY_FULL_HOST" ]; then
     sudo systemctl enable --now iroh-relay-full
     sudo systemctl restart iroh-relay-full
+    sudo systemctl enable --now iroh-relay-full-cert.path
+    sudo systemctl restart iroh-relay-full-cert.path
 fi
 
 step "Checks"
@@ -188,7 +230,7 @@ check "https://$RELAY_HOST/generate_204"
 if [ -n "$RELAY_FULL_HOST" ]; then
     check "https://$RELAY_FULL_HOST/generate_204"
 fi
-systemctl --no-pager --lines=0 status caddy hext-server iroh-relay | grep -E '●|Active'
+systemctl --no-pager --lines=0 status caddy hext-server iroh-relay iroh-relay-cert.path | grep -E '●|Active'
 echo
 echo "Logs: journalctl -u hext-server -u iroh-relay -u caddy -f"
 echo "Uso e tráfego: ./deploy/uso.sh"

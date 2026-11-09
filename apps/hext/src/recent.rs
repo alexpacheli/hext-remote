@@ -48,7 +48,7 @@ impl Recent {
         let Some(file) = Self::file() else { return };
         let saved = serde_json::to_string_pretty(&self.0)
             .map_err(std::io::Error::other)
-            .and_then(|text| std::fs::write(&file, text));
+            .and_then(|text| hext_crypto::write_user_file(&file, text.as_bytes()));
         if let Err(e) = saved {
             warn!("{}: {e}", file.display());
         }

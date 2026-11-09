@@ -1,0 +1,12 @@
+# Like iroh-relay-cert.path, for the relay without the per-device limit.
+# {$RELAY_FULL_HOST} is its name: install.sh writes it in.
+[Unit]
+Description=Restart iroh-relay-full when Caddy renews its certificate
+
+[Path]
+PathChanged=/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_FULL_HOST}/{$RELAY_FULL_HOST}.crt
+PathChanged=/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_FULL_HOST}/{$RELAY_FULL_HOST}.key
+Unit=iroh-relay-full-cert.service
+
+[Install]
+WantedBy=paths.target

@@ -23,6 +23,21 @@ services:
       - server:/data
     # No published port: only Caddy (X-Forwarded-For) and the relay reach it.
 
+  # Creates, in Caddy's volume, the folder where Caddy keeps the relay's
+  # certificate, so the relay can mount only that folder (below) even before
+  # Caddy has obtained it. Runs once and exits.
+  cert-dir:
+    image: caddy:2.10.2
+    environment:
+      RELAY_HOST: relay.${HEXT_DOMAIN:?defina o domínio no .env}
+    entrypoint:
+      - sh
+      - -c
+      - umask 077 && mkdir -p "/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/$$RELAY_HOST"
+    volumes:
+      - caddy-data:/data
+    restart: "no"
+
   relay:
     build:
       context: .
@@ -32,14 +47,33 @@ services:
       RELAY_HOST: relay.${HEXT_DOMAIN:?defina o domínio no .env}
       IROH_RELAY_HTTP_BEARER_TOKEN: ${HEXT_RELAY_TOKEN}
     volumes:
-      # Caddy's certificate for the relay's name, for QUIC (read only).
-      - caddy-data:/caddy:ro
+      # Only the folder of Caddy's certificate for the relay's name, for QUIC
+      # (read only): not the other names' keys. (subpath: Docker 26 or newer.)
+      - type: volume
+        source: caddy-data
+        target: /cert
+        read_only: true
+        volume:
+          subpath: caddy/certificates/acme-v02.api.letsencrypt.org-directory/relay.${HEXT_DOMAIN}
+    # Nothing to write but its configuration, in /tmp; no privileges. (It
+    # keeps the user root, without any capability, only to read the key,
+    # which Caddy writes as root with mode 600.)
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "7842:7842/udp"
       # The usage counters, for deploy/uso.sh on this server only.
       - "127.0.0.1:9090:9090"
     depends_on:
-      - hext-server
+      hext-server:
+        condition: service_started
+      cert-dir:
+        condition: service_completed_successfully
 
   caddy:
     image: caddy:2.10.2

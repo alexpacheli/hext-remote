@@ -1,0 +1,15 @@
+# Watches the certificate Caddy keeps for the relay's name and, when Caddy
+# writes a new one (first issue, then every ~60 days), runs
+# iroh-relay-cert.service, which restarts the relay with it: the relay gets
+# the certificate as a credential copied at start (iroh-relay.service).
+# {$RELAY_HOST} is the relay's name: install.sh writes it in.
+[Unit]
+Description=Restart iroh-relay when Caddy renews its certificate
+
+[Path]
+PathChanged=/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_HOST}/{$RELAY_HOST}.crt
+PathChanged=/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/{$RELAY_HOST}/{$RELAY_HOST}.key
+Unit=iroh-relay-cert.service
+
+[Install]
+WantedBy=paths.target

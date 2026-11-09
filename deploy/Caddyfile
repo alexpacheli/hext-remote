@@ -8,7 +8,7 @@
 
 {
 	# Let's Encrypt only (no fallback to another CA): iroh-relay reads the
-	# certificate from this CA's folder (see iroh-relay.toml).
+	# certificate from this CA's folder (see iroh-relay.service).
 	acme_ca https://acme-v02.api.letsencrypt.org/directory
 }
 
@@ -22,10 +22,16 @@
 	reverse_proxy {$RELAY_UPSTREAM:127.0.0.1:3340}
 }
 
-# Plain HTTP to the relay too, not a redirect: iroh's captive-portal probe
-# (http://relay…/generate_204) expects the relay's own answer.
+# Plain HTTP to the relay only for iroh's captive-portal probe
+# (http://relay…/generate_204), which expects the relay's own answer, not a
+# redirect; everything else goes to HTTPS.
 http://{$RELAY_HOST} {
-	reverse_proxy {$RELAY_UPSTREAM:127.0.0.1:3340}
+	handle /generate_204 {
+		reverse_proxy {$RELAY_UPSTREAM:127.0.0.1:3340}
+	}
+	handle {
+		redir https://{host}{uri} 308
+	}
 }
 
 # The relay without the per-device limit, when install.sh sets it up

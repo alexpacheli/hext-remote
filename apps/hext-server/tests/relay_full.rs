@@ -79,7 +79,7 @@ async fn a_listed_account_gets_the_relay_and_whoever_it_lets_in_too() {
     state
         .db
         .tamper(&format!(
-            "INSERT INTO accounts (email, password, created_at) VALUES ('vip@exemplo.com', 'x', 0);
+            "INSERT INTO accounts (email, password, verified, created_at) VALUES ('vip@exemplo.com', 'x', 1, 0);
              INSERT INTO account_members (account_id, public_key) VALUES (1, X'{hex}'), (1, X'{hex_too}');"
         ))
         .unwrap();
@@ -138,6 +138,102 @@ async fn a_listed_account_gets_the_relay_and_whoever_it_lets_in_too() {
         .await
         .unwrap();
     assert_eq!(again.relay(), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A viewer with `key` asks `host` with the password, and the host lets the
+/// request through (as it does by itself).
+async fn with_password(url: &str, host: &mut Client, key: &DeviceKey) -> Client {
+    let mut viewer = Client::connect(url, key, "Técnico", "0.1.0", Role::Viewer)
+        .await
+        .unwrap();
+    viewer
+        .send(&ClientMsg::Connect {
+            request: 1,
+            to: host.id(),
+            unattended: true,
+            remember: false,
+            account: None,
+        })
+        .await
+        .unwrap();
+    let ServerMsg::Request { request, .. } = recv(host).await else {
+        panic!("expected a request");
+    };
+    host.send(&ClientMsg::Accept {
+        request,
+        addrs: vec![],
+        session_code: "c0de".into(),
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        recv(&mut viewer).await,
+        ServerMsg::Accepted { .. }
+    ));
+    viewer
+}
+
+#[tokio::test]
+async fn with_the_password_a_stranger_gets_the_relay_only_once_it_got_in() {
+    let dir = std::env::temp_dir().join(format!("hext-relay-full-pw-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let list = dir.join("relay-livre.txt");
+    std::fs::write(&list, "vip@exemplo.com\n").unwrap();
+    let (url, state) = server(&list).await;
+    let vip = DeviceKey::generate().unwrap();
+    let hex: String = vip
+        .public_key()
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    state
+        .db
+        .tamper(&format!(
+            "INSERT INTO accounts (email, password, verified, created_at) VALUES ('vip@exemplo.com', 'x', 1, 0);
+             INSERT INTO account_members (account_id, public_key) VALUES (1, X'{hex}');"
+        ))
+        .unwrap();
+    let mut host = Client::connect(&url, &vip, "Servidor", "0.1.0", Role::Host)
+        .await
+        .unwrap();
+
+    // Two strangers, each with a request with the password the listed
+    // computer takes by itself: neither may use the relay (together they
+    // would have a tunnel of their own) before the computer says it got in.
+    let (one, two) = (
+        DeviceKey::generate().unwrap(),
+        DeviceKey::generate().unwrap(),
+    );
+    let first = with_password(&url, &mut host, &one).await;
+    let second = with_password(&url, &mut host, &two).await;
+    assert_eq!(may_use(&url, &one).await, 403);
+    assert_eq!(may_use(&url, &two).await, 403);
+
+    // A wrong password: still not. The right one: in.
+    host.send(&ClientMsg::Attempt {
+        viewer: second.id(),
+        entered: false,
+    })
+    .await
+    .unwrap();
+    host.send(&ClientMsg::Attempt {
+        viewer: first.id(),
+        entered: true,
+    })
+    .await
+    .unwrap();
+    let mut admitted = false;
+    for _ in 0..50 {
+        if may_use(&url, &one).await == 200 {
+            admitted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(admitted);
+    assert_eq!(may_use(&url, &two).await, 403);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

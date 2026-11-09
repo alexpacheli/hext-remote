@@ -37,7 +37,8 @@ pub fn log_file(name: &str) -> Option<std::fs::File> {
 /// The interface's log file, in the user's folder (it runs as the user).
 pub fn user_log_file(name: &str) -> Option<std::fs::File> {
     let dir = hext_crypto::config_dir().ok()?;
-    std::fs::create_dir_all(&dir).ok()?;
+    // (The logs name computers and people: this user's only.)
+    hext_crypto::private_dir(&dir).ok()?;
     log_in(&dir, name)
 }
 
@@ -130,6 +131,10 @@ fn user_name(change: NameChange) -> Result<()> {
 }
 
 pub fn command(action: ServiceAction) -> Result<()> {
+    // (These may run elevated from Downloads: no library from beside the
+    // program. No window here, so nothing that needs its own.)
+    #[cfg(windows)]
+    windows::harden_dll_search();
     let action = match action {
         ServiceAction::Name { name, reset } => {
             let change = match name {

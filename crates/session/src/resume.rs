@@ -134,6 +134,13 @@ impl ResumeTokens {
             .map(|e| e.kept.clone())
     }
 
+    /// Keeps only the tokens `keep` still lets in: the password changed, or a
+    /// technician was revoked, and whoever came in that way does not come
+    /// back. (A session still on ends by its own check.)
+    pub fn retain(&self, keep: impl Fn(&KeptResume) -> bool) {
+        self.0.lock().expect("lock").retain(|e| keep(&e.kept));
+    }
+
     /// Brings back a token kept before a restart, good for `left` more.
     pub fn restore(&self, kept: KeptResume, left: Duration) {
         self.0.lock().expect("lock").push(Entry {
@@ -214,6 +221,18 @@ mod tests {
         assert!(tokens.displace(&viewer));
         displaced.notified().await;
         assert!(!tokens.displace(&key()), "only its own");
+    }
+
+    #[test]
+    fn a_revoked_way_in_takes_its_tokens() {
+        let (tokens, viewer, other) = (ResumeTokens::default(), key(), key());
+        let (token, hash, _) = tokens.open(viewer, grant());
+        let (kept, kept_hash, _) = tokens.open(other, grant());
+        tokens.lost(&hash);
+        tokens.lost(&kept_hash);
+        tokens.retain(|kept| kept.viewer != viewer);
+        assert_eq!(tokens.take(&token, &viewer), None);
+        assert!(tokens.take(&kept, &other).is_some());
     }
 
     #[test]

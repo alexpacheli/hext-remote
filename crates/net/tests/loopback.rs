@@ -1,16 +1,17 @@
 use std::time::{Duration, Instant};
 
 use hext_crypto::DeviceKey;
-use hext_crypto::pake::Verifier;
+use hext_crypto::pake::{HostExchange, Verifier};
 use hext_net::video::{Event, Reassembler, VideoSender};
 use hext_net::{
-    Admission, Endpoint, EndpointAddr, EndpointConfig, NetError, bind, client_handshake, connect,
-    host_handshake, recv_datagram, remote_key, send_datagram,
+    Admission, Endpoint, EndpointAddr, EndpointConfig, NetError, PasswordLogin, bind,
+    client_handshake, connect, host_handshake, recv_datagram, remote_key, send_datagram,
 };
 use hext_proto::{
     Control, Datagram, Hello, PROTOCOL_VERSION, PeerInfo, RejectReason, decode_preamble,
     encode_preamble,
 };
+use zeroize::Zeroizing;
 
 const CODE: &str = "123456789";
 
@@ -19,6 +20,7 @@ fn hello(code: &str) -> Hello {
         peer: PeerInfo::local("test", "client"),
         access_code: code.to_owned(),
         resume: None,
+        asks: Default::default(),
     }
 }
 
@@ -282,6 +284,73 @@ async fn a_wrong_password_is_reported_even_at_the_deadline() {
         Err(NetError::Rejected(RejectReason::WrongPassword))
     ));
     drop(conn);
+}
+
+/// The viewer's answer to a host that asks for the password.
+fn login(key: &DeviceKey) -> PasswordLogin {
+    PasswordLogin {
+        password: Zeroizing::new("senha certa".to_owned()),
+        viewer: key.public_key(),
+    }
+}
+
+/// With the password, a host that lets the viewer in without asking for it
+/// never proved it knows it: it could be anyone the server pointed at.
+#[tokio::test]
+async fn a_host_that_does_not_ask_for_the_password_is_refused() {
+    let (host, addr) = local_host().await;
+    let server = tokio::spawn(async move {
+        let conn = host.accept().await.expect("endpoint open").await?;
+        let handshake = host_handshake(&conn, PeerInfo::local("test", "host"), check_code).await;
+        // Kept open until the viewer leaves: the ack must reach it.
+        conn.closed().await;
+        handshake.map(drop)
+    });
+    let (client, key) = viewer().await;
+    let conn = connect(&client, addr).await.unwrap();
+    let result = client_handshake(&conn, hello(CODE), Some(login(&key))).await;
+    assert!(
+        matches!(result, Err(NetError::PasswordNotAsked)),
+        "{:?}",
+        result.err()
+    );
+    let _ = server.await;
+}
+
+/// Nor one that asks, but lets the viewer in without confirming it knew the
+/// password.
+#[tokio::test]
+async fn a_host_that_does_not_confirm_the_password_is_refused() {
+    let (host, addr) = local_host().await;
+    let host_key = DeviceKey::generate().unwrap().public_key();
+    let (client, key) = viewer().await;
+    let viewer_key = key.public_key();
+    let server = tokio::spawn(async move {
+        let conn = host.accept().await.expect("endpoint open").await.unwrap();
+        let (mut send, _recv) = conn.accept_bi().await.unwrap();
+        // It does not know the password: another one stands in.
+        let verifier = Verifier::new("outra senha").unwrap();
+        let (_, message) = HostExchange::start(&verifier, &viewer_key, &host_key);
+        let mut out = encode_preamble(PROTOCOL_VERSION).to_vec();
+        out.extend(framed(&Control::PasswordChallenge {
+            salt: *verifier.salt(),
+            message,
+        }));
+        out.extend(framed(&Control::HelloAck {
+            peer: PeerInfo::local("test", "host"),
+            permissions: hext_proto::Permissions::CONTROL,
+        }));
+        send.write_all(&out).await.unwrap();
+        conn.closed().await;
+    });
+    let conn = connect(&client, addr).await.unwrap();
+    let result = client_handshake(&conn, hello(CODE), Some(login(&key))).await;
+    assert!(
+        matches!(result, Err(NetError::HostNotConfirmed)),
+        "{:?}",
+        result.err()
+    );
+    server.await.unwrap();
 }
 
 #[tokio::test]

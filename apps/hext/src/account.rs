@@ -130,10 +130,8 @@ impl Account {
         let written = serde_json::to_string(stored)
             .map_err(anyhow::Error::from)
             .and_then(|text| {
-                if let Some(dir) = self.file.parent() {
-                    std::fs::create_dir_all(dir)?;
-                }
-                std::fs::write(&self.file, text)?;
+                // The token: this user's only.
+                hext_crypto::write_user_file(&self.file, text.as_bytes())?;
                 Ok(())
             });
         if let Err(e) = written {
@@ -161,7 +159,8 @@ impl Account {
             return;
         }
         let text = serde_json::to_string(&known).expect("serializes");
-        if let Err(e) = std::fs::write(self.file.with_file_name(CHAIN_FILE), text) {
+        let file = self.file.with_file_name(CHAIN_FILE);
+        if let Err(e) = hext_crypto::write_user_file(&file, text.as_bytes()) {
             warn!("{CHAIN_FILE}: {e}");
         }
     }
@@ -817,9 +816,14 @@ mod tests {
     async fn code(inbox: &Inbox) -> String {
         for _ in 0..500 {
             if let Some(body) = inbox.0.lock().unwrap().last() {
+                // 8 capital letters and digits.
                 return body
-                    .split(|c: char| !c.is_ascii_digit())
-                    .find(|w| w.len() == 6)
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .find(|w| {
+                        w.len() == 8
+                            && w.chars()
+                                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                    })
                     .unwrap()
                     .to_owned();
             }
@@ -1103,7 +1107,7 @@ mod tests {
         first.create_chain().await.unwrap();
         // A computer, logged in as a host.
         let host_key = DeviceKey::generate().unwrap();
-        let host = Client::connect(&world.server, &host_key, "Escritório", "t", Role::Host)
+        let mut host = Client::connect(&world.server, &host_key, "Escritório", "t", Role::Host)
             .await
             .unwrap();
         let id = host.id();
@@ -1126,6 +1130,13 @@ mod tests {
             .unwrap();
         assert_eq!(view.computers.len(), 1);
         assert!(view.listed && view.computers[0].me);
+        // Listed, but online to the account only once the computer says it
+        // is bound to it (as it does when it fetches the account's list).
+        assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![]);
+        let chain = crate::owners::parse_id(&view.chain).unwrap();
+        host.account(AccountCall::ChainHost { known: vec![chain] })
+            .await
+            .unwrap();
         assert_eq!(viewer.presence(&[id]).await.unwrap(), vec![id]);
         // A device of no account sees nothing.
         let stranger = DeviceKey::generate().unwrap();
@@ -1250,8 +1261,10 @@ mod tests {
         let stranger = DeviceKey::generate().unwrap().public_key();
         assert!(owners.bind_asked(chain, &stranger).await.is_err());
         assert_eq!(owners.bound(), None);
-        // By the technician, after the password: bound, but nobody comes in
-        // until the computer is on the list.
+        // By the technician, after the password (the host told the server
+        // it got in): bound, but nobody comes in until the computer is on
+        // the list.
+        entered(&world, &host_key.public_key(), &me);
         assert!(owners.bind_asked(chain, &me).await.unwrap());
         assert_eq!(owners.bound().unwrap().0, chain);
         assert_eq!(owners.way(&me), None);
@@ -1285,18 +1298,20 @@ mod tests {
         // ...and a technician with the password cannot take it over.
         assert!(owners.bind_asked([7; 32], &me).await.is_err());
         assert_eq!(owners.bound().unwrap().0, chain);
-        // Unless that account is gone: then another one may bind it.
+        // Not even when the server no longer shows that account: hiding it
+        // must not hand the computer over.
         let other = other_account(&mut world, "outro@example.com").await;
         let other_chain = other.chain_id().unwrap();
         let other_key = other.key().unwrap().public_key();
+        entered(&world, &host_key.public_key(), &other_key);
         assert!(owners.bind_asked(other_chain, &other_key).await.is_err());
         world
             .state
             .db
             .tamper("DELETE FROM account_chain_ids WHERE chain_id IN (SELECT chain_id FROM account_chain_ids ORDER BY account_id LIMIT 1)")
             .unwrap();
-        assert!(owners.bind_asked(other_chain, &other_key).await.unwrap());
-        assert_eq!(owners.bound().unwrap().0, other_chain);
+        assert!(owners.bind_asked(other_chain, &other_key).await.is_err());
+        assert_eq!(owners.bound().unwrap().0, chain);
 
         // Reinstalled (a new key, the same ID): the old one leaves the list.
         let new_key = DeviceKey::generate().unwrap().public_key().to_string();
@@ -1353,6 +1368,21 @@ mod tests {
         assert!(owners.refresh().await.is_err());
         assert_eq!(owners.way(&me), None);
         drop(host);
+    }
+
+    /// The server's record that `viewer` just got into `host` with the
+    /// password (as the host reports it).
+    fn entered(world: &World, host: &PublicKey, viewer: &PublicKey) {
+        let (host, viewer) = (hex::encode(host.as_bytes()), hex::encode(viewer.as_bytes()));
+        world
+            .state
+            .db
+            .tamper(&format!(
+                "INSERT OR REPLACE INTO entered (host_id, viewer_id, at)
+                 SELECT h.id, v.id, strftime('%s', 'now') FROM devices h, devices v
+                 WHERE h.public_key = X'{host}' AND v.public_key = X'{viewer}'"
+            ))
+            .unwrap();
     }
 
     async fn other_account(world: &mut World, email: &str) -> Account {

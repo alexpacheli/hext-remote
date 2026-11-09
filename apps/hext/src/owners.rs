@@ -206,34 +206,27 @@ impl Owners {
     /// must be a device of that chain. This computer need not be on its list
     /// yet (the technician's app puts it there right after), but nobody
     /// comes in by the account until it is. Bound to another account by an
-    /// administrator: refused (they unbind first), unless that account is
-    /// gone (deleted: the server has no list for it). One bound with the
-    /// password is replaced (whoever has the password could do it anyway).
-    /// Whether it bound now (`false`: it was bound to this one already).
+    /// administrator: always refused (they unbind first), whatever the server
+    /// says of that account (hiding it must not hand the computer over). One
+    /// bound with the password is replaced (whoever has the password could
+    /// do it anyway). Whether it bound now (`false`: it was bound to this one
+    /// already).
     pub async fn bind_asked(&self, id: ChainId, viewer: &PublicKey) -> Result<bool> {
         let _busy = self.0.busy.lock().await;
-        let mut ask = vec![id];
-        let mut held_by = None;
         if let Some(stored) = self.stored() {
             if stored.chain == id {
                 return Ok(false);
             }
             if !stored.by_password {
-                held_by = Some(stored.chain);
-                ask.push(stored.chain);
+                bail!(
+                    "este computador já está vinculado a outra conta por um administrador: ele \
+                     desvincula antes (HextRemote service account --off)"
+                );
             }
         }
-        let chains = tokio::time::timeout(FETCH_TIME, self.fetch(&ask))
+        let chains = tokio::time::timeout(FETCH_TIME, self.fetch(&[id]))
             .await
             .context("servidor de sinalização: sem resposta")??;
-        if let Some(held_by) = held_by
-            && chains.iter().any(|(chain, _)| chain.id == held_by)
-        {
-            bail!(
-                "este computador já está vinculado a outra conta por um administrador: ele \
-                 desvincula antes (HextRemote service account --off)"
-            );
-        }
         let own = chains
             .iter()
             .find(|(chain, _)| chain.id == id)
@@ -409,6 +402,21 @@ impl hext_session::host::Owners for Owners {
         self.load();
         self.way(viewer).is_some()
     }
+
+    fn still_with(&self, viewer: &PublicKey, permissions: &Permissions) -> bool {
+        self.load();
+        // Nor someone the account now lets do less than the session does.
+        self.way(viewer)
+            .is_some_and(|way| covers(&way.permissions, permissions))
+    }
+}
+
+/// Whether `now` allows everything `had` did.
+fn covers(now: &Permissions, had: &Permissions) -> bool {
+    (now.control || !had.control)
+        && (now.clipboard || !had.clipboard)
+        && (now.files || !had.files)
+        && (now.restart || !had.restart)
 }
 
 /// How often the file is read again, for the home screen to follow a
@@ -594,6 +602,21 @@ mod tests {
     use hext_signal::chain::{Allowed, Op};
 
     use super::*;
+
+    #[test]
+    fn fewer_permissions_than_the_session_had_do_not_cover_it() {
+        let all = Permissions {
+            control: true,
+            clipboard: true,
+            files: true,
+            restart: true,
+        };
+        assert!(covers(&all, &Permissions::CONTROL));
+        assert!(covers(&Permissions::CONTROL, &Permissions::CONTROL));
+        assert!(covers(&Permissions::VIEW_ONLY, &Permissions::VIEW_ONLY));
+        assert!(!covers(&Permissions::VIEW_ONLY, &Permissions::CONTROL));
+        assert!(!covers(&Permissions::CONTROL, &all));
+    }
 
     fn key() -> DeviceKey {
         DeviceKey::generate().unwrap()

@@ -18,7 +18,10 @@ iroh-relay ──"este computador pode usar o relay?"──► hext-server (/v1/
 - **`iroh-relay`** repassa as sessões que não conseguem conexão direta. Ele **só aceita computadores
   registrados no `hext-server`**: a cada conexão, pergunta ao `hext-server`, apresentando um segredo
   guardado em `/etc/hext/secrets.env`. A porta UDP 7842 serve para cada computador descobrir o próprio
-  endereço público, o que ajuda na conexão direta. Ela usa o certificado que o Caddy obtém.
+  endereço público, o que ajuda na conexão direta. Ela usa o certificado que o Caddy obtém: o relay roda com
+  um usuário próprio do systemd e recebe só o certificado e a chave do nome dele (`LoadCredential`), sem acesso
+  às demais chaves do Caddy. Quando o Caddy renova o certificado, a unidade `iroh-relay-cert.path` reinicia o
+  relay com o novo.
 - Nenhum dos serviços vê o conteúdo das sessões: o tráfego é cifrado de ponta a ponta entre os dois
   computadores.
 
@@ -29,7 +32,8 @@ iroh-relay ──"este computador pode usar o relay?"──► hext-server (/v1/
    o certificado.
 2. **Portas na Oracle** (Security List): TCP 80 e 443 e UDP 7842, as mesmas do relay. Se você abriu a
    TCP 8080 para o teste, pode remover.
-3. **Na VM**, com o Rust já instalado (`rustup`):
+3. **Na VM** (Debian 11, Ubuntu 22.04 ou mais novos: o script exige o systemd 247), com o Rust já instalado
+   (`rustup`):
 
    ```sh
    git clone https://github.com/alexpacheli/remote-control.git   # se ainda não clonou
@@ -113,14 +117,16 @@ O limite de 5 Mbit/s vale para todos no relay normal. Para liberar o relay sem l
    ```
 
    O nome fica guardado em `/etc/hext/hosts.env`, então as próximas atualizações continuam só com
-   `./deploy/install.sh`. Para tirar o relay sem limite: `RELAY_FULL_HOST= ./deploy/install.sh`.
-4. Coloque os e-mails das contas em `/etc/hext/relay-livre.txt`, um por linha (`#` começa um comentário):
+   `./deploy/install.sh`. Para remover o relay sem limite: `RELAY_FULL_HOST= ./deploy/install.sh`.
+4. Insira os e-mails das contas em `/etc/hext/relay-livre.txt`, um por linha (`#` começa um comentário):
 
    ```sh
    sudoedit /etc/hext/relay-livre.txt
    ```
 
-   O arquivo é lido a cada consulta: incluir ou remover uma conta vale na hora, sem reiniciar nada.
+   O arquivo é lido a cada consulta: incluir ou remover uma conta vale na hora, sem reiniciar nada. Só o
+   `hext-server` o lê (dono `root`, grupo `hext`, permissão 640; o `install.sh` cria o grupo e acerta as
+   permissões).
 
 Como funciona:
 
@@ -130,7 +136,11 @@ Como funciona:
   normal no próximo login (o serviço do computador reconecta sozinho).
 - Quem abre uma sessão com uma dessas contas (um técnico de outra conta, ou alguém aceito na tela) pode usar
   esse relay durante a sessão: o `hext-server` libera os dois lados por 2 minutos, o tempo de se conectarem a
-  ele, quando o pedido é aceito.
+  ele, quando o pedido é aceito. Num pedido com a senha de acesso (que o computador deixa passar sozinho),
+  um técnico fora da lista só é liberado depois que o computador avisa que ele entrou com a senha certa (ou
+  se ele já entrou com a senha nos últimos 7 dias): sem isso, qualquer um poderia usar o relay sem limite
+  só pedindo acesso. Por isso, na primeira entrada com a senha, a conexão até a senha ser conferida
+  precisa ser direta (sem relay).
 - O limite só atrapalha quem envia o vídeo, o computador acessado. Por isso os computadores da conta também
   precisam estar em Meus computadores para usar o relay sem limite.
 - `./deploy/uso.sh` mostra os contadores dos dois relays.
@@ -146,7 +156,14 @@ Só na instalação com systemd por enquanto: o Docker continua com um relay só
 - Por isso o app só usa o relay padrão com o servidor padrão: ele se registra no servidor antes de chegar ao
   relay. Pelo IP, ou com `--server off` ou outro servidor, a conexão é só direta, a não ser que você informe
   outro relay.
-- O Caddy usa só a Let's Encrypt (`acme_ca`), porque o relay lê o certificado da pasta dela.
+- O Caddy usa só a Let's Encrypt (`acme_ca`), porque o relay recebe o certificado da pasta dela.
+- Cada relay roda com um usuário próprio (`DynamicUser`) e só recebe o certificado e a chave do próprio nome;
+  não lê as chaves dos outros nomes do Caddy. No Docker, o contêiner do relay monta só a pasta do certificado
+  dele, sem nenhuma capacidade (`cap_drop`) e com o sistema de arquivos somente leitura.
+- Em HTTP simples (porta 80), o Caddy só repassa ao relay o `/generate_204`, usado pelo iroh para detectar
+  portais cativos; o resto é redirecionado para HTTPS.
+- `/etc/hext/secrets.env` e `/etc/hext/mail.env` têm permissão 600 (só o root; o systemd os lê para os
+  serviços).
 - Limites contra tentativas de adivinhar IDs: por computador, por IP (pelo `X-Forwarded-For` do Caddy) e
   de computadores novos por IP (veja `docs/hext-server.md`).
 - **Backup:** copie `/var/lib/hext/hext-server.db` de vez em quando. Ele guarda a ligação entre IDs e

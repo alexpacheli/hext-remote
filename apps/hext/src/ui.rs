@@ -266,18 +266,26 @@ async fn install_this_computer() -> anyhow::Result<()> {
     if crate::update::enabled() {
         match crate::update::latest().await {
             Ok(manifest) => {
-                let dir = std::env::temp_dir().join(format!("HextRemote-{}", std::process::id()));
-                let msi = crate::update::download(&manifest, "windows-msi", &dir).await?;
-                tracing::info!("instalar: {}", msi.display());
-                // (The installer asks for the administrator itself.)
-                let status = tokio::task::spawn_blocking(move || {
-                    std::process::Command::new("msiexec.exe")
-                        .arg("/i")
-                        .arg(&msi)
-                        .status()
-                })
-                .await??;
+                // A folder nobody could have made ready: the name is new.
+                let mut nonce = [0u8; 16];
+                ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce)
+                    .map_err(|_| anyhow::anyhow!("sem números aleatórios"))?;
+                let dir = std::env::temp_dir().join(format!("HextRemote-{}", hex::encode(nonce)));
+                std::fs::create_dir(&dir)?;
+                let installed = async {
+                    let msi = crate::update::download(&manifest, "windows-msi", &dir).await?;
+                    let expected = manifest
+                        .files
+                        .get("windows-msi")
+                        .map(|asset| asset.sha256.clone())
+                        .unwrap_or_default();
+                    tracing::info!("instalar: {}", msi.display());
+                    // (The installer asks for the administrator itself.)
+                    tokio::task::spawn_blocking(move || run_checked_msi(&msi, &expected)).await?
+                }
+                .await;
                 let _ = std::fs::remove_dir_all(&dir);
+                let status = installed?;
                 return match status.code() {
                     Some(0 | 3010) => Ok(()),
                     Some(1602) => anyhow::bail!("Instalação cancelada."),
@@ -292,6 +300,47 @@ async fn install_this_computer() -> anyhow::Result<()> {
         anyhow::bail!("A instalação falhou ({code}).");
     }
     Ok(())
+}
+
+/// Runs the installer at `msi` once it is what the list says (`sha256`, hex),
+/// held so that nothing changes it between the check and the installer, which
+/// runs as administrator: the file is open with others allowed only to read,
+/// so no other program of this user can write, replace or move it meanwhile.
+#[cfg(windows)]
+fn run_checked_msi(
+    msi: &std::path::Path,
+    sha256: &str,
+) -> anyhow::Result<std::process::ExitStatus> {
+    use std::io::Read;
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    let mut held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(msi)?;
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        let read = held.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        context.update(&buffer[..read]);
+    }
+    if hex::encode(context.finish()) != sha256.to_ascii_lowercase() {
+        anyhow::bail!("O instalador baixado não confere com a lista.");
+    }
+    let root = std::env::var_os("SystemRoot").context("SystemRoot não definido")?;
+    let status = std::process::Command::new(
+        std::path::Path::new(&root)
+            .join("System32")
+            .join("msiexec.exe"),
+    )
+    .arg("/i")
+    .arg(msi)
+    .status()?;
+    drop(held);
+    Ok(status)
 }
 
 /// Runs this program with `args` as administrator (Windows asks), hidden,
@@ -1116,8 +1165,9 @@ fn connect(
 /// Puts computer `id`, called `name`, which a session just reached with its
 /// password (asking it to bind to the account), in the account's list: from
 /// then on the account's devices come in without the password. Its key is
-/// the one the connection proved (kept in `known_hosts`). The outcome shows
-/// on the home screen.
+/// the one the session proved: the viewer writes it to `known_hosts` only
+/// once in (with the password, once the computer proved it knows it), before
+/// it says it is connected. The outcome shows on the home screen.
 fn put_in_account(app: AppHandle, id: String, name: String) {
     tauri::async_runtime::spawn(async move {
         let shared = app.state::<Shared>();
