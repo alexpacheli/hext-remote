@@ -99,13 +99,27 @@ fn info_plist() -> String {
     )
 }
 
+/// The app (`….app`) that `exe` runs from, if any.
+fn app_of(exe: &Path) -> Option<&Path> {
+    let app = exe.parent()?.parent()?.parent()?;
+    (app.extension().and_then(|e| e.to_str()) == Some("app")).then_some(app)
+}
+
+/// The app `exe` runs from, if it is in Applications (dragged there from
+/// the `.dmg`). The installed one runs it where it is: the privacy settings
+/// the user gave it hold, where a copy, signed apart, would have to ask for
+/// them again.
+fn applications_app(exe: &Path) -> Option<PathBuf> {
+    let app = app_of(exe)?;
+    let dir = app.parent()?;
+    let mine = home().ok().map(|h| h.join("Applications"));
+    (dir == Path::new("/Applications") || Some(dir) == mine.as_deref()).then(|| app.to_owned())
+}
+
 /// The app `exe` runs from, if it came signed with a Developer ID (the
 /// `.dmg` of F6): copied whole, it keeps its signature and notarization.
 fn signed_bundle(exe: &Path) -> Option<PathBuf> {
-    let app = exe.parent()?.parent()?.parent()?;
-    if app.extension().and_then(|e| e.to_str()) != Some("app") {
-        return None;
-    }
+    let app = app_of(exe)?;
     let verified = Command::new("/usr/bin/codesign")
         .args(["--verify", "--strict"])
         .arg(app)
@@ -290,11 +304,28 @@ pub fn install(name: Option<String>) -> Result<()> {
     }
     let dir = data_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| dir.display().to_string())?;
-    let exe = program()?;
     let current = std::env::current_exe()?;
-    if !same_file(&current, &exe) {
-        place_bundle(&current)?;
-    }
+    let (exe, app) = match applications_app(&current) {
+        Some(app) => {
+            // A copy from before is left with no use (and with its own
+            // entries in the privacy settings).
+            let _ = std::fs::remove_dir_all(bundle()?);
+            // Opened once by hand, it is allowed already; this only spares
+            // a question at login if not.
+            let _ = Command::new("/usr/bin/xattr")
+                .args(["-dr", "com.apple.quarantine"])
+                .arg(&app)
+                .output();
+            (current, app)
+        }
+        None => {
+            let exe = program()?;
+            if !same_file(&current, &exe) {
+                place_bundle(&current)?;
+            }
+            (exe, bundle()?)
+        }
+    };
     // The bare program of the first test builds of this milestone.
     let old = data_dir()?.join("HextRemote");
     if old.is_file() {
@@ -327,7 +358,7 @@ pub fn install(name: Option<String>) -> Result<()> {
     loaded?;
 
     println!("Instalado: o Hext Remote abre sozinho a cada login, sem janela.");
-    println!("App: {}", bundle()?.display());
+    println!("App: {}", app.display());
     let mut id = None;
     for _ in 0..30 {
         if let Ok(text) = std::fs::read_to_string(id_file()?) {

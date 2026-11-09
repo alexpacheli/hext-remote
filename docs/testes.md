@@ -186,7 +186,9 @@ Instalado, o Mac abre o Hext Remote sozinho a cada login, sem janela, com o mesm
 
 1. **No Mac**, no Início do app, **Instalar neste computador** (sem administrador). A janela fecha e o
    app instalado abre no lugar dela em alguns segundos. Pelo Terminal, sem sudo, é `./HextRemote service install`.
-   Ele monta o app em `~/Library/Application Support/HextRemote/HextRemote.app`, inicia e mostra o ID.
+   Com o app em Aplicativos (arrastado do `.dmg`), o instalado é esse mesmo app, e as permissões liberadas
+   para ele continuam valendo. Fora de Aplicativos, ele monta uma cópia em
+   `~/Library/Application Support/HextRemote/HextRemote.app`, que pede as permissões à parte.
 2. Na primeira vez, o macOS pede **Gravação de Tela** e **Acessibilidade** para o **Hext Remote**. Libere as
    duas em **Ajustes do Sistema → Privacidade e Segurança** e rode `service install` de novo, para ele reabrir
    com a Gravação de Tela.
