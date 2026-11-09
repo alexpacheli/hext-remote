@@ -12,6 +12,8 @@ use hext_session::host::Restart;
 use crate::ServiceAction;
 
 #[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
+mod access;
 mod banner;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 mod kept;
@@ -168,16 +170,11 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ServiceAction::Install { name } => macos::install(name),
             ServiceAction::Uninstall { purge } => macos::uninstall(purge),
             ServiceAction::Status => macos::status(),
-            ServiceAction::Password { .. } => anyhow::bail!(
-                "no Mac, o acesso não assistido ainda não existe: cada acesso pede aceite (a volta \
-                 depois de reiniciar ou de uma queda de rede não pede)"
-            ),
-            ServiceAction::Technicians { .. } => anyhow::bail!(
-                "no Mac, o acesso não assistido ainda não existe, nem os técnicos vinculados"
-            ),
-            ServiceAction::Account { .. } => anyhow::bail!(
-                "no Mac, a entrada pela conta sem aceite chega com o serviço do sistema (F6)"
-            ),
+            ServiceAction::Password { off, .. } => macos::password(off),
+            ServiceAction::Technicians { revoke, revoke_all } => {
+                macos::technicians(revoke.as_deref(), revoke_all)
+            }
+            ServiceAction::Account { chain, off } => macos::account(chain.as_deref(), off),
             ServiceAction::Run => anyhow::bail!("no Mac, quem inicia o Hext Remote é o login"),
             ServiceAction::Name { .. } => unreachable!("answered above"),
         }
@@ -186,6 +183,64 @@ pub fn command(action: ServiceAction) -> Result<()> {
     {
         let _ = action;
         anyhow::bail!("o serviço por enquanto só existe no Windows e no macOS")
+    }
+}
+
+/// What the host of the app opened at login takes to let people in without
+/// anyone accepting (macOS, F6 marco 3): the password, the technicians and
+/// the account.
+pub struct LoginAccess {
+    pub unattended: hext_session::host::UnattendedAccess,
+    pub owners: Arc<dyn hext_session::host::Owners>,
+    pub attempts: tokio::sync::mpsc::UnboundedReceiver<hext_session::host::Attempt>,
+    pub ask: Box<dyn crate::signaling::Ask>,
+}
+
+/// The unattended access of the installed app on macOS (`None` elsewhere,
+/// or not installed). Keeps `hub` up to date with it.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub fn login_access(
+    key: &Arc<hext_crypto::DeviceKey>,
+    hub: &crate::ui_link::UiHub,
+) -> Option<LoginAccess> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::login_access(key, hub)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (key, hub);
+        None
+    }
+}
+
+/// Sets the password from the app (macOS): the system's own dialog asks for
+/// it, never the page. `Ok(false)`: cancelled.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn set_password_from_app(off: bool) -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::set_password_from_app(off)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = off;
+        anyhow::bail!("só no Mac")
+    }
+}
+
+/// Binds (`Some`) or unbinds the account from the app (macOS: no
+/// administrator, the access is the user's).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn account_from_app(chain: Option<&str>) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::account(chain, chain.is_none())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = chain;
+        anyhow::bail!("só no Mac")
     }
 }
 

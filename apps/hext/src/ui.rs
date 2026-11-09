@@ -1259,6 +1259,12 @@ fn account_bind(shared: State<'_, Shared>, chain: String) -> Result<(), String> 
         );
     }
     let _ = shared;
+    // (The Mac's access is its user's: no administrator.)
+    #[cfg(target_os = "macos")]
+    if crate::service::installed() {
+        return crate::service::account_from_app(Some(chain.as_str()))
+            .map_err(|e| format!("{e:#}"));
+    }
     Err("Só com o serviço instalado (HextRemote service install).".to_owned())
 }
 
@@ -1283,11 +1289,18 @@ async fn password_set(off: bool) -> Result<(), String> {
             Err(_) => Err("Nada mudou: é preciso permitir como administrador.".to_owned()),
         }
     };
+    // The Mac's access is its user's: no administrator; the system's own
+    // dialog asks for the password.
     #[cfg(not(windows))]
-    let result = {
-        let _ = off;
-        Err("Só com o serviço instalado no Windows.".to_owned())
-    };
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        match crate::service::set_password_from_app(off) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("A senha não mudou.".to_owned()),
+            Err(e) => Err(format!("{e:#}")),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     result
 }
 
@@ -1309,7 +1322,7 @@ async fn account_unbind() -> Result<(), String> {
         }
     };
     #[cfg(not(windows))]
-    let result = Err("Só com o serviço instalado.".to_owned());
+    let result = crate::service::account_from_app(None).map_err(|e| format!("{e:#}"));
     result
 }
 

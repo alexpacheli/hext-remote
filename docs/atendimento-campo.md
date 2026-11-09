@@ -66,7 +66,8 @@ passa pelo servidor e pelo relay como num atendimento de verdade.
 
 1. [ ] O cliente liga a senha: aba **Segurança** → **Definir a senha de acesso** (o Windows pede administrador
    e uma janela pede a senha). **Quem digita a senha é o cliente.** Conferir também **Trocar a senha** e
-   **Desligar a senha** no mesmo cartão.
+   **Desligar a senha** no mesmo cartão. No Mac instalado, o mesmo cartão (a senha numa janela do
+   macOS, sem administrador); vale depois que o usuário entra no Mac.
 2. [ ] O técnico encerra, conecta de novo com a senha (sem ninguém aceitar) e marca **Entrar sem senha da
    próxima vez**.
 3. [ ] O técnico encerra e conecta de novo **sem a senha**: entra direto. Na tela inicial do cliente, **Técnicos

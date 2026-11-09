@@ -4,18 +4,28 @@
 //! opened by hand, and the app stays running when its windows close.
 //!
 //! Everything is the user's: the program, the key and what is kept for
-//! after a restart, all in `~/Library/Application Support/HextRemote`. With
-//! nothing running as root, there is no unattended password here, and the
-//! sign-in screen is out of reach: after a restart the viewer gets back in
-//! once someone signs in (decision 3 of F4).
+//! after a restart, all in `~/Library/Application Support/HextRemote`. So is
+//! the unattended access (F6 marco 3): the password, the technicians and the
+//! account binding, set by this user (`service password`, or the app's
+//! Segurança tab), and good once they are signed in. With nothing running
+//! as root, the sign-in screen is out of reach: after a restart the viewer
+//! gets back in once someone signs in (decision 3 of F4).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result, bail};
-use hext_session::host::Restart;
-use hext_session::{KeptResume, ResumeTokens};
+use hext_crypto::DeviceKey;
+use hext_session::host::{BoxFuture, Restart, UnattendedAccess};
+use hext_session::{KeptResume, Lockout, ResumeTokens};
+use zeroize::Zeroizing;
+
+use super::access::{Access, Password};
+use crate::signaling::Ask;
+use crate::ui_link::{UiAsk, UiHub};
 
 /// The LaunchAgent's name (the app's identifier).
 const LABEL: &str = "br.com.hext.remote";
@@ -360,6 +370,8 @@ pub fn uninstall(purge: bool) -> Result<()> {
     let dir = data_dir()?;
     super::kept::revoke(&dir);
     let _ = std::fs::remove_file(id_file()?);
+    // Unattended access does not come back with a later install.
+    let _ = hext_crypto::pake::Verifier::remove(&access()?.password_file());
     if purge {
         let key = dir.join("device.key");
         if key.exists() {
@@ -395,7 +407,14 @@ pub fn status() -> Result<()> {
         "Nome deste computador: {}",
         crate::name::described(&data_dir()?)
     );
-    println!("Acesso não assistido: não existe no Mac por enquanto (cada acesso pede aceite)");
+    let access = access()?;
+    if access.verifier().is_some() {
+        println!("Acesso não assistido: ligado (depois do login deste usuário)");
+        println!("Técnicos vinculados: {}", access.technicians().list().len());
+    } else {
+        println!("Acesso não assistido: desligado (HextRemote service password)");
+    }
+    Access::show_account(&owners()?);
     Ok(())
 }
 
@@ -428,6 +447,186 @@ pub fn remember_id(id: &str) {
 
 fn audit(entry: &str) {
     super::kept::audit_to(super::user_log_file("audit"), entry);
+}
+
+// ------------------------------------------------------- unattended access
+
+/// The unattended access, in this user's folder.
+fn access() -> Result<Access> {
+    Ok(Access::new(data_dir()?, audit))
+}
+
+/// The binding to an account, as this computer (the app's key) sees it.
+fn owners() -> Result<crate::owners::Owners> {
+    Ok(access()?.owners(Arc::new(crate::device_key(None)?)))
+}
+
+/// Only for the installed app, run by its user: the one that opens at
+/// login reads these files.
+fn require_installed() -> Result<()> {
+    if getuid() == 0 {
+        bail!("no Mac, rode sem sudo: o acesso é do usuário que instalou");
+    }
+    if !installed() {
+        bail!("instale primeiro (HextRemote service install)");
+    }
+    Ok(())
+}
+
+/// `service password`: sets (or changes) the unattended password, or turns
+/// it off.
+pub fn password(off: bool) -> Result<()> {
+    require_installed()?;
+    let (access, owners) = (access()?, owners()?);
+    if off {
+        access.password_off(&owners)?;
+        println!("Acesso não assistido desligado.");
+        return Ok(());
+    }
+    let password = Zeroizing::new(rpassword::prompt_password("Nova senha: ")?);
+    let again = Zeroizing::new(rpassword::prompt_password("Repita a senha: ")?);
+    if *password != *again {
+        bail!("as senhas não são iguais");
+    }
+    access.set_password(&password, &owners)?;
+    println!("Acesso não assistido ligado (depois do login deste usuário).");
+    println!("Durante a sessão, este Mac mostra quem está conectado.");
+    Ok(())
+}
+
+/// Asks with the system's dialog, the answer hidden; `None`: cancelled.
+fn ask_hidden(prompt: &str) -> Result<Option<Zeroizing<String>>> {
+    let script = format!(
+        "text returned of (display dialog \"{prompt}\" default answer \"\" with hidden answer \
+         with title \"Hext Remote\" buttons {{\"Cancelar\", \"OK\"}} default button \"OK\" \
+         cancel button \"Cancelar\")"
+    );
+    let out = Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .context("osascript")?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let text = Zeroizing::new(String::from_utf8(out.stdout).context("senha")?);
+    Ok(Some(Zeroizing::new(
+        text.trim_end_matches(['\r', '\n']).to_owned(),
+    )))
+}
+
+/// The Segurança tab's buttons: the password typed in the system's dialog
+/// (never in the page), or turned off. `Ok(false)`: cancelled.
+pub fn set_password_from_app(off: bool) -> Result<bool> {
+    require_installed()?;
+    let (access, owners) = (access()?, owners()?);
+    if off {
+        access.password_off(&owners)?;
+        return Ok(true);
+    }
+    let min = super::access::MIN_PASSWORD;
+    let Some(password) = ask_hidden(&format!(
+        "Nova senha de acesso (ao menos {min} caracteres):"
+    ))?
+    else {
+        return Ok(false);
+    };
+    if password.chars().count() < min {
+        bail!("a senha precisa de ao menos {min} caracteres");
+    }
+    let Some(again) = ask_hidden("Repita a senha de acesso:")? else {
+        return Ok(false);
+    };
+    if *password != *again {
+        bail!("as senhas não são iguais");
+    }
+    access.set_password(&password, &owners)?;
+    Ok(true)
+}
+
+/// `service technicians`.
+pub fn technicians(revoke: Option<&str>, revoke_all: bool) -> Result<()> {
+    if revoke.is_some() || revoke_all {
+        require_installed()?;
+    }
+    access()?.technicians_command(revoke, revoke_all)
+}
+
+/// `service account`: binds this Mac to the account with list `chain`,
+/// unbinds it (`off`), or shows the binding.
+pub fn account(chain: Option<&str>, off: bool) -> Result<()> {
+    let owners = owners()?;
+    if chain.is_none() && !off {
+        Access::show_account(&owners);
+        return Ok(());
+    }
+    require_installed()?;
+    if off {
+        access()?.unbind_account(&owners)?;
+        println!("Conta desvinculada: todo acesso volta a pedir aceite.");
+        return Ok(());
+    }
+    access()?.bind_account(&owners, chain.unwrap_or_default())
+}
+
+/// The installed app's unattended access, shown on `hub`.
+pub fn login_access(key: &Arc<DeviceKey>, hub: &UiHub) -> Option<super::LoginAccess> {
+    if !installed() {
+        return None;
+    }
+    let access = access().ok()?;
+    let owners = access.owners(key.clone());
+    access.show_on(hub, &owners);
+    let (attempts, attempts_out) = tokio::sync::mpsc::unbounded_channel();
+    Some(super::LoginAccess {
+        unattended: UnattendedAccess {
+            key: key.public_key(),
+            lockout: Lockout::default(),
+            password: Arc::new(Password {
+                access: access.clone(),
+                ui: hub.clone(),
+                owners: Some(owners.clone()),
+            }),
+            attempts,
+        },
+        owners: Arc::new(owners.clone()),
+        attempts: attempts_out,
+        ask: Box::new(LoginAsk(UiAsk(hub.clone()), owners, access)),
+    })
+}
+
+/// Asks on the app's window; lets in, without asking, the technicians and
+/// the bound account's devices (while the password is on, for the
+/// technicians).
+struct LoginAsk(UiAsk, crate::owners::Owners, Access);
+
+impl Ask for LoginAsk {
+    fn ask<'a>(
+        &'a mut self,
+        name: &'a str,
+        id: hext_signal::DeviceId,
+    ) -> BoxFuture<'a, Option<hext_proto::Permissions>> {
+        self.0.ask(name, id)
+    }
+
+    fn show_id(&mut self, id: hext_signal::DeviceId) {
+        self.0.show_id(id);
+    }
+
+    fn unattended(&self) -> bool {
+        self.2.verifier().is_some()
+    }
+
+    fn bound(&self, key: &hext_crypto::PublicKey) -> bool {
+        self.2.technicians().bound(key)
+    }
+
+    fn owner<'a>(
+        &'a mut self,
+        key: &'a hext_crypto::PublicKey,
+    ) -> BoxFuture<'a, Option<crate::owners::Way>> {
+        Box::pin(super::access::owner_way(&self.1, key))
+    }
 }
 
 /// Takes back the token kept before a restart, if it is still good, and

@@ -14,6 +14,8 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
+
+use super::access::{Access, MIN_PASSWORD, Password};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -25,7 +27,7 @@ use hext_proto::ChatText;
 use hext_proto::{PeerInfo, Permissions};
 use hext_session::files::{FileAccess, Transfer};
 use hext_session::host::{
-    ActiveSession, BoxFuture, HostConfig, Presence, Restart, UnattendedAccess, UnattendedPassword,
+    ActiveSession, BoxFuture, HostConfig, Presence, Restart, UnattendedAccess,
 };
 use hext_session::{KeptResume, Lockout, ResumeTokens, SessionCodes};
 use hext_signal::DeviceId;
@@ -89,27 +91,16 @@ fn id_file() -> Result<PathBuf> {
     Ok(machine_dir()?.join("id.txt"))
 }
 
-/// What is kept of the unattended password; no file: the access is off.
-fn password_file() -> Result<PathBuf> {
-    Ok(machine_dir()?.join("unattended.key"))
+/// The unattended access: the password, the technicians and the account
+/// binding, in the computer's folder, which only the system and the
+/// administrators reach: nobody else can put a key of their own there.
+fn access() -> Result<Access> {
+    Ok(Access::new(machine_dir()?, audit))
 }
 
-/// The technicians trusted without the password (F4 marco 12). In the
-/// computer's folder, which only the system and the administrators reach:
-/// nobody else can put a key of their own there.
 fn technicians_store() -> Result<crate::technicians::Technicians> {
-    Ok(crate::technicians::Technicians::new(
-        machine_dir()?.join("technicians.json"),
-    ))
+    Ok(access()?.technicians())
 }
-
-/// How often the interface's list of technicians is checked against the
-/// file.
-const TECHNICIANS_CHECK: Duration = Duration::from_secs(5);
-
-/// The shortest password taken: guesses are limited, but it may be all that
-/// stands between the internet and this computer.
-const MIN_PASSWORD: usize = 10;
 
 /// Where the installed program lives.
 fn program_dir() -> Result<PathBuf> {
@@ -428,7 +419,8 @@ pub fn uninstall(purge: bool) -> Result<()> {
         println!("O serviço não está instalado.");
     }
     // Unattended access does not come back with a later install.
-    if let Ok(file) = password_file() {
+    if let Ok(access) = access() {
+        let file = access.password_file();
         let _ = Verifier::remove(&file);
     }
     let dir = program_dir()?;
@@ -463,7 +455,7 @@ pub fn status() -> Result<()> {
         Ok(id) => println!("ID deste computador: {}", id.trim()),
         Err(_) => println!("ID: ainda não (ou rode como administrador para ler)"),
     }
-    match std::fs::metadata(password_file()?) {
+    match std::fs::metadata(access()?.password_file()) {
         Ok(_) => {
             println!("Acesso não assistido: ligado");
             let count = technicians_store()?.list().len();
@@ -528,11 +520,9 @@ pub fn password(off: bool, window: bool) -> Result<()> {
     if !exists() {
         bail!("instale o serviço primeiro (HextRemote service install)");
     }
-    let file = password_file()?;
+    let (access, owners) = (access()?, owners()?);
     if off {
-        revoke_bound()?;
-        Verifier::remove(&file)?;
-        audit("acesso não assistido desligado");
+        access.password_off(&owners)?;
         println!("Acesso não assistido desligado.");
         return Ok(());
     }
@@ -544,10 +534,7 @@ pub fn password(off: bool, window: bool) -> Result<()> {
     if *password != *again {
         bail!("as senhas não são iguais");
     }
-    // (Before the new one: if anything fails, nobody keeps a way in.)
-    revoke_bound()?;
-    Verifier::new(&password)?.save(&file)?;
-    audit("senha do acesso não assistido definida");
+    access.set_password(&password, &owners)?;
     println!("Acesso não assistido ligado.");
     println!("Durante a sessão, este computador mostra quem está conectado.");
     Ok(())
@@ -566,75 +553,10 @@ fn own_console() {
     }
 }
 
-/// The technicians bound under the old password: a new one (or none)
-/// starts from nobody.
-fn revoke_bound() -> Result<()> {
-    let technicians = technicians_store()?;
-    let had = technicians.list().len();
-    technicians.clear()?;
-    if had > 0 {
-        audit(&format!(
-            "técnicos vinculados revogados com a troca da senha: {had}"
-        ));
-        println!("Os técnicos vinculados ({had}) voltam a precisar da senha.");
-    }
-    if owners()?.unbind_if_by_password()? {
-        audit("conta vinculada com a senha desvinculada com a troca da senha");
-        println!("A conta vinculada por um técnico com a senha foi desvinculada.");
-    }
-    Ok(())
-}
-
 /// Lists the technicians trusted without the password, or revokes them.
 pub fn technicians(revoke: Option<&str>, revoke_all: bool) -> Result<()> {
     require_admin()?;
-    let store = technicians_store()?;
-    if revoke_all {
-        let list = store.list();
-        store.clear()?;
-        audit(&format!(
-            "todos os técnicos vinculados revogados: {}",
-            list.len()
-        ));
-        println!(
-            "Técnicos revogados: {}. Voltam a precisar da senha.",
-            list.len()
-        );
-        return Ok(());
-    }
-    if let Some(which) = revoke {
-        let gone = store.revoke(which)?;
-        if gone.is_empty() {
-            bail!("nenhum técnico vinculado com o ID ou a chave {which}");
-        }
-        for t in &gone {
-            audit(&format!(
-                "técnico desvinculado: \"{}\" (ID {})",
-                t.name, t.id
-            ));
-            println!(
-                "Revogado: {} (ID {}). Volta a precisar da senha.",
-                t.name, t.id
-            );
-        }
-        return Ok(());
-    }
-    let list = store.list();
-    if list.is_empty() {
-        println!("Nenhum técnico vinculado: todos precisam da senha.");
-        return Ok(());
-    }
-    println!("Técnicos que entram sem a senha:");
-    for t in list {
-        println!(
-            "  {} (ID {}), desde {}",
-            t.name,
-            t.id,
-            crate::technicians::date(t.since)
-        );
-    }
-    println!("Para revogar: HextRemote service technicians --revoke <ID>");
-    Ok(())
+    access()?.technicians_command(revoke, revoke_all)
 }
 
 /// A line in the audit log, for the owner of the computer.
@@ -649,18 +571,10 @@ fn audit(entry: &str) {
 /// Atividade screen (unset outside the service).
 static ACTIVITY: OnceLock<tokio::sync::mpsc::UnboundedSender<String>> = OnceLock::new();
 
-fn owners_file() -> Result<PathBuf> {
-    Ok(machine_dir()?.join("owners.json"))
-}
-
 /// This computer's binding to an account, as this computer's key sees it.
 fn owners() -> Result<crate::owners::Owners> {
     let key = load_or_create(&FileKeyStore::machine(machine_dir()?.join("device.key")))?.0;
-    Ok(crate::owners::Owners::new(
-        owners_file()?,
-        Arc::new(key),
-        DEFAULT_SERVER.to_owned(),
-    ))
+    Ok(access()?.owners(Arc::new(key)))
 }
 
 /// Binds this computer to the account with list `chain`, unbinds it
@@ -668,14 +582,7 @@ fn owners() -> Result<crate::owners::Owners> {
 /// request: nothing to restart.
 pub fn account(chain: Option<&str>, off: bool) -> Result<()> {
     if chain.is_none() && !off {
-        match owners()?.bound() {
-            Some((id, name)) => println!(
-                "Vinculado à conta da lista {}{}: os dispositivos dela entram sem aceite.",
-                hex::encode(id),
-                name.map(|n| format!(", como \"{n}\"")).unwrap_or_default()
-            ),
-            None => println!("Nenhuma conta vinculada: todo acesso pede aceite."),
-        }
+        Access::show_account(&owners()?);
         return Ok(());
     }
     require_admin()?;
@@ -684,89 +591,11 @@ pub fn account(chain: Option<&str>, off: bool) -> Result<()> {
     }
     let owners = owners()?;
     if off {
-        owners.unbind()?;
-        audit("conta desvinculada: os acessos voltam a pedir aceite");
+        access()?.unbind_account(&owners)?;
         println!("Conta desvinculada: todo acesso volta a pedir aceite.");
         return Ok(());
     }
-    let id = crate::owners::parse_id(chain.unwrap_or_default())?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let bound = runtime.block_on(owners.bind(id))?;
-    let devices = bound.devices().len();
-    audit(&format!(
-        "conta vinculada (lista {}): {devices} dispositivo(s) entram sem aceite",
-        hex::encode(id)
-    ));
-    println!(
-        "Vinculado. Os {devices} dispositivo(s) da conta entram sem aceite; quem sair da conta \
-         deixa de entrar (e a sessão dele cai)."
-    );
-    Ok(())
-}
-
-/// The password as the service sees it, and the technicians it lets in
-/// without it (shown on `ui`); the account binding, which a technician with
-/// the password may ask for.
-struct MachinePassword(UiHub, Option<crate::owners::Owners>);
-
-impl UnattendedPassword for MachinePassword {
-    fn verifier(&self) -> Option<Verifier> {
-        let file = password_file().ok()?;
-        Verifier::load(&file).unwrap_or_else(|e| {
-            warn!("{e}");
-            None
-        })
-    }
-
-    fn audit(&self, entry: &str) {
-        audit(entry);
-    }
-
-    fn bind(&self, viewer: &hext_crypto::PublicKey, grant: &hext_session::Grant) -> bool {
-        let bound =
-            technicians_store().and_then(|store| Ok(store.bind(viewer, &grant.id, &grant.name)?));
-        match bound {
-            Ok(()) => {
-                self.0.technicians_changed();
-                true
-            }
-            Err(e) => {
-                warn!("técnico vinculado: {e:#}");
-                audit(&format!("não foi possível vincular o técnico: {e:#}"));
-                false
-            }
-        }
-    }
-
-    fn bind_account(
-        &self,
-        viewer: &hext_crypto::PublicKey,
-        chain: [u8; 32],
-        grant: &hext_session::Grant,
-    ) {
-        let Some(owners) = self.1.clone() else {
-            return;
-        };
-        let (viewer, ui) = (*viewer, self.0.clone());
-        let who = format!("{} ({})", grant.name, grant.id);
-        tokio::spawn(async move {
-            match owners.bind_asked(chain, &viewer).await {
-                Ok(true) => audit(&format!(
-                    "conta vinculada (lista {}) a pedido de {who}, que entrou com a senha: os \
-                     dispositivos dela entram sem aceite, com o computador em Meus computadores",
-                    hex::encode(chain)
-                )),
-                Ok(false) => {}
-                Err(e) => {
-                    warn!("vínculo à conta: {e:#}");
-                    audit(&format!("vínculo à conta pedido por {who} recusado: {e:#}"));
-                }
-            }
-            ui.set_owners(owners.summary());
-        });
-    }
+    access()?.bind_account(&owners, chain.unwrap_or_default())
 }
 
 /// Takes back the token kept before a restart, if it is still good.
@@ -1045,10 +874,6 @@ async fn serve() -> Result<()> {
     ui.set_key(&key.public_key());
     // (Changed with `service name`, as an administrator.)
     ui.set_name(name.clone(), None);
-    match technicians_store() {
-        Ok(store) => ui.set_technicians(store, audit),
-        Err(e) => warn!("técnicos vinculados: {e:#}"),
-    }
     let ending = ui.clone();
     let hub = AgentHub::new(
         || {
@@ -1066,16 +891,6 @@ async fn serve() -> Result<()> {
         let hub = agents.clone();
         async move { launch(session, &hub).await }
     }));
-    // The command line changes the list too (`service technicians`,
-    // `service password`): the interface follows it.
-    let watched = ui.clone();
-    tokio::spawn(async move {
-        let mut every = tokio::time::interval(TECHNICIANS_CHECK);
-        loop {
-            every.tick().await;
-            watched.technicians_changed();
-        }
-    });
     let interfaces = ui.clone();
     tokio::spawn(supervise("interface", move |session| {
         let ui = interfaces.clone();
@@ -1086,27 +901,14 @@ async fn serve() -> Result<()> {
     let resumes = ResumeTokens::default();
     restore_resume(&resumes);
     let host_key = key.public_key();
-    let owners = crate::owners::Owners::new(owners_file()?, key.clone(), DEFAULT_SERVER.to_owned());
+    let access = access()?;
+    let owners = access.owners(key.clone());
     let (activity, activity_out) = tokio::sync::mpsc::unbounded_channel();
     let _ = ACTIVITY.set(activity);
     tokio::spawn(crate::owners::report_activity(owners.clone(), activity_out));
-    // Whether the password is on, for the home screen (it changes from the
-    // command line or the app's button).
-    let watched = ui.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(3));
-        loop {
-            tick.tick().await;
-            let on = MachinePassword(watched.clone(), None).verifier().is_some();
-            watched.set_password(on);
-        }
-    });
-    let shown = ui.clone();
-    tokio::spawn(crate::owners::keep_fresh(
-        owners.clone(),
-        OWNERS_CHECK,
-        move |text| shown.set_owners(text),
-    ));
+    // The technicians, the password and the account, as the command line
+    // (or the app's buttons) change them.
+    access.show_on(&ui, &owners);
     let (attempts, attempts_out) = tokio::sync::mpsc::unbounded_channel();
     let config = Arc::new(HostConfig {
         owners: Some(Arc::new(owners.clone())),
@@ -1126,7 +928,11 @@ async fn serve() -> Result<()> {
         unattended: Some(UnattendedAccess {
             key: host_key,
             lockout: Lockout::default(),
-            password: Arc::new(MachinePassword(ui.clone(), Some(owners.clone()))),
+            password: Arc::new(Password {
+                access: access.clone(),
+                ui: ui.clone(),
+                owners: Some(owners.clone()),
+            }),
             attempts,
         }),
         resumes: resumes.clone(),
@@ -1143,7 +949,7 @@ async fn serve() -> Result<()> {
         (session_codes, resumes),
         attempts_out,
         slot.clone(),
-        Box::new(ConsoleAsk(ui, owners)),
+        Box::new(ConsoleAsk(ui, owners, access)),
     ));
     crate::host::accept(&endpoint, config, slot, STOP.notified()).await;
     // A session still on: the agent stops streaming and releases any held
@@ -1166,7 +972,7 @@ fn write_id(id: DeviceId) {
 /// Asks whoever is at the console: in the interface, or, where no window of
 /// the user can be seen (the sign-in screen, a locked computer), in a
 /// message box.
-struct ConsoleAsk(UiHub, crate::owners::Owners);
+struct ConsoleAsk(UiHub, crate::owners::Owners, Access);
 
 /// How often the service looks for a newer version.
 const UPDATE_CHECK: Duration = Duration::from_secs(60 * 60);
@@ -1255,9 +1061,6 @@ async fn install_update(manifest: &crate::update::Manifest) -> Result<()> {
     }
 }
 
-/// How often the bound account's list is fetched again.
-const OWNERS_CHECK: Duration = Duration::from_secs(60);
-
 impl Ask for ConsoleAsk {
     fn ask<'a>(&'a mut self, name: &'a str, id: DeviceId) -> BoxFuture<'a, Option<Permissions>> {
         Box::pin(async move {
@@ -1282,38 +1085,18 @@ impl Ask for ConsoleAsk {
     }
 
     fn unattended(&self) -> bool {
-        MachinePassword(self.0.clone(), None).verifier().is_some()
+        self.2.verifier().is_some()
     }
 
     fn bound(&self, key: &hext_crypto::PublicKey) -> bool {
-        technicians_store().is_ok_and(|store| store.bound(key))
+        self.2.technicians().bound(key)
     }
 
     fn owner<'a>(
         &'a mut self,
         key: &'a hext_crypto::PublicKey,
     ) -> BoxFuture<'a, Option<crate::owners::Way>> {
-        Box::pin(async move {
-            // The file changes from the command line; the list from the
-            // account (one just removed no longer comes in).
-            self.1.load();
-            self.1.bound()?;
-            // One of the account: checked against the latest list. Anyone
-            // else: at most every half minute (a device that just joined),
-            // or strangers would hold up every request. Bound but not yet on
-            // the account's list (a technician just bound it with the
-            // password, and their app is inserting it): every time, or the
-            // technician's next click would wait for the half minute.
-            let checked = if self.1.way(key).is_some() || !self.1.listed() {
-                self.1.refresh().await
-            } else {
-                self.1.refresh_if_stale(Duration::from_secs(30)).await
-            };
-            if let Err(e) = checked {
-                warn!("conta vinculada: {e:#}");
-            }
-            self.1.way(key)
-        })
+        Box::pin(super::access::owner_way(&self.1, key))
     }
 
     fn locked(&self) -> bool {
