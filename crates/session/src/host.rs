@@ -1232,6 +1232,10 @@ fn capture_loop(
         }
     };
     info!("codificador: {}", encoder.name());
+    // The screen on while it is shown: one that went off for being idle has
+    // nothing to capture (the viewer would see black). Here, on the capture
+    // thread, which follows the desktop getting input.
+    let _awake = (!config.test_pattern).then(hext_capture::KeepAwake::new);
     let mut hardware = encoder.is_hardware();
     let min_interval = Duration::from_secs_f32(1.0 / config.encoder.max_fps.max(1.0));
     let mut last_encode: Option<Instant> = None;

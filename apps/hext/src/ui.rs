@@ -149,6 +149,8 @@ struct View {
     update: Option<UpdateView>,
     /// The portable app on Windows: it can install itself here.
     installable: bool,
+    /// This app's version, shown in the sidebar.
+    version: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1825,6 +1827,7 @@ pub fn run(link: Link) -> Result<()> {
                 installable: cfg!(any(windows, target_os = "macos"))
                     && matches!(link, Link::Portable)
                     && !crate::service::installed(),
+                version: crate::APP_VERSION,
                 ..View::default()
             }),
             to_host,

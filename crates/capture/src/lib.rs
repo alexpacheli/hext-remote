@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+mod awake;
 #[cfg(windows)]
 mod desktop;
 #[cfg(windows)]
@@ -16,6 +17,7 @@ mod test_pattern;
 #[cfg(windows)]
 mod windows;
 
+pub use awake::KeepAwake;
 pub use test_pattern::TestPattern;
 
 /// Layout of a captured image's pixels.

@@ -419,6 +419,17 @@ nav {
   font-size: 13px;
 }
 
+.app-version {
+  margin: 8px 0 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.app-version:empty {
+  display: none;
+}
+
 body[data-page="home"] main {
   flex: 1;
   min-width: 0;
@@ -768,7 +779,8 @@ form.rename {
   }
   .brand span,
   .nav span,
-  .me-status span:last-child {
+  .me-status span:last-child,
+  .app-version {
     display: none;
   }
   .brand,
