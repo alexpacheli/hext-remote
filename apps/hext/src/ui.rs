@@ -217,10 +217,44 @@ async fn install_here(app: AppHandle) -> Result<(), String> {
         });
         Ok(())
     }
-    #[cfg(not(windows))]
+    // The Mac's is the user's own (a LaunchAgent): no administrator. Done
+    // after this window closes, since the installed copy gives way to one
+    // already open; it then opens in its place.
+    #[cfg(target_os = "macos")]
+    {
+        if crate::service::installed() {
+            return Err("O Hext Remote já está instalado neste Mac.".to_owned());
+        }
+        if app
+            .state::<Shared>()
+            .view
+            .lock()
+            .expect("lock")
+            .session
+            .is_some()
+        {
+            return Err("Termine a sessão antes de instalar.".to_owned());
+        }
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        std::process::Command::new("/bin/sh")
+            .args(["-c", r#"sleep 2; exec "$0" service install"#])
+            .arg(&exe)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("instalar: {e}"))?;
+        let closing = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            closing.exit(0);
+        });
+        Ok(())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
-        Err("Só no Windows.".to_owned())
+        Err("Só no Windows e no Mac.".to_owned())
     }
 }
 
@@ -1738,7 +1772,7 @@ pub fn run(link: Link) -> Result<()> {
         .manage(Shared {
             view: Mutex::new(View {
                 recent: Recent::load().into_list(),
-                installable: cfg!(windows)
+                installable: cfg!(any(windows, target_os = "macos"))
                     && matches!(link, Link::Portable)
                     && !crate::service::installed(),
                 ..View::default()
