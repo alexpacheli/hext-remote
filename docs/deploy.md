@@ -136,7 +136,11 @@ Como funciona:
   normal no próximo login (o serviço do computador reconecta sozinho).
 - Quem abre uma sessão com uma dessas contas (um técnico de outra conta, ou alguém aceito na tela) pode usar
   esse relay durante a sessão: o `hext-server` libera os dois lados por 2 minutos, o tempo de se conectarem a
-  ele, quando o pedido é aceito.
+  ele, quando o pedido é aceito. Num pedido com a senha de acesso (que o computador deixa passar sozinho),
+  um técnico fora da lista só é liberado depois que o computador avisa que ele entrou com a senha certa (ou
+  se ele já entrou com a senha nos últimos 7 dias): sem isso, qualquer um poderia usar o relay sem limite
+  só pedindo acesso. Por isso, na primeira entrada com a senha, a conexão até a senha ser conferida
+  precisa ser direta (sem relay).
 - O limite só atrapalha quem envia o vídeo, o computador acessado. Por isso os computadores da conta também
   precisam estar em Meus computadores para usar o relay sem limite.
 - `./deploy/uso.sh` mostra os contadores dos dois relays.

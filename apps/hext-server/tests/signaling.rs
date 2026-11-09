@@ -523,6 +523,36 @@ async fn new_devices_per_address_are_limited() {
 }
 
 #[tokio::test]
+async fn connections_at_once_per_key_are_capped() {
+    let (url, _) = server().await;
+    let key = DeviceKey::generate().unwrap();
+    let mut open = Vec::new();
+    for _ in 0..hext_server::signal::CONNECTIONS_PER_KEY {
+        open.push(
+            Client::connect(&url, &key, "PC", "0.1.0", Role::Viewer)
+                .await
+                .unwrap(),
+        );
+    }
+    let refused = Client::connect(&url, &key, "PC", "0.1.0", Role::Viewer).await;
+    let Err(ClientError::Server(message)) = refused else {
+        panic!("expected a refusal");
+    };
+    assert!(message.contains("conexões abertas demais"), "{message}");
+    // One closes: room for another.
+    open.pop().unwrap().close().await.unwrap();
+    let mut again = None;
+    for _ in 0..50 {
+        if let Ok(client) = Client::connect(&url, &key, "PC", "0.1.0", Role::Viewer).await {
+            again = Some(client);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(again.is_some());
+}
+
+#[tokio::test]
 async fn a_viewer_leaving_cancels_its_request() {
     let (url, state) = server().await;
     let mut host = login(&url, &DeviceKey::generate().unwrap(), "H").await;

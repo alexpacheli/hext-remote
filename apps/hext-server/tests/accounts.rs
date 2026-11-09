@@ -40,13 +40,28 @@ impl Inbox {
         panic!("no e-mail number {n}");
     }
 
-    /// The 6-digit code in e-mail number `n`.
+    /// The code in e-mail number `n`: 8 capital letters and digits.
     async fn code(&self, n: usize) -> String {
         let (_, _, body) = self.nth(n).await;
-        body.split(|c: char| !c.is_ascii_digit())
-            .find(|word| word.len() == 6)
-            .expect("a code")
-            .to_owned()
+        code_in(&body).expect("a code")
+    }
+}
+
+fn code_in(body: &str) -> Option<String> {
+    body.split(|c: char| !c.is_ascii_alphanumeric())
+        .find(|word| {
+            word.len() == 8
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        })
+        .map(str::to_owned)
+}
+
+impl Inbox {
+    /// Waits a little for e-mails that would go in the background.
+    async fn settle(&self) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -232,6 +247,7 @@ async fn registering_again_does_not_tell_or_take_the_account() {
     assert_eq!(to, EMAIL);
     assert!(subject.contains("já tem uma conta"), "{subject}");
     assert!(!body.chars().any(|c| c.is_ascii_digit()), "no code: {body}");
+    assert_eq!(code_in(&body), None, "no code: {body}");
     // The password is still the owner's.
     assert_eq!(
         call(&mut stranger, login("outra senha qualquer", None)).await,
@@ -451,20 +467,155 @@ async fn password_guesses_are_limited() {
     let (url, inbox) = server().await;
     let mut pc = device(&url, &DeviceKey::generate().unwrap()).await;
     account(&mut pc, &inbox).await;
-    // Registering took 1 of the 10 for this address (it sent an e-mail);
-    // confirming did not (it was right).
-    let mut refused = 0;
+    // Registering (an e-mail) and confirming (right) took none of the 10
+    // for this address.
     for _ in 0..10 {
-        if call(&mut pc, login("senha errada errada", None)).await
-            == error(AccountError::TooManyAttempts)
-        {
-            refused += 1;
-        }
+        assert_eq!(
+            call(&mut pc, login("senha errada errada", None)).await,
+            error(AccountError::WrongCredentials)
+        );
     }
-    assert_eq!(refused, 1);
     // Even the right password, for a while.
     assert_eq!(
         call(&mut pc, login(PASSWORD, None)).await,
+        error(AccountError::TooManyAttempts)
+    );
+}
+
+#[tokio::test]
+async fn guesses_at_once_cannot_all_get_past_the_limit() {
+    let (url, inbox) = server().await;
+    let mut pc = device(&url, &DeviceKey::generate().unwrap()).await;
+    account(&mut pc, &inbox).await;
+    // 30 wrong passwords, 5 at once, on separate connections: only 10 are
+    // checked (each is counted before the check, not after).
+    let mut tries = Vec::new();
+    for _ in 0..5 {
+        let url = url.clone();
+        tries.push(tokio::spawn(async move {
+            let mut pc = device(&url, &DeviceKey::generate().unwrap()).await;
+            let mut replies = Vec::new();
+            for _ in 0..6 {
+                replies.push(call(&mut pc, login("senha errada errada", None)).await);
+            }
+            replies
+        }));
+    }
+    let mut wrong = 0;
+    for t in tries {
+        for reply in t.await.unwrap() {
+            if reply == error(AccountError::WrongCredentials) {
+                wrong += 1;
+            } else {
+                assert_eq!(reply, error(AccountError::TooManyAttempts));
+            }
+        }
+    }
+    assert_eq!(wrong, 10);
+}
+
+#[tokio::test]
+async fn guessing_reset_codes_does_not_lock_the_owner_out() {
+    let (url, inbox) = server().await;
+    let mut pc = device(&url, &DeviceKey::generate().unwrap()).await;
+    account(&mut pc, &inbox).await;
+    let mut guesser = device(&url, &DeviceKey::generate().unwrap()).await;
+    let reset = |code: &str| AccountCall::ResetPassword {
+        email: EMAIL.into(),
+        code: code.into(),
+        password: "senha do invasor aqui".into(),
+    };
+    // The first few wrong codes go at once; then each waits longer.
+    for _ in 0..3 {
+        assert_eq!(
+            call(&mut guesser, reset("ABCDEFGH")).await,
+            error(AccountError::WrongCode)
+        );
+    }
+    assert_eq!(
+        call(&mut guesser, reset("ABCDEFGH")).await,
+        error(AccountError::TooManyAttempts)
+    );
+    // The owner still logs in.
+    token(call(&mut pc, login(PASSWORD, None)).await);
+}
+
+#[tokio::test]
+async fn e_mails_are_limited_per_address_and_in_all() {
+    let (url, inbox) = server().await;
+    let mut pc = device(&url, &DeviceKey::generate().unwrap()).await;
+    let forgot = |n: usize| AccountCall::ForgotPassword {
+        email: format!("pessoa{n}@example.com"),
+    };
+    // 5 an hour from one address, whatever the e-mail addresses.
+    for n in 0..5 {
+        assert_eq!(call(&mut pc, forgot(n)).await, AccountReply::Ok);
+    }
+    assert_eq!(
+        call(&mut pc, forgot(5)).await,
+        error(AccountError::TooManyAttempts)
+    );
+    assert_eq!(
+        call(&mut pc, register("outra@example.com", PASSWORD)).await,
+        error(AccountError::TooManyAttempts)
+    );
+    inbox.settle().await;
+    assert_eq!(inbox.count(), 0, "none of them has an account");
+
+    // And at most the server's budget in all.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let inbox = Arc::new(Inbox::default());
+    let mut state = State::with_mailer(Db::in_memory().unwrap(), inbox.clone());
+    state.set_mail_budget(2, 10);
+    tokio::spawn(hext_server::serve(
+        listener,
+        Arc::new(state),
+        Config::default(),
+    ));
+    let mut pc = device(&url, &DeviceKey::generate().unwrap()).await;
+    for n in 0..2 {
+        let email = format!("conta{n}@example.com");
+        assert_eq!(
+            call(&mut pc, register(&email, PASSWORD)).await,
+            AccountReply::Ok
+        );
+    }
+    assert_eq!(
+        call(&mut pc, register("conta2@example.com", PASSWORD)).await,
+        error(AccountError::TooManyAttempts)
+    );
+    inbox.settle().await;
+    assert_eq!(inbox.count(), 2);
+}
+
+#[tokio::test]
+async fn accounts_never_confirmed_are_deleted_after_a_day() {
+    let db = Db::in_memory().unwrap();
+    db.tamper(
+        "INSERT INTO accounts (email, password, verified, created_at) VALUES
+           ('velha@example.com', 'x', 0, 1000),
+           ('nova@example.com', 'x', 0, strftime('%s', 'now')),
+           ('dona@example.com', 'x', 1, 1000);
+         INSERT INTO account_codes (account_id, purpose, code_hash, expires) VALUES (1, 'verify', X'00', 0);",
+    )
+    .unwrap();
+    assert_eq!(db.delete_unconfirmed(24 * 3600).unwrap(), 1);
+    assert_eq!(db.delete_unconfirmed(24 * 3600).unwrap(), 0);
+}
+
+#[tokio::test]
+async fn account_calls_are_limited_per_device() {
+    let (url, _) = server().await;
+    let mut pc = device(&url, &DeviceKey::generate().unwrap()).await;
+    for _ in 0..120 {
+        assert_eq!(
+            call(&mut pc, AccountCall::Me).await,
+            error(AccountError::NotLoggedIn)
+        );
+    }
+    assert_eq!(
+        call(&mut pc, AccountCall::Me).await,
         error(AccountError::TooManyAttempts)
     );
 }
@@ -617,4 +768,228 @@ async fn deleting_the_account_takes_everything_with_it() {
         call(&mut pc, AccountCall::ChainGet).await,
         AccountReply::Chain { entries: vec![] }
     );
+}
+
+/// A confirmed account with 2FA, logged in on `pc` (with `key`), and its
+/// chain started by that device.
+async fn chained(pc: &mut Client, key: &DeviceKey, inbox: &Inbox) -> hext_signal::chain::Chain {
+    use hext_signal::chain::{Entry, recovery_key};
+    account(pc, inbox).await;
+    token(call(pc, login(PASSWORD, None)).await);
+    let AccountReply::Totp { secret, .. } = call(pc, AccountCall::TotpSetup).await else {
+        panic!("no secret");
+    };
+    let code = totp_code(&secret, now()).unwrap();
+    call(pc, AccountCall::TotpEnable { code }).await;
+    let recovery = recovery_key("ABCD-EFGH-JKLM-NPQR-STUV").public_key();
+    let first = Entry::create(key, "PC", recovery);
+    assert_eq!(
+        call(
+            pc,
+            AccountCall::ChainAppend {
+                entry: first.clone()
+            }
+        )
+        .await,
+        AccountReply::Ok
+    );
+    hext_signal::chain::Chain::verify(&[first]).unwrap()
+}
+
+/// Signs `op` onto `chain` as `key` and sends it.
+async fn push(
+    pc: &mut Client,
+    chain: &mut hext_signal::chain::Chain,
+    key: &DeviceKey,
+    op: hext_signal::chain::Op,
+) {
+    let entry = chain.sign(op, key);
+    assert_eq!(
+        call(
+            pc,
+            AccountCall::ChainAppend {
+                entry: entry.clone()
+            }
+        )
+        .await,
+        AccountReply::Ok
+    );
+    chain.apply(&entry).unwrap();
+}
+
+/// How many chains a computer gets for `known`.
+async fn host_chains(computer: &mut Client, known: &[[u8; 32]]) -> usize {
+    let reply = call(
+        computer,
+        AccountCall::ChainHost {
+            known: known.to_vec(),
+        },
+    )
+    .await;
+    let AccountReply::HostChains { chains } = reply else {
+        panic!("not chains: {reply:?}");
+    };
+    chains.len()
+}
+
+#[tokio::test]
+async fn a_chain_goes_only_to_the_computers_it_is_about() {
+    use hext_signal::chain::Op;
+    let (url, inbox) = server().await;
+    let key = DeviceKey::generate().unwrap();
+    let mut pc = device(&url, &key).await;
+    let mut chain = chained(&mut pc, &key, &inbox).await;
+    let id = chain.id;
+    let host_key = DeviceKey::generate().unwrap();
+    let mut host = Client::connect(&url, &host_key, "Escritório", "0.1.0", Role::Host)
+        .await
+        .unwrap();
+    let mut stranger = device(&url, &DeviceKey::generate().unwrap()).await;
+
+    // Knowing the chain's ID is not enough.
+    assert_eq!(host_chains(&mut stranger, &[id]).await, 0);
+    assert_eq!(host_chains(&mut host, &[id]).await, 0);
+    // On its list, the computer gets it; nobody else does.
+    let add = Op::AddComputer {
+        host: host_key.public_key(),
+        id: host.id(),
+        name: "Escritório".into(),
+    };
+    push(&mut pc, &mut chain, &key, add).await;
+    assert_eq!(host_chains(&mut host, &[id]).await, 1);
+    assert_eq!(host_chains(&mut stranger, &[id]).await, 0);
+    // Taken off it, it still gets it: that is how it learns it was.
+    let remove = Op::RemoveComputer {
+        host: host_key.public_key(),
+    };
+    push(&mut pc, &mut chain, &key, remove).await;
+    assert_eq!(host_chains(&mut host, &[id]).await, 1);
+    assert_eq!(host_chains(&mut stranger, &[id]).await, 0);
+
+    // A device of the account that got into another computer with the
+    // password: that computer may fetch the chain for a while, to bind
+    // itself at the device's ask before it is on the list.
+    let other_key = DeviceKey::generate().unwrap();
+    let mut other = Client::connect(&url, &other_key, "Cliente", "0.1.0", Role::Host)
+        .await
+        .unwrap();
+    assert_eq!(host_chains(&mut other, &[id]).await, 0);
+    pc.send(&hext_signal::ClientMsg::Connect {
+        request: 1,
+        to: other.id(),
+        unattended: true,
+        remember: false,
+        account: None,
+    })
+    .await
+    .unwrap();
+    let hext_signal::ServerMsg::Request { request, .. } = other.recv().await.unwrap() else {
+        panic!("expected a request");
+    };
+    other
+        .send(&hext_signal::ClientMsg::Accept {
+            request,
+            addrs: vec![],
+            session_code: "c0de".into(),
+        })
+        .await
+        .unwrap();
+    other
+        .send(&hext_signal::ClientMsg::Attempt {
+            viewer: pc.id(),
+            entered: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(host_chains(&mut other, &[id]).await, 1);
+}
+
+#[tokio::test]
+async fn a_computer_shows_online_to_an_account_only_if_it_is_bound_to_it() {
+    use hext_signal::chain::Op;
+    let (url, inbox) = server().await;
+    let key = DeviceKey::generate().unwrap();
+    let mut pc = device(&url, &key).await;
+    let mut chain = chained(&mut pc, &key, &inbox).await;
+    let host_key = DeviceKey::generate().unwrap();
+    let mut host = Client::connect(&url, &host_key, "Escritório", "0.1.0", Role::Host)
+        .await
+        .unwrap();
+    let add = Op::AddComputer {
+        host: host_key.public_key(),
+        id: host.id(),
+        name: "Escritório".into(),
+    };
+    push(&mut pc, &mut chain, &key, add).await;
+    // On the list, but the computer never agreed: offline to the account.
+    assert_eq!(pc.presence(&[host.id()]).await.unwrap(), vec![]);
+    // It says it is bound to the account (asking for its chain): online.
+    assert_eq!(host_chains(&mut host, &[chain.id]).await, 1);
+    assert_eq!(pc.presence(&[host.id()]).await.unwrap(), vec![host.id()]);
+    // Unbound (asks for no chain): offline again.
+    assert_eq!(host_chains(&mut host, &[]).await, 0);
+    assert_eq!(pc.presence(&[host.id()]).await.unwrap(), vec![]);
+}
+
+#[tokio::test]
+async fn a_computers_activity_is_cleaned_like_names() {
+    use hext_signal::chain::Op;
+    let (url, inbox) = server().await;
+    let key = DeviceKey::generate().unwrap();
+    let mut pc = device(&url, &key).await;
+    let mut chain = chained(&mut pc, &key, &inbox).await;
+    let host_key = DeviceKey::generate().unwrap();
+    let mut host = Client::connect(&url, &host_key, "Escritório", "0.1.0", Role::Host)
+        .await
+        .unwrap();
+    let add = Op::AddComputer {
+        host: host_key.public_key(),
+        id: host.id(),
+        name: "Escritório".into(),
+    };
+    push(&mut pc, &mut chain, &key, add).await;
+    let events = AccountCall::HostEvents {
+        events: vec!["sessão de \u{202E}exe.txt\nfim".into()],
+        chain: Some(chain.id),
+    };
+    assert_eq!(call(&mut host, events).await, AccountReply::Ok);
+    let AccountReply::Activity { events } = call(&mut pc, AccountCall::Activity).await else {
+        panic!("no activity");
+    };
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].text, "sessão de exe.txtfim");
+}
+
+#[tokio::test]
+async fn a_chain_kept_checked_still_refuses_a_bad_entry_and_follows_the_store() {
+    use hext_signal::chain::Op;
+    let (url, inbox) = server().await;
+    let key = DeviceKey::generate().unwrap();
+    let mut pc = device(&url, &key).await;
+    let mut chain = chained(&mut pc, &key, &inbox).await;
+    let intruder = DeviceKey::generate().unwrap();
+    let bad = chain.sign(
+        Op::AddDevice {
+            device: intruder.public_key(),
+            name: "Intruso".into(),
+        },
+        &intruder,
+    );
+    assert_eq!(
+        call(&mut pc, AccountCall::ChainAppend { entry: bad }).await,
+        error(AccountError::ChainInvalid)
+    );
+    for n in 0..3 {
+        let device = DeviceKey::generate().unwrap();
+        let op = Op::AddDevice {
+            device: device.public_key(),
+            name: format!("Notebook {n}"),
+        };
+        push(&mut pc, &mut chain, &key, op).await;
+    }
+    let AccountReply::Chain { entries } = call(&mut pc, AccountCall::ChainGet).await else {
+        panic!("no chain");
+    };
+    assert_eq!(entries.len(), 4);
+    assert!(hext_signal::chain::Chain::verify(&entries).is_ok());
 }
