@@ -1205,16 +1205,13 @@ async fn account_devices(
     let computers = devices
         .as_ref()
         .map(|d| {
-            // Only a device on the account's list signs a removal: elsewhere,
-            // no X to click.
-            let member = d.state == "member";
             d.computers
                 .iter()
                 .filter(|c| !c.me)
                 .map(|c| Computer {
                     id: c.id.clone(),
                     name: c.name.clone(),
-                    host: member.then(|| c.host.clone()),
+                    host: Some(c.host.clone()),
                 })
                 .chain(d.shared.iter().map(|c| Computer {
                     id: c.id.clone(),
