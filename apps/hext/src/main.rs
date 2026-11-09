@@ -209,9 +209,9 @@ enum ServiceAction {
         /// Desliga o acesso não assistido e apaga a senha.
         #[arg(long)]
         off: bool,
-        /// (Interno) Aberto pelo app: pede a senha numa janela própria.
+        /// (Interno) Aberto pelo app: a senha vem por este canal.
         #[arg(long, hide = true)]
-        window: bool,
+        pipe: Option<String>,
     },
     /// Lista os técnicos que entram sem a senha (vinculados no primeiro
     /// acesso com ela), ou revoga. Precisa de administrador.

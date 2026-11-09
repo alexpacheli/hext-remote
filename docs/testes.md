@@ -111,8 +111,8 @@ enviadas, e uma transferência interrompida não é retomada.
 ### Acesso não assistido
 
 Com a senha, o técnico entra sem que ninguém aceite no computador. Quem liga é o dono, como administrador:
-na aba **Segurança**, **Definir a senha de acesso** (o Windows pede administrador e uma janela própria pede a
-senha; o mesmo cartão troca e desliga). Pela linha de comando:
+na aba **Segurança**, **Definir a senha de acesso** (digite a senha duas vezes no próprio cartão e salve; o Windows pede
+administrador. O mesmo cartão troca e desliga). Pela linha de comando:
 
 ```sh
 HextRemote.exe service password        # define a senha (ou troca)
@@ -196,7 +196,7 @@ um app com algo sem salvar pode segurar o reinício. O técnico volta sozinho qu
 em até 10 minutos.
 
 **Senha de acesso no Mac (F6, marco 3).** Na aba **Segurança** do app instalado, **Definir a senha de acesso**
-(a senha vai numa janela do próprio macOS; no Terminal, `./HextRemote service password`, sem sudo). Com ela, um
+(digite a senha no próprio cartão, sem administrador; no Terminal, `./HextRemote service password`, sem sudo). Com ela, um
 técnico entra sem aceite, pode marcar **Entrar sem senha da próxima vez** e inserir o Mac na conta dele, como no
 Windows. Vale depois que o usuário entra no Mac: a tela de login ainda fica de fora. `service technicians` e
 `service account` também valem no Mac, sem sudo.

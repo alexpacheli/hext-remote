@@ -357,9 +357,12 @@ function showRecent(computers, online) {
   $("recent").replaceChildren(
     ...computers.map(({ id, name }) => {
       const pick = tile(id, name, online);
+      pick.title = `Conectar a ${pick.title}`;
+      // Straight in: a technician trusted there (or with a password typed
+      // above) needs nothing more, and anyone else is asked on the screen.
       pick.addEventListener("click", () => {
         $("target").value = id;
-        $("password").focus();
+        $("connect").requestSubmit();
       });
       const forget = document.createElement("button");
       forget.type = "button";
@@ -524,23 +527,48 @@ function startAccount() {
     };
     setTimeout(ask, 5000);
   });
-  on("password-set", async () => {
-    showStatus(
-      onMac
-        ? "Digite a senha na janela que abrir."
-        : "Permita como administrador e digite a senha na janela que abrir.",
-    );
+  // The password is typed here; on Windows, saving it asks for an
+  // administrator (the system's prompt), and nothing else opens.
+  const passwordForm = $("password-form");
+  const closePasswordForm = () => {
+    passwordForm.reset();
+    passwordForm.hidden = true;
+    $("password-set").disabled = false;
+  };
+  on("password-set", () => {
+    passwordForm.hidden = false;
+    $("password-set").disabled = true;
+    $("password-new").focus();
+  });
+  passwordForm.querySelector(".cancel").addEventListener("click", closePasswordForm);
+  passwordForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const password = $("password-new").value;
+    if ([...password].length < 10) {
+      showStatus("A senha precisa de pelo menos 10 caracteres.", true);
+      return;
+    }
+    if (password !== $("password-again").value) {
+      showStatus("As duas senhas não são iguais.", true);
+      return;
+    }
+    const save = passwordForm.querySelector("button[type=submit]");
+    save.disabled = true;
+    showStatus(onMac ? "Salvando a senha…" : "Permita como administrador para salvar a senha.");
     try {
-      await invoke("password_set", { off: false });
+      await invoke("password_set", { password });
+      closePasswordForm();
       showStatus("Senha de acesso definida.");
     } catch (message) {
       showStatus(String(message), true);
+    } finally {
+      save.disabled = false;
     }
   });
   on("password-off", async () => {
     if (!confirm("Desligar a senha de acesso? Todo acesso volta a pedir aceite, e quem entrou com ela perde o acesso sem aceite.")) return;
     try {
-      await invoke("password_set", { off: true });
+      await invoke("password_set", { password: null });
       showStatus("Senha de acesso desligada.");
     } catch (message) {
       showStatus(String(message), true);
@@ -1020,7 +1048,7 @@ let shownChain = "";
 function showComputers(computers, online) {
   $("computers-section").hidden = computers.length === 0;
   $("computers").replaceChildren(
-    ...computers.map(({ id, name }) => {
+    ...computers.map(({ id, name, host }) => {
       const pick = tile(id, name, online);
       pick.title = `Conectar a ${pick.title}`;
       pick.addEventListener("click", async () => {
@@ -1032,6 +1060,25 @@ function showComputers(computers, online) {
       });
       const item = document.createElement("li");
       item.append(pick);
+      // (A computer shared by another account is taken out by that one.)
+      if (host) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "forget";
+        remove.textContent = "×";
+        remove.title = "Remover de Meus computadores";
+        remove.setAttribute("aria-label", `Remover ${name || id} de Meus computadores`);
+        remove.addEventListener("click", async () => {
+          if (!confirm(`Remover ${name || id} de Meus computadores? Ele sai da lista da conta em todos os dispositivos.`)) return;
+          try {
+            await invoke("computer_remove", { host });
+            await invoke("account_devices");
+          } catch (message) {
+            showStatus(String(message), true);
+          }
+        });
+        item.append(remove);
+      }
       return item;
     }),
   );

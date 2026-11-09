@@ -155,7 +155,7 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ServiceAction::Install { name } => windows::install(name),
             ServiceAction::Uninstall { purge } => windows::uninstall(purge),
             ServiceAction::Status => windows::status(),
-            ServiceAction::Password { off, window } => windows::password(off, window),
+            ServiceAction::Password { off, pipe } => windows::password(off, pipe.as_deref()),
             ServiceAction::Technicians { revoke, revoke_all } => {
                 windows::technicians(revoke.as_deref(), revoke_all)
             }
@@ -214,18 +214,30 @@ pub fn login_access(
     }
 }
 
-/// Sets the password from the app (macOS): the system's own dialog asks for
-/// it, never the page. `Ok(false)`: cancelled.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn set_password_from_app(off: bool) -> Result<bool> {
+/// Sets the password typed in the app's screen (`Some`), or turns it off
+/// (`None`). On Windows, it takes an administrator: Windows asks.
+// (Linux has no app window: only the CLI.)
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub async fn set_password_from_app(password: Option<String>) -> Result<()> {
+    let password = password.map(zeroize::Zeroizing::new);
+    #[cfg(windows)]
+    {
+        match password {
+            Some(password) => windows::password_from_app(&password).await,
+            None => windows::password_off_from_app().await,
+        }
+    }
     #[cfg(target_os = "macos")]
     {
-        macos::set_password_from_app(off)
+        tokio::task::spawn_blocking(move || {
+            macos::set_password_from_app(password.as_deref().map(|p| p.as_str()))
+        })
+        .await?
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let _ = off;
-        anyhow::bail!("só no Mac")
+        let _ = password;
+        anyhow::bail!("só no Windows e no Mac")
     }
 }
 
