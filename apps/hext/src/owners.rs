@@ -7,7 +7,9 @@
 //! Bound by an administrator (`service account <chain>`), with the chain's
 //! ID from the app of a device in the account: a chain the server made up
 //! has another ID. The file (`owners.json`, in the computer's folder) is
-//! theirs only to change.
+//! theirs only to change. Or by a technician who got in with the unattended
+//! password, which an administrator set ([`Owners::bind_asked`]): the ask
+//! is signed by the technician's key, so the server cannot change the chain.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -118,7 +120,8 @@ impl Owners {
         let host = self.host();
         if checked.own.computer(&host).is_none() {
             return Some(
-                "Vinculado a uma conta que tirou este computador da lista: ninguém entra por ela."
+                "Vinculado a uma conta, mas este computador não está em Meus computadores dela: \
+                 ninguém entra por ela."
                     .to_owned(),
             );
         }
@@ -179,6 +182,45 @@ impl Owners {
         self.store(&stored)?;
         self.load();
         Ok(own.0.clone())
+    }
+
+    /// Binds this computer to chain `id` at the ask of `viewer`, who got in
+    /// with the unattended password (an administrator set it: that is their
+    /// consent, as for a technician who asks to be remembered). `viewer`
+    /// must be a device of that chain. This computer need not be on its list
+    /// yet (the technician's app puts it there right after), but nobody
+    /// comes in by the account until it is. Bound to another account
+    /// already: refused (an administrator unbinds first). Whether it bound
+    /// now (`false`: it was bound to this one already).
+    pub async fn bind_asked(&self, id: ChainId, viewer: &PublicKey) -> Result<bool> {
+        let _busy = self.0.busy.lock().await;
+        if let Some(stored) = self.stored() {
+            if stored.chain == id {
+                return Ok(false);
+            }
+            bail!(
+                "este computador já está vinculado a outra conta: um administrador desvincula \
+                 antes (HextRemote service account --off)"
+            );
+        }
+        let chains = tokio::time::timeout(FETCH_TIME, self.fetch(&[id]))
+            .await
+            .context("servidor de sinalização: sem resposta")??;
+        let own = chains
+            .iter()
+            .find(|(chain, _)| chain.id == id)
+            .context("o servidor não entregou a lista dessa conta")?;
+        if !own.0.is_device(viewer) {
+            bail!("quem pediu não está na lista de dispositivos dessa conta");
+        }
+        let stored = Stored {
+            chain: id,
+            entries: own.1.clone(),
+            shared: shared_of(&own.0, &self.host(), &chains, &[]),
+        };
+        self.store(&stored)?;
+        self.load();
+        Ok(true)
     }
 
     /// Unbinds: nobody comes in by the account any more.

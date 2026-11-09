@@ -115,6 +115,7 @@ pub fn restore(dir: &Path, resumes: &ResumeTokens) {
                 remember: false,
                 bound: kept.bound,
                 via: kept.via,
+                account: None,
             },
         },
         Duration::from_secs(left),
@@ -175,6 +176,7 @@ mod tests {
             remember: false,
             bound: false,
             via: None,
+            account: None,
         }
     }
 

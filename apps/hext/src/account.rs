@@ -370,6 +370,42 @@ impl Account {
             .map(drop)
     }
 
+    /// Puts the computer a session just reached with its password (host
+    /// key `host`, ID `id`, called `name`) in the list, as it asked to bind
+    /// to this account. Nothing if it is there already; one with the same ID
+    /// and another key (reinstalled) is replaced. Whether it was added.
+    pub async fn adopt(&self, host: &str, id: &str, name: &str) -> Result<bool, String> {
+        let host: PublicKey = host.parse().map_err(|_| "chave inválida".to_owned())?;
+        let id: hext_signal::DeviceId = id.parse().map_err(|e| format!("{e}"))?;
+        let name: String = name.chars().take(chain::MAX_NAME).collect();
+        let key = self.key()?;
+        let mut link = self.link();
+        let done = async {
+            let Some((_, chain)) = self.chain(&mut link).await? else {
+                return Err("A conta ainda não tem a lista de dispositivos.".to_owned());
+            };
+            if chain.computer(&host).is_some() {
+                return Ok(false);
+            }
+            if let Some(old) = chain.computers().iter().find(|c| c.id == id) {
+                let op = Op::RemoveComputer { host: old.host };
+                self.append(&mut link, op, &key).await?;
+            }
+            let op = Op::AddComputer { host, id, name };
+            self.append(&mut link, op, &key).await.map(|_| true)
+        };
+        let done = done.await;
+        link.close().await;
+        done
+    }
+
+    /// The ID of the account's list, as last checked here (`None`: not
+    /// logged in, or no list yet).
+    pub fn chain_id(&self) -> Option<chain::ChainId> {
+        self.stored()?;
+        hex::decode(self.known()?.id).ok()?.try_into().ok()
+    }
+
     /// Takes computer `host` out of the list (and its shares with it).
     pub async fn remove_computer(&self, host: &str) -> Result<(), String> {
         let host: PublicKey = host.parse().map_err(|_| "chave inválida".to_owned())?;
@@ -622,15 +658,20 @@ impl Link<'_> {
                 | AccountCall::TotpSetup
                 | AccountCall::TotpEnable { .. }
                 | AccountCall::ChangePassword { .. }
+                | AccountCall::DeleteAccount { .. }
         );
-        let logout = matches!(call, AccountCall::Logout);
+        // Once done, nothing of the login stays here.
+        let logout = matches!(
+            call,
+            AccountCall::Logout | AccountCall::DeleteAccount { .. }
+        );
         if self.client.is_none() {
             self.client = Some(account.connect().await.map_err(|e| format!("{e:#}"))?);
         }
         let client = self.client.as_mut().expect("just connected");
         if needs_login && !self.resumed {
             let Some(stored) = account.stored() else {
-                return if logout {
+                return if matches!(call, AccountCall::Logout) {
                     Ok(AccountReply::Ok)
                 } else {
                     Err(message(AccountError::NotLoggedIn).to_owned())
@@ -643,7 +684,7 @@ impl Link<'_> {
                     error: AccountError::NotLoggedIn,
                 }) => {
                     account.forget();
-                    return if logout {
+                    return if matches!(call, AccountCall::Logout) {
                         Ok(AccountReply::Ok)
                     } else {
                         Err(message(AccountError::NotLoggedIn).to_owned())
@@ -1171,6 +1212,115 @@ mod tests {
     }
 
     /// Another account, with 2FA and its own list, on another computer.
+    #[tokio::test]
+    async fn a_computer_reached_with_its_password_joins_the_technicians_account() {
+        use crate::owners::Owners;
+        use hext_signal::{Client, Role};
+        let (mut world, technician) = World::new().await;
+        technician.create_chain().await.unwrap();
+        let chain = technician.chain_id().unwrap();
+        assert_eq!(
+            hex::encode(chain),
+            technician.devices(None).await.unwrap().chain
+        );
+        // The client's computer: never logged in to any account.
+        let host_key = Arc::new(DeviceKey::generate().unwrap());
+        let host = Client::connect(&world.server, &host_key, "Cliente", "t", Role::Host)
+            .await
+            .unwrap();
+        let dir = world.computer().file.parent().unwrap().to_owned();
+        std::fs::create_dir_all(&dir).unwrap();
+        let owners = Owners::new(
+            dir.join("owners.json"),
+            host_key.clone(),
+            world.server.clone(),
+        );
+        let me = technician.key().unwrap().public_key();
+
+        // Asked by someone not in the account: refused.
+        let stranger = DeviceKey::generate().unwrap().public_key();
+        assert!(owners.bind_asked(chain, &stranger).await.is_err());
+        assert_eq!(owners.bound(), None);
+        // By the technician, after the password: bound, but nobody comes in
+        // until the computer is on the list.
+        assert!(owners.bind_asked(chain, &me).await.unwrap());
+        assert_eq!(owners.bound().unwrap().0, chain);
+        assert_eq!(owners.way(&me), None);
+        assert!(
+            owners
+                .summary()
+                .unwrap()
+                .contains("não está em Meus computadores")
+        );
+        // The technician's app puts it there, with the key the session proved.
+        let hex_key = host_key.public_key().to_string();
+        let id = host.id().to_string();
+        assert!(technician.adopt(&hex_key, &id, "Cliente").await.unwrap());
+        assert!(!technician.adopt(&hex_key, &id, "Cliente").await.unwrap());
+        owners.refresh().await.unwrap();
+        assert_eq!(owners.way(&me).unwrap().via, "entrou como dono");
+        // Asking again changes nothing; another account is refused.
+        assert!(!owners.bind_asked(chain, &me).await.unwrap());
+        assert!(owners.bind_asked([7; 32], &me).await.is_err());
+        assert_eq!(owners.bound().unwrap().0, chain);
+
+        // Reinstalled (a new key, the same ID): the old one leaves the list.
+        let new_key = DeviceKey::generate().unwrap().public_key().to_string();
+        assert!(technician.adopt(&new_key, &id, "Cliente").await.unwrap());
+        let devices = technician.devices(None).await.unwrap();
+        assert_eq!(devices.computers.len(), 1);
+        assert_eq!(devices.computers[0].host, new_key);
+        drop(host);
+    }
+
+    #[tokio::test]
+    async fn deleting_the_account_logs_out_and_its_computers_stop_letting_it_in() {
+        use crate::owners::Owners;
+        use hext_signal::{Client, Role};
+        let (mut world, first) = World::new().await;
+        first.create_chain().await.unwrap();
+        let chain = first.chain_id().unwrap();
+        let host_key = Arc::new(DeviceKey::generate().unwrap());
+        let host = Client::connect(&world.server, &host_key, "Escritório", "t", Role::Host)
+            .await
+            .unwrap();
+        let hex_key = host_key.public_key().to_string();
+        first
+            .adopt(&hex_key, &host.id().to_string(), "Escritório")
+            .await
+            .unwrap();
+        let dir = world.computer().file.parent().unwrap().to_owned();
+        std::fs::create_dir_all(&dir).unwrap();
+        let owners = Owners::new(
+            dir.join("owners.json"),
+            host_key.clone(),
+            world.server.clone(),
+        );
+        owners.bind(chain).await.unwrap();
+        let me = first.key().unwrap().public_key();
+        assert!(owners.way(&me).is_some());
+
+        let delete = |second: Option<String>| AccountCall::DeleteAccount {
+            password: PASSWORD.into(),
+            second,
+        };
+        assert_eq!(
+            first.call(delete(None)).await,
+            Ok(AccountReply::NeedsSecondFactor)
+        );
+        assert!(first.kept(), "not deleted yet");
+        assert_eq!(
+            first.call(delete(Some(world.codes[0].clone()))).await,
+            Ok(AccountReply::Ok)
+        );
+        assert!(!first.kept());
+        assert_eq!(first.chain_id(), None);
+        // Without the account's list, nobody comes in by it.
+        assert!(owners.refresh().await.is_err());
+        assert_eq!(owners.way(&me), None);
+        drop(host);
+    }
+
     async fn other_account(world: &mut World, email: &str) -> Account {
         let account = world.computer();
         let sent = world.inbox.0.lock().unwrap().len();

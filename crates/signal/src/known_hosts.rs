@@ -50,6 +50,11 @@ impl KnownHosts {
         })
     }
 
+    /// The key remembered for `id`, if any.
+    pub fn get(&self, id: DeviceId) -> std::io::Result<Option<PublicKey>> {
+        Ok(self.read()?.get(&id).copied())
+    }
+
     /// Remembers `key` for `id` (replacing what was there).
     pub fn remember(&self, id: DeviceId, key: &PublicKey) -> std::io::Result<()> {
         let mut hosts = self.read()?;

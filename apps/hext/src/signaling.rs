@@ -218,11 +218,18 @@ async fn serve(
             from_name,
             unattended,
             remember,
+            account,
         } = msg
         else {
             continue;
         };
         let from_name = shown_name(&from_name);
+        // Only as the technician signed it, for this computer: a server
+        // passing it on cannot point it elsewhere.
+        let me = client.id();
+        let account = account
+            .filter(|ask| ask.holds(&from_key, me))
+            .map(|ask| ask.chain);
         // The session it lost may still be on here: the host is the last to
         // know.
         let back = unattended && resumes.displace(&from_key);
@@ -251,6 +258,7 @@ async fn serve(
                     remember,
                     bound: false,
                     via: None,
+                    account,
                 };
                 accept(request, from_key, grant, (endpoint, has_relay), codes).await
             } else {
@@ -275,6 +283,7 @@ async fn serve(
                 remember: false,
                 bound: true,
                 via: Some(way.via),
+                account: None,
             };
             let answer = accept(request, from_key, grant, (endpoint, has_relay), codes).await;
             client.send(&answer).await?;
@@ -292,6 +301,7 @@ async fn serve(
                 remember: false,
                 bound: true,
                 via: None,
+                account: None,
             };
             let answer = accept(request, from_key, grant, (endpoint, has_relay), codes).await;
             client.send(&answer).await?;
@@ -341,6 +351,7 @@ async fn serve(
                 remember: false,
                 bound: false,
                 via: None,
+                account: None,
             };
             accept(request, from_key, grant, (endpoint, has_relay), codes).await
         } else {
@@ -405,7 +416,7 @@ pub async fn connect(
     id: DeviceId,
     known: &KnownHosts,
     endpoint: &Endpoint,
-    (unattended, remember): (bool, bool),
+    (unattended, remember, account): (bool, bool, Option<hext_signal::chain::BindAsk>),
     on_waiting: impl FnMut() + Send,
 ) -> Result<(Connection, String)> {
     if unattended {
@@ -414,7 +425,7 @@ pub async fn connect(
         println!("Pedindo acesso a {id}... aguardando o outro computador aceitar.");
     }
     let access = match client
-        .request_access(id, (unattended, remember), on_waiting)
+        .request_access(id, (unattended, remember), account, on_waiting)
         .await?
     {
         Ok(access) => access,
@@ -528,6 +539,7 @@ mod tests {
                 to,
                 unattended: true,
                 remember: false,
+                account: None,
             };
             viewer.send(&request).await.unwrap();
             let answer = viewer.recv().await.unwrap();
@@ -587,6 +599,17 @@ mod tests {
     /// password `on` or off): the answer, how many times the user was asked,
     /// and what the code grants (if one came).
     async fn as_technician(request: (bool, bool), on: bool) -> (ServerMsg, usize, Option<Grant>) {
+        as_technician_asking(request, on, None).await
+    }
+
+    /// The same, also asking the host to bind to account `[4; 32]`, with
+    /// the ask signed by the technician's key (`Some(true)`) or another
+    /// (`Some(false)`).
+    async fn as_technician_asking(
+        request: (bool, bool),
+        on: bool,
+        signed_by_it: Option<bool>,
+    ) -> (ServerMsg, usize, Option<Grant>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let db = hext_server::Db::in_memory().unwrap();
@@ -618,11 +641,17 @@ mod tests {
         };
         let (unattended, remember) = request;
         let technician = async {
+            let other = DeviceKey::generate().unwrap();
+            let account = signed_by_it.map(|own| {
+                let key = if own { &viewer_key } else { &other };
+                hext_signal::chain::BindAsk::new(key, [4; 32], to)
+            });
             let request = ClientMsg::Connect {
                 request: 1,
                 to,
                 unattended,
                 remember,
+                account,
             };
             viewer.send(&request).await.unwrap();
             viewer.recv().await.unwrap()
@@ -671,6 +700,16 @@ mod tests {
         assert!(grant.needs_password && grant.remember && !grant.bound);
         let (_, _, grant) = as_technician((true, false), true).await;
         assert!(!grant.expect("a code").remember);
+    }
+
+    #[tokio::test]
+    async fn an_ask_to_bind_to_an_account_reaches_the_session_only_as_signed() {
+        let (_, _, grant) = as_technician_asking((true, false), true, Some(true)).await;
+        assert_eq!(grant.expect("a code").account, Some([4; 32]));
+        // Signed by someone else (a server pointing it at its own account):
+        // dropped.
+        let (_, _, grant) = as_technician_asking((true, false), true, Some(false)).await;
+        assert_eq!(grant.expect("a code").account, None);
     }
 
     #[test]

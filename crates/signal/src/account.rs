@@ -103,6 +103,17 @@ pub enum AccountCall {
     },
     /// The latest entries of the account's computers, the latest first.
     Activity,
+    /// Deletes the account this device is logged in to, with everything the
+    /// server keeps of it: its chain, its computers' activity, its logins.
+    /// Takes the password and, with 2FA on, `second` (the 2FA code or a
+    /// recovery code; without it, the answer is
+    /// [`AccountReply::NeedsSecondFactor`]). The computers bound to it stop
+    /// letting anyone in by it: its chain is gone.
+    DeleteAccount {
+        password: String,
+        #[serde(default)]
+        second: Option<String>,
+    },
 }
 
 /// A device asking to join the chain.
@@ -237,6 +248,7 @@ impl std::fmt::Debug for AccountCall {
             Self::ChainShared => "ChainShared",
             Self::HostEvents { .. } => "HostEvents",
             Self::Activity => "Activity",
+            Self::DeleteAccount { .. } => "DeleteAccount",
         })
     }
 }

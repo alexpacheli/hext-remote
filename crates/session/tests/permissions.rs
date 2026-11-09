@@ -186,6 +186,7 @@ async fn session_with(permissions: Permissions) -> Running {
             remember: false,
             bound: false,
             via: None,
+            account: None,
         },
     );
     let desktop = Counting::default();

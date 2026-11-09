@@ -62,6 +62,11 @@ Técnico                  Servidor                   Host
   entrou com a senha, nos últimos 90 dias (as tabelas `accepted` e `entered`). Qualquer outro ID aparece
   sempre offline, como num pedido, para não dar para sondar IDs. Até 6 perguntas por minuto por computador:
   as seguintes ficam sem resposta. Um servidor antigo não diz `aceita presence`, e o app não pergunta.
+- **Pôr o computador numa conta pela senha (F6):** num pedido com senha, o técnico pode mandar
+  `account {chain, signature}`: o ID da lista da conta dele, assinado pela chave dele junto com o ID do
+  host (`hext-chain-bind-v1`). O servidor só repassa com a senha, como `remember`. O host confere a
+  assinatura com a chave que a conexão prova; assim um servidor desonesto não consegue apontar o pedido
+  para uma conta dele. Um servidor antigo descarta o campo (aí nada se vincula).
 - **Contas (F5):** ver [Contas](#contas), abaixo.
 - **Conexão viva:** o servidor manda ping a cada 20 s e desconecta quem fica 60 s em silêncio.
 
@@ -88,6 +93,7 @@ computador: `account {request, call}` e a resposta `account {request, reply}`. O
 | `host_events {events}` | Para um computador, sem login de conta: linhas da auditoria dele (até 20, de até 300 caracteres), guardadas para as contas que o têm em Meus computadores (as 500 mais novas de cada) |
 | `activity` | As linhas dos computadores da conta, as mais novas primeiro |
 | `chain_join {device, name, proof}`, `chain_pending` | Um dispositivo pede para entrar na lista (só por si mesmo), e o que mostra o código vê os pedidos (10 minutos, até 5) |
+| `delete_account {password, second?}` | Exclui a conta logada, com tudo dela: a cadeia, os computadores, os compartilhamentos, a atividade, os códigos e os logins de todos os computadores. Pede a senha e, com 2FA, `second` (sem ele, responde `needs_second_factor`). Os computadores vinculados deixam de aceitar entrada pela conta, porque a cadeia some. O e-mail fica livre |
 
 - **Guardado:** a senha como hash Argon2id; códigos, tokens e códigos de recuperação como SHA-256 (são
   aleatórios e longos). Tabelas `accounts`, `account_codes`, `recovery_codes` e `account_sessions`.

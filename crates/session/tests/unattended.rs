@@ -25,6 +25,8 @@ struct Kept {
     audit: Mutex<Vec<String>>,
     /// The technicians bound, as (key, ID).
     bound: Mutex<Vec<(PublicKey, String)>>,
+    /// The accounts asked to bind to, as (key, chain).
+    accounts: Mutex<Vec<(PublicKey, [u8; 32])>>,
 }
 
 impl UnattendedPassword for Kept {
@@ -40,6 +42,10 @@ impl UnattendedPassword for Kept {
     fn bind(&self, viewer: &PublicKey, grant: &Grant) -> bool {
         self.bound.lock().unwrap().push((*viewer, grant.id.clone()));
         true
+    }
+
+    fn bind_account(&self, viewer: &PublicKey, chain: [u8; 32], _grant: &Grant) {
+        self.accounts.lock().unwrap().push((*viewer, chain));
     }
 }
 
@@ -105,6 +111,7 @@ impl Host {
             password,
             audit: Mutex::default(),
             bound: Mutex::default(),
+            accounts: Mutex::default(),
         });
         let (attempts, outcomes) = tokio::sync::mpsc::unbounded_channel();
         let config = Arc::new(HostConfig {
@@ -222,6 +229,7 @@ impl Host {
             remember: false,
             bound: false,
             via: None,
+            account: None,
         };
         self.connect_with(viewer, grant, password, resume).await
     }
@@ -316,6 +324,7 @@ fn remembering() -> Grant {
         remember: true,
         bound: false,
         via: None,
+        account: None,
     }
 }
 
@@ -349,6 +358,33 @@ async fn a_wrong_password_binds_nobody() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn asking_to_bind_to_an_account_takes_the_password() {
+    let host = Host::start(Some(PASSWORD)).await;
+    let viewer = DeviceKey::generate().unwrap();
+    let to_account = Grant {
+        remember: false,
+        account: Some([9; 32]),
+        ..remembering()
+    };
+    let wrong = host
+        .connect_with(&viewer, to_account.clone(), Some("cavalo errado"), None)
+        .await;
+    assert_eq!(rejected(wrong), Some(RejectReason::WrongPassword));
+    assert!(host.kept.accounts.lock().unwrap().is_empty());
+    let session = host
+        .connect_with(&viewer, to_account, Some(PASSWORD), None)
+        .await
+        .unwrap();
+    session.close().await.unwrap();
+    assert_eq!(
+        *host.kept.accounts.lock().unwrap(),
+        [(viewer.public_key(), [9; 32])]
+    );
+    // Not as a technician of this computer: by the account, once on its list.
+    assert!(host.kept.bound.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn without_asking_nobody_is_bound() {
     let host = Host::start(Some(PASSWORD)).await;
     let viewer = DeviceKey::generate().unwrap();
@@ -367,6 +403,7 @@ async fn a_bound_technician_gets_in_without_the_password_and_it_is_audited() {
         remember: false,
         bound: true,
         via: None,
+        account: None,
         ..remembering()
     };
     let session = host.connect_with(&viewer, grant, None, None).await.unwrap();
@@ -386,6 +423,7 @@ async fn a_bound_technician_gets_in_without_the_password_and_it_is_audited() {
             remember: false,
             bound: true,
             via: None,
+            account: None,
             ..remembering()
         },
     );

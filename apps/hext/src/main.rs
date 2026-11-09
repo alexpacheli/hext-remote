@@ -319,6 +319,11 @@ struct ViewArgs {
     /// sem a senha (o host lista e revoga). Nenhuma senha fica guardada.
     #[arg(long, requires = "password_stdin")]
     remember: bool,
+    /// Com a senha: pede para o host se vincular à conta com esta lista (o
+    /// ID da lista, em Dispositivos): os dispositivos dela passam a entrar
+    /// sem a senha, com o computador em Meus computadores.
+    #[arg(long, requires = "password_stdin", conflicts_with = "remember")]
+    account: Option<String>,
     /// (Interno) Conversa com a interface que abriu este visualizador: uma
     /// linha por sessão, e ela pode pedir outros computadores.
     #[arg(long, hide = true)]

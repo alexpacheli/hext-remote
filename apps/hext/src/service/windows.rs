@@ -675,8 +675,9 @@ pub fn account(chain: Option<&str>, off: bool) -> Result<()> {
 }
 
 /// The password as the service sees it, and the technicians it lets in
-/// without it (shown on `ui`).
-struct MachinePassword(UiHub);
+/// without it (shown on `ui`); the account binding, which a technician with
+/// the password may ask for.
+struct MachinePassword(UiHub, Option<crate::owners::Owners>);
 
 impl UnattendedPassword for MachinePassword {
     fn verifier(&self) -> Option<Verifier> {
@@ -705,6 +706,34 @@ impl UnattendedPassword for MachinePassword {
                 false
             }
         }
+    }
+
+    fn bind_account(
+        &self,
+        viewer: &hext_crypto::PublicKey,
+        chain: [u8; 32],
+        grant: &hext_session::Grant,
+    ) {
+        let Some(owners) = self.1.clone() else {
+            return;
+        };
+        let (viewer, ui) = (*viewer, self.0.clone());
+        let who = format!("{} ({})", grant.name, grant.id);
+        tokio::spawn(async move {
+            match owners.bind_asked(chain, &viewer).await {
+                Ok(true) => audit(&format!(
+                    "conta vinculada (lista {}) a pedido de {who}, que entrou com a senha: os \
+                     dispositivos dela entram sem aceite, com o computador em Meus computadores",
+                    hex::encode(chain)
+                )),
+                Ok(false) => {}
+                Err(e) => {
+                    warn!("vínculo à conta: {e:#}");
+                    audit(&format!("vínculo à conta pedido por {who} recusado: {e:#}"));
+                }
+            }
+            ui.set_owners(owners.summary());
+        });
     }
 }
 
@@ -1054,7 +1083,7 @@ async fn serve() -> Result<()> {
         unattended: Some(UnattendedAccess {
             key: host_key,
             lockout: Lockout::default(),
-            password: Arc::new(MachinePassword(ui.clone())),
+            password: Arc::new(MachinePassword(ui.clone(), Some(owners.clone()))),
             attempts,
         }),
         resumes: resumes.clone(),
@@ -1210,7 +1239,7 @@ impl Ask for ConsoleAsk {
     }
 
     fn unattended(&self) -> bool {
-        MachinePassword(self.0.clone()).verifier().is_some()
+        MachinePassword(self.0.clone(), None).verifier().is_some()
     }
 
     fn bound(&self, key: &hext_crypto::PublicKey) -> bool {

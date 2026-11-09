@@ -70,10 +70,14 @@ const pages = {
       $("connect").addEventListener("submit", async (event) => {
         event.preventDefault();
         try {
+          // In the account's list, the box puts the computer in the account
+          // instead of trusting only this device.
+          const checked = $("remember").checked;
           await invoke("connect", {
             id: $("target").value,
             password: $("password").value || null,
-            remember: $("remember").checked,
+            remember: checked && !inAccount,
+            account: checked && inAccount,
           });
         } catch (message) {
           showStatus(String(message), true);
@@ -123,7 +127,7 @@ const pages = {
       if (view.viewer_failure) {
         showStatus(view.viewer_failure, true);
       } else {
-        showStatus("");
+        showStatus(view.viewer_news ?? "");
       }
     },
   },
@@ -435,6 +439,34 @@ function startAccount() {
     accountPanel("totp-setup");
   });
   on("account-open-change", () => accountPanel("change"));
+  on("account-open-delete", () => {
+    $("delete-password").value = "";
+    $("delete-second").value = "";
+    $("delete-second").hidden = !account.view?.totp;
+    accountPanel("delete");
+  });
+  submit("account-delete", async () => {
+    if (!confirm("Excluir a conta de vez? Não dá para desfazer.")) return;
+    const second = $("delete-second").value.trim();
+    const reply = await accountCall(
+      {
+        call: "delete_account",
+        password: $("delete-password").value,
+        second: second || null,
+      },
+      "Excluindo…",
+    );
+    if (reply?.reply === "needs_second_factor") {
+      $("delete-second").hidden = false;
+      $("delete-second").focus();
+      accountStatus("Escreva o código do app autenticador.");
+    } else if (reply) {
+      $("delete-password").value = "";
+      $("delete-second").value = "";
+      accountPanel(null);
+      accountStatus("Conta excluída.");
+    }
+  });
   on("account-logout", async () => {
     await accountCall({ call: "logout" }, "Saindo…");
     accountPanel(null);
@@ -708,6 +740,7 @@ function startAccount() {
 async function loadDevices() {
   if (!account.view) {
     $("devices").hidden = true;
+    setInAccount(false);
     return;
   }
   let devices;
@@ -722,12 +755,14 @@ async function loadDevices() {
   }
   $("devices").hidden = false;
   const member = devices.state === "member";
+  setInAccount(member);
   $("devices-hint").textContent = {
     none: account.view.totp
       ? "A conta ainda não tem a lista dos seus dispositivos. Comece por este computador."
       : "Ligue a verificação em duas etapas para colocar computadores na conta.",
     outside: "Este computador ainda não está na lista da conta.",
-    member: "Os dispositivos da lista entram nos computadores da conta.",
+    member:
+      "Os dispositivos da lista entram nos computadores da conta. Para pôr o computador de um cliente, conecte nele com a senha de acesso e marque “Pôr em Meus computadores”.",
   }[devices.state];
   $("devices-create").hidden = devices.state !== "none" || !account.view.totp;
   $("devices-invite").hidden = !member;
@@ -836,6 +871,17 @@ function showAccount(view) {
   if (!!was !== !!view || account.panel === null) {
     accountPanel(null);
   }
+}
+
+/** This device is in the account's list: a computer reached with its
+ * password can go in the account. */
+let inAccount = false;
+
+function setInAccount(on) {
+  inAccount = on;
+  $("remember-text").textContent = on
+    ? "Pôr em Meus computadores: da próxima vez, os dispositivos da conta entram sem senha"
+    : "Entrar sem senha da próxima vez (o outro computador pode revogar)";
 }
 
 /** The computer whose share form is open (its host key), if any. */

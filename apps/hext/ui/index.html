@@ -102,7 +102,7 @@
               />
               <label class="wide hint" id="remember-line" hidden>
                 <input type="checkbox" id="remember" />
-                Entrar sem senha da próxima vez (o outro computador pode revogar)
+                <span id="remember-text">Entrar sem senha da próxima vez (o outro computador pode revogar)</span>
               </label>
               <button type="submit" id="connect-button" class="primary wide">Conectar</button>
             </form>
@@ -184,6 +184,7 @@
             <button type="button" class="primary" id="account-open-totp">Ligar a verificação em duas etapas</button>
             <button type="button" id="account-open-change">Trocar a senha</button>
             <button type="button" class="link" id="account-logout">Sair da conta</button>
+            <button type="button" class="link" id="account-open-delete">Excluir a conta</button>
             <div class="wide devices" id="devices" hidden>
               <h3>Dispositivos da conta</h3>
               <p class="hint" id="devices-hint"></p>
@@ -256,6 +257,17 @@
             <input id="change-old" class="wide" type="password" autocomplete="current-password" placeholder="Senha atual" aria-label="Senha atual" />
             <input id="change-new" class="wide" type="password" autocomplete="new-password" placeholder="Senha nova" aria-label="Senha nova" />
             <button type="submit" class="primary">Trocar</button>
+            <button type="button" class="cancel">Cancelar</button>
+          </form>
+          <form class="account-panel" id="account-delete" hidden>
+            <p class="hint wide">
+              A conta sai do servidor com tudo dela: a lista de dispositivos, Meus computadores, os
+              compartilhamentos e a atividade. Os computadores vinculados deixam de aceitar entrada pela
+              conta. Não dá para desfazer. O e-mail fica livre para uma conta nova.
+            </p>
+            <input id="delete-password" class="wide" type="password" autocomplete="current-password" placeholder="Senha da conta" aria-label="Senha da conta" />
+            <input id="delete-second" class="wide" inputmode="numeric" autocomplete="one-time-code" placeholder="Código do app autenticador (ou de recuperação)" aria-label="Código da verificação em duas etapas" hidden />
+            <button type="submit" class="danger">Excluir a conta</button>
             <button type="button" class="cancel">Cancelar</button>
           </form>
           <p class="status" id="account-status" role="status"></p>

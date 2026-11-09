@@ -53,6 +53,20 @@ Em cada um, Escritório e Casa:
 4. [ ] O `C:\ProgramData\HextRemote\audit.log` do Escritório tem "sessão iniciada (entrou como dono)".
 5. [ ] A Casa, sem vínculo, continua pedindo aceite.
 
+## 3b. Computador de um cliente (sem entrar na conta nele)
+
+1. [ ] No computador do cliente (Windows), instalar e definir a senha de acesso não assistido
+   (`HextRemote.exe service password`, como administrador). **Não** entrar em conta nenhuma nele.
+2. [ ] No notebook, conectar pelo ID do cliente com a senha, marcando **Pôr em Meus computadores** (aparece
+   com o notebook na lista da conta). A sessão abre, e a tela inicial diz que o computador está em Meus
+   computadores.
+3. [ ] No cliente, a tela inicial mostra **Conta vinculada**, e o `audit.log` diz "conta vinculada ... a
+   pedido de ...".
+4. [ ] Fechar e clicar no cliente em Meus computadores: **entra sem senha e sem aceite**, como dono.
+5. [ ] O cliente **não** aparece em Dispositivos da conta (só em Computadores da conta): ele não entra nos
+   outros computadores.
+6. [ ] Senha errada com a caixa marcada: nada se vincula.
+
 ## 4. Tirar um dispositivo
 
 1. [ ] Com a sessão do notebook aberta no Escritório, tirar o notebook da lista a partir da Casa
@@ -87,6 +101,13 @@ Em cada um, Escritório e Casa:
    some, e o notebook volta a pedir aceite.
 2. [ ] `HextRemote.exe service account` diz "Nenhuma conta vinculada".
 
+## 8. Excluir a conta (por último)
+
+1. [ ] No notebook, **Conta → Excluir a conta**: senha e código do autenticador. A conta sai, e o app volta a
+   "Entrar / Criar conta".
+2. [ ] No cliente do passo 3b, ainda vinculado, ninguém entra mais pela conta (pede a senha ou o aceite).
+3. [ ] Criar a conta de novo com o mesmo e-mail funciona, e ela começa vazia.
+
 ## Resultado
 
 | Item | Ok? | Observação |
@@ -95,9 +116,12 @@ Em cada um, Escritório e Casa:
 | Lista de dispositivos e código de recuperação | | |
 | Computadores na conta, online, um clique | | |
 | Entrar sem aceite (vínculo) | | |
+| Computador do cliente pela senha, sem conta nele | | |
 | Dispositivo removido derruba a sessão | | |
 | Compartilhar, permissões, revogar | | |
 | Atividade | | |
 | Desligar o vínculo | | |
+| Excluir a conta | | |
+
 
 Com tudo ok, a F5 fecha. No Mac, a entrada sem aceite pela conta chega com o LaunchDaemon (F6).
