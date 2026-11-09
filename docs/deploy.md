@@ -96,7 +96,7 @@ limite por dispositivo. O limite do provedor é de 10 TB por mês por padrão (o
 
 **Limite por dispositivo.** Cada dispositivo envia no máximo 5 Mbit/s pelo relay (`[limits.client.rx]` em
 `deploy/iroh-relay.toml`), para que uma sessão pesada não ocupe o link inteiro. O app baixa a qualidade do
-vídeo para caber. As sessões diretas (P2P) não têm limite. Se `conexões que bateram no limite` crescer muito e
+vídeo para caber. O limite vale para tudo o que passa pelo relay, inclusive arquivos. As sessões diretas (P2P) não têm limite. Se `conexões que bateram no limite` crescer muito e
 houver folga de tráfego, aumente o valor.
 
 ## Segurança

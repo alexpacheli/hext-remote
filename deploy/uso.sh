@@ -11,7 +11,9 @@ limit_gb=${HEXT_LIMITE_GB:-10000}
 gb() { awk -v b="$1" 'BEGIN { printf "%.2f GB", b / 1e9 }'; }
 
 echo "Tráfego deste mês (saída, o que o provedor cobra):"
-if command -v vnstat >/dev/null && line=$(vnstat --oneline b 2>/dev/null) && [[ $line == *";"* ]]; then
+# The interface of the default route: the one to the internet (not docker0).
+iface=$(ip route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }' || true)
+if command -v vnstat >/dev/null && line=$(vnstat --oneline b ${iface:+-i "$iface"} 2>/dev/null) && [[ $line == *";"* ]]; then
     # Fields: version;interface;today;rx;tx;total;rate;month;rx;tx;...
     sent=$(cut -d';' -f10 <<<"$line")
     echo "  $(gb "$sent") de $limit_gb GB ($(awk -v s="$sent" -v l="$limit_gb" 'BEGIN { printf "%.1f", s / (l * 1e7) }')%)"
