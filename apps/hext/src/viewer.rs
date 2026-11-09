@@ -18,7 +18,9 @@ use hext_codec::{DecoderPreference, YuvFrame};
 use hext_input::keymap::{self, CommandKey};
 use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::Os;
-use hext_proto::{ChatText, Displays, Hello, InputEvent, MouseButton, PeerInfo, RejectReason};
+use hext_proto::{
+    ChatText, Displays, Hello, HelloAsks, InputEvent, MouseButton, PeerInfo, RejectReason,
+};
 use hext_render::{
     ButtonAction, DisplayBar, Renderer, VideoRect, button_rect, chat_button_rect, handle_rect,
 };
@@ -37,6 +39,7 @@ use winit::window::{Fullscreen, Window, WindowId};
 use zeroize::Zeroizing;
 
 use crate::loop_watch::timed;
+use crate::signaling::Pin;
 use crate::ui_link::ToViewer;
 use crate::{APP_VERSION, CmdKey, CodecChoice, CtrlKey, ViewArgs, device_name, parse_addr};
 
@@ -254,7 +257,7 @@ pub fn run(args: ViewArgs) -> Result<()> {
         sessions: HashMap::new(),
         windows: HashMap::new(),
         opening: HashMap::new(),
-        focused: Arc::default(),
+        focus: Focus::default(),
         resumed: false,
         idle_since: None,
         ui_gone: false,
@@ -287,9 +290,10 @@ struct Viewers {
     /// Sessions on their way: where their pictures will go, and how to give
     /// up on them.
     opening: HashMap<u64, (Latest, tokio::task::AbortHandle)>,
-    /// The session whose window had the focus last: the only one that trades
-    /// clipboards, or one customer's text could reach another.
-    focused: Arc<AtomicU64>,
+    /// The session whose window has the focus now: the only one that trades
+    /// clipboards, or one customer's text could reach another (or what is
+    /// copied here, while working elsewhere, reach the host).
+    focus: Focus,
     /// Windows can be made (not before the loop starts).
     resumed: bool,
     /// With nothing open, since when.
@@ -344,12 +348,19 @@ impl Viewers {
         };
         let runtime = self.runtime.handle().clone();
         runtime.spawn(end_of(&session, tell.clone()));
-        runtime.spawn(share_clipboard(&mut session, n, self.focused.clone()));
+        let clipboard_tell = Arc::new(tokio::sync::Notify::new());
+        runtime.spawn(share_clipboard(
+            &mut session,
+            n,
+            self.focus.clone(),
+            clipboard_tell.clone(),
+        ));
         runtime.spawn(share_files(&mut session, tell.clone()));
         runtime.spawn(hear_displays(&session, tell.clone()));
         if self.ui {
             runtime.spawn(hear_chat(&mut session, n));
-            let name = crate::signaling::shown_name(&session.host.device_name);
+            // (Made safe to show when the session opened.)
+            let name = &session.host.device_name;
             tell_ui(n, &format!("{} {name}", crate::ui_link::VIEWER_CONNECTED));
         }
         let host_is_mac = session.host.os == Os::MacOs;
@@ -373,7 +384,8 @@ impl Viewers {
             restart_sent: None,
             transfer: None,
             closing: None,
-            focused: self.focused.clone(),
+            focus: WindowFocus::new(n, self.focus.clone()),
+            clipboard_tell,
             tell,
             window: None,
             renderer: None,
@@ -403,8 +415,7 @@ impl Viewers {
             last_title: Instant::now(),
             redraw_asked: None,
         };
-        // The newest window is the one in use.
-        self.focused.store(n, Ordering::Relaxed);
+        // In use once its window has the focus (it tells).
         self.sessions.insert(n, viewer);
         if self.resumed {
             self.make_window(event_loop, n);
@@ -542,8 +553,10 @@ struct Viewer {
     transfer: Option<(String, Option<Instant>)>,
     /// The window is done, and how.
     closing: Option<Ending>,
-    /// See [`Viewers::focused`].
-    focused: Arc<AtomicU64>,
+    /// Whether this window has the focus, for the clipboard.
+    focus: WindowFocus,
+    /// Asks the clipboard to tell its content now.
+    clipboard_tell: Arc<tokio::sync::Notify>,
     tell: Tell,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -988,8 +1001,12 @@ impl Viewer {
                     info!("sessão retomada");
                     // (On the window's thread, outside the runtime.)
                     self.runtime.spawn(end_of(&session, self.tell.clone()));
-                    self.runtime
-                        .spawn(share_clipboard(&mut session, self.n, self.focused.clone()));
+                    self.runtime.spawn(share_clipboard(
+                        &mut session,
+                        self.n,
+                        self.focus.all.clone(),
+                        self.clipboard_tell.clone(),
+                    ));
                     self.runtime
                         .spawn(share_files(&mut session, self.tell.clone()));
                     self.runtime
@@ -1052,10 +1069,17 @@ impl Viewer {
             }
             WindowEvent::DroppedFile(path) => self.send_file(path),
             WindowEvent::Focused(false) => {
+                self.focus.changed(false);
                 self.local_key = None;
                 self.send(InputEvent::ReleaseAll);
             }
-            WindowEvent::Focused(true) => self.focused.store(self.n, Ordering::Relaxed),
+            WindowEvent::Focused(true) => {
+                // Back from working elsewhere: what was copied there is for
+                // pasting here.
+                if self.focus.changed(true) {
+                    self.clipboard_tell.notify_one();
+                }
+            }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = None;
                 self.update_button();
@@ -1520,13 +1544,73 @@ fn end_of(session: &ClientHandle, tell: Tell) -> impl Future<Output = ()> + Send
     }
 }
 
+/// No session's window has the focus.
+const NO_WINDOW: u64 = u64::MAX;
+
+/// The session whose window has the focus now, if any.
+#[derive(Clone)]
+struct Focus(Arc<AtomicU64>);
+
+impl Default for Focus {
+    fn default() -> Self {
+        Self(Arc::new(AtomicU64::new(NO_WINDOW)))
+    }
+}
+
+impl Focus {
+    fn is(&self, n: u64) -> bool {
+        self.0.load(Ordering::Relaxed) == n
+    }
+}
+
+/// One window's focus, as the clipboard sees it.
+struct WindowFocus {
+    n: u64,
+    all: Focus,
+    /// It lost the focus since it last had it.
+    away: bool,
+}
+
+impl WindowFocus {
+    fn new(n: u64, all: Focus) -> Self {
+        Self {
+            n,
+            all,
+            away: false,
+        }
+    }
+
+    /// The window got (`true`) or lost the focus. Whether to tell the host
+    /// what the clipboard holds: on coming back, not when it first opens
+    /// (what was copied before the session stays out of it).
+    fn changed(&mut self, focused: bool) -> bool {
+        if focused {
+            self.all.0.store(self.n, Ordering::Relaxed);
+            std::mem::take(&mut self.away)
+        } else {
+            // Unless another window took it already.
+            let _ = self.all.0.compare_exchange(
+                self.n,
+                NO_WINDOW,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+            self.away = true;
+            false
+        }
+    }
+}
+
 /// Keeps this computer's clipboard and the host's in step, for as long as
-/// session `n` lasts and if it may: only while its window is the one in use
-/// (the last to have the focus), or a text from one host could reach another.
+/// session `n` lasts and if it may: only while its window has the focus, or
+/// a text from one host could reach another, or what is copied here while
+/// working elsewhere reach the host. `tell` asks for the content now (the
+/// window got the focus back).
 fn share_clipboard(
     session: &mut ClientHandle,
     n: u64,
-    focused: Arc<AtomicU64>,
+    focus: Focus,
+    tell: Arc<tokio::sync::Notify>,
 ) -> impl Future<Output = ()> + Send + 'static {
     let link = session
         .clipboard()
@@ -1535,25 +1619,28 @@ fn share_clipboard(
         let Some((outgoing, mut incoming)) = link else {
             return;
         };
-        let in_use = {
-            let focused = focused.clone();
-            move || focused.load(Ordering::Relaxed) == n
-        };
-        let watching = in_use.clone();
+        let watching = focus.clone();
         let watched = Clipboard::watch(move |text| {
-            if watching() {
+            if watching.is(n) {
                 let _ = outgoing.send(text);
             }
         });
-        match watched {
-            Ok(clipboard) => {
-                while let Some(text) = incoming.recv().await {
-                    if in_use() {
-                        clipboard.set(text);
-                    }
-                }
+        let clipboard = match watched {
+            Ok(clipboard) => clipboard,
+            Err(e) => {
+                warn!("área de transferência: {e}");
+                return;
             }
-            Err(e) => warn!("área de transferência: {e}"),
+        };
+        loop {
+            tokio::select! {
+                text = incoming.recv() => match text {
+                    Some(text) if focus.is(n) => clipboard.set(text),
+                    Some(_) => {}
+                    None => return,
+                },
+                () = tell.notified() => clipboard.tell(),
+            }
         }
     }
 }
@@ -1652,15 +1739,36 @@ async fn try_back(back: &Back, endpoint: &Endpoint, token: ResumeToken) -> Resul
     let client = crate::signaling::login(server, &net.key, &device_name()).await?;
     let named = client.relay().map(|r| (r.url.as_str(), r.quic_port));
     net.relays.follow(endpoint, named).await;
-    let (conn, code) =
+    let (conn, code, pin) =
         crate::signaling::connect(client, id, known, endpoint, (true, false, None), || {}).await?;
     let hello = Hello {
         peer: PeerInfo::local(APP_VERSION, device_name()),
         access_code: code,
         resume: Some(token),
+        asks: Default::default(),
     };
     let frames = show_frames(back.latest.clone(), back.tell.clone());
-    Ok(client::start(conn, hello, None, back.decoder, frames).await?)
+    let session = client::start(conn, hello, None, back.decoder, frames).await?;
+    keep_pin(Some(pin));
+    Ok(clean_host(session))
+}
+
+/// The host's name and version as the session shows them everywhere (log,
+/// title, questions): as the host sent them, they could move a terminal's
+/// cursor or turn text around.
+fn clean_host(mut session: ClientHandle) -> ClientHandle {
+    let host = &mut session.host;
+    host.device_name = crate::signaling::shown_name(&host.device_name);
+    host.app_version = crate::signaling::shown_name(&host.app_version);
+    session
+}
+
+/// The session got in: the host's key is kept for its ID (a failure to
+/// write it only costs asking again next time).
+fn keep_pin(pin: Option<Pin>) {
+    if let Some(Err(e)) = pin.map(Pin::keep) {
+        warn!("não foi possível guardar a chave do computador: {e:#}");
+    }
 }
 
 /// Whether the host said no: trying again would not change that.
@@ -1671,6 +1779,7 @@ fn is_final(e: &anyhow::Error) -> bool {
             NetError::Rejected(_)
                 | NetError::PasswordNeeded
                 | NetError::HostNotConfirmed
+                | NetError::PasswordNotAsked
                 | NetError::IncompatibleVersion { .. }
         ))
     )
@@ -1803,8 +1912,8 @@ fn explain(e: SessionError) -> anyhow::Error {
 }
 
 /// Reaches the host: by ID through the server, or by IP with the access code
-/// and the host's key. The connection, the code to present, and how to come
-/// back (by ID). `asks`: with the password, and asking to be remembered
+/// and the host's key. The connection, the code to present, how to come
+/// back (by ID), and the host's key to keep once in (by ID). `asks`: with the password, and asking to be remembered
 /// ([`Login::asks`]). `on_waiting` runs if the host says its screen is
 /// locked.
 async fn reach(
@@ -1812,7 +1921,7 @@ async fn reach(
     target: Target,
     (unattended, remember, account): Asks,
     on_waiting: impl FnMut() + Send,
-) -> Result<(Connection, String, Option<Route>)> {
+) -> Result<(Connection, String, Option<Route>, Option<Pin>)> {
     match target {
         Target::Id(id) => {
             let (Some(server), Some(known)) = (&net.server, &net.known) else {
@@ -1828,13 +1937,13 @@ async fn reach(
             // another account.
             let account = account.map(|chain| BindAsk::new(&net.key, chain, id));
             let asks = (unattended, remember, account);
-            let (conn, code) =
+            let (conn, code, pin) =
                 crate::signaling::connect(client, id, known, endpoint, asks, on_waiting).await?;
             let route = Route {
                 net: net.clone(),
                 id,
             };
-            Ok((conn, code, Some(route)))
+            Ok((conn, code, Some(route), Some(pin)))
         }
         Target::Ip { addr, host, code } => {
             let endpoint = net.endpoint().await?;
@@ -1842,7 +1951,7 @@ async fn reach(
                 .await
                 .with_context(|| format!("falha ao conectar em {addr}"))?;
             hext_net::log_paths(&conn, "visualizador");
-            Ok((conn, code, None))
+            Ok((conn, code, None, None))
         }
     }
 }
@@ -1860,21 +1969,38 @@ async fn open_session(
     let waiting = tell.clone();
     let on_waiting = move || waiting.send(SessionEvent::Locked);
     let asks = Login::asks(login.as_ref());
-    let (conn, code, route) = reach(&net, target, asks, on_waiting).await?;
+    let (conn, code, route, pin) = reach(&net, target, asks, on_waiting).await?;
+    let (hello, password) = hello_of(&net, code, login);
+    let session = client::start(conn, hello, password, decoder, show_frames(latest, tell))
+        .await
+        .map_err(explain)?;
+    keep_pin(pin);
+    let session = clean_host(session);
+    Ok(Started { session, route })
+}
+
+/// The introduction to the host, and the password to answer it with. What
+/// the viewer asks for (to be remembered, the account) goes end to end, too:
+/// the host does not take the server's word alone.
+fn hello_of(net: &Net, code: String, login: Option<Login>) -> (Hello, Option<PasswordLogin>) {
+    let asks = login
+        .as_ref()
+        .map_or_else(HelloAsks::default, |login| HelloAsks {
+            remember: login.remember,
+            account: login.account,
+        });
+    let hello = Hello {
+        peer: PeerInfo::local(APP_VERSION, device_name()),
+        access_code: code,
+        resume: None,
+        asks,
+    };
     let viewer = net.key.public_key();
     let password = login.map(|login| PasswordLogin {
         password: login.password,
         viewer,
     });
-    let hello = Hello {
-        peer: PeerInfo::local(APP_VERSION, device_name()),
-        access_code: code,
-        resume: None,
-    };
-    let session = client::start(conn, hello, password, decoder, show_frames(latest, tell))
-        .await
-        .map_err(explain)?;
-    Ok(Started { session, route })
+    (hello, password)
 }
 
 /// The viewer's endpoint (it connects; it does not accept).
@@ -1930,20 +2056,14 @@ async fn headless(
     login: Option<Login>,
 ) -> Result<()> {
     let on_waiting = || println!("{}", crate::ui_link::HOST_LOCKED);
-    let (conn, code, _) = reach(&net, target, Login::asks(login.as_ref()), on_waiting).await?;
-    let viewer = net.key.public_key();
-    let password = login.map(|login| PasswordLogin {
-        password: login.password,
-        viewer,
-    });
-    let hello = Hello {
-        peer: PeerInfo::local(APP_VERSION, device_name()),
-        access_code: code,
-        resume: None,
-    };
+    let asks = Login::asks(login.as_ref());
+    let (conn, code, _, pin) = reach(&net, target, asks, on_waiting).await?;
+    let (hello, password) = hello_of(&net, code, login);
     let session = client::start(conn, hello, password, decoder(args.decoder), |_| {})
         .await
         .map_err(explain)?;
+    keep_pin(pin);
+    let session = clean_host(session);
     println!(
         "Conectado a {} ({:?}, v{})",
         session.host.device_name, session.host.os, session.host.app_version
@@ -2000,6 +2120,30 @@ mod tests {
             u: vec![0; 1],
             v: vec![0; 1],
         }
+    }
+
+    #[test]
+    fn the_clipboard_goes_only_to_the_window_with_the_focus() {
+        let all = Focus::default();
+        let mut one = WindowFocus::new(1, all.clone());
+        let mut two = WindowFocus::new(2, all.clone());
+        // Before any window has the focus: none.
+        assert!(!all.is(1) && !all.is(2));
+        // Opening: in use, but what was copied before stays here.
+        assert!(!one.changed(true));
+        assert!(all.is(1));
+        // Working elsewhere: nobody's.
+        assert!(!one.changed(false));
+        assert!(!all.is(1));
+        // Back: what was copied meanwhile is told, once.
+        assert!(one.changed(true));
+        assert!(!one.changed(true));
+        // To the other window, whichever order the news come in.
+        assert!(!two.changed(true));
+        one.changed(false);
+        assert!(all.is(2) && !all.is(1));
+        two.changed(false);
+        assert!(!all.is(2));
     }
 
     #[test]

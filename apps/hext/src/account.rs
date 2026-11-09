@@ -130,10 +130,8 @@ impl Account {
         let written = serde_json::to_string(stored)
             .map_err(anyhow::Error::from)
             .and_then(|text| {
-                if let Some(dir) = self.file.parent() {
-                    std::fs::create_dir_all(dir)?;
-                }
-                std::fs::write(&self.file, text)?;
+                // The token: this user's only.
+                hext_crypto::write_user_file(&self.file, text.as_bytes())?;
                 Ok(())
             });
         if let Err(e) = written {
@@ -161,7 +159,8 @@ impl Account {
             return;
         }
         let text = serde_json::to_string(&known).expect("serializes");
-        if let Err(e) = std::fs::write(self.file.with_file_name(CHAIN_FILE), text) {
+        let file = self.file.with_file_name(CHAIN_FILE);
+        if let Err(e) = hext_crypto::write_user_file(&file, text.as_bytes()) {
             warn!("{CHAIN_FILE}: {e}");
         }
     }
@@ -1285,7 +1284,8 @@ mod tests {
         // ...and a technician with the password cannot take it over.
         assert!(owners.bind_asked([7; 32], &me).await.is_err());
         assert_eq!(owners.bound().unwrap().0, chain);
-        // Unless that account is gone: then another one may bind it.
+        // Not even when the server no longer shows that account: hiding it
+        // must not hand the computer over.
         let other = other_account(&mut world, "outro@example.com").await;
         let other_chain = other.chain_id().unwrap();
         let other_key = other.key().unwrap().public_key();
@@ -1295,8 +1295,8 @@ mod tests {
             .db
             .tamper("DELETE FROM account_chain_ids WHERE chain_id IN (SELECT chain_id FROM account_chain_ids ORDER BY account_id LIMIT 1)")
             .unwrap();
-        assert!(owners.bind_asked(other_chain, &other_key).await.unwrap());
-        assert_eq!(owners.bound().unwrap().0, other_chain);
+        assert!(owners.bind_asked(other_chain, &other_key).await.is_err());
+        assert_eq!(owners.bound().unwrap().0, chain);
 
         // Reinstalled (a new key, the same ID): the old one leaves the list.
         let new_key = DeviceKey::generate().unwrap().public_key().to_string();

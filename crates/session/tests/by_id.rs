@@ -116,6 +116,7 @@ async fn accepted_by_id_then_streams() {
         peer: PeerInfo::local("test", "viewer"),
         access_code: code.to_owned(),
         resume: None,
+        asks: Default::default(),
     };
     let client_endpoint = hext_net::bind(&viewer_key, &EndpointConfig::default())
         .await

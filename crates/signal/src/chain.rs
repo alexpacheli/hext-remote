@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use hext_crypto::{DeviceKey, PublicKey, Signature};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::DeviceId;
 
@@ -590,22 +591,32 @@ pub fn clean_code(code: &str) -> String {
 
 /// Characters of a recovery code (about 100 bits).
 pub const RECOVERY_CODE_LEN: usize = 20;
-/// Characters of a code for adding a device (about 60 bits: it lives 10
-/// minutes, and the server would have to guess it in that time).
-pub const JOIN_CODE_LEN: usize = 12;
+/// Characters of a code for adding a device (about 80 bits: it lives 10
+/// minutes, but the server sees the proof made with it and could try codes
+/// against it on its own, without asking anyone). Versions up to 0.6.1 made
+/// 12; any length is taken. Shorter than [`RECOVERY_CODE_LEN`], which is how
+/// the app tells them apart.
+pub const JOIN_CODE_LEN: usize = 16;
 
 /// The recovery key of `code` (as shown, or as typed).
 pub fn recovery_key(code: &str) -> DeviceKey {
-    let mut bytes = RECOVERY.to_vec();
-    bytes.extend(clean_code(code).as_bytes());
-    DeviceKey::from_seed(&sha256(&bytes)).expect("any 32 bytes are a seed")
+    // The code and the seed made of it are as good as the key: our copies
+    // are wiped (ring keeps its own inside the key, out of reach).
+    let code = Zeroizing::new(clean_code(code));
+    let mut bytes = Zeroizing::new(RECOVERY.to_vec());
+    bytes.extend(code.as_bytes());
+    let seed = Zeroizing::new(sha256(&bytes));
+    DeviceKey::from_seed(&seed).expect("any 32 bytes are a seed")
 }
 
 /// What a device asking to join chain `chain` sends with its key, made with
 /// the code shown on the device already in it: proof, to that device, that
 /// the key is the one at the other computer, not one the server put there.
 pub fn join_proof(code: &str, chain: &ChainId, device: &PublicKey, name: &str) -> [u8; 32] {
-    let key = hmac::Key::new(hmac::HMAC_SHA256, clean_code(code).as_bytes());
+    let key = hmac::Key::new(
+        hmac::HMAC_SHA256,
+        Zeroizing::new(clean_code(code)).as_bytes(),
+    );
     let mut message = JOIN.to_vec();
     message.extend(chain);
     message.extend(device.as_bytes());
@@ -807,8 +818,21 @@ mod tests {
     #[test]
     fn codes() {
         let code = new_code(JOIN_CODE_LEN);
-        assert_eq!(code.len(), JOIN_CODE_LEN + 2);
+        assert_eq!(code.len(), JOIN_CODE_LEN + 3);
         assert_eq!(clean_code(&code.to_lowercase()).len(), JOIN_CODE_LEN);
+        // The app tells a join code from a recovery code by its length.
+        const { assert!(JOIN_CODE_LEN < RECOVERY_CODE_LEN) };
+        // An old one (12 characters) still proves the same way.
+        let old = new_code(12);
+        let device = key().public_key();
+        let proof = join_proof(&old, &[1; 32], &device, "PC");
+        assert!(join_proof_ok(
+            &old.replace('-', ""),
+            &[1; 32],
+            &device,
+            "PC",
+            &proof
+        ));
         // The same code, typed any way, gives the same recovery key.
         let recovery = new_code(RECOVERY_CODE_LEN);
         assert_eq!(

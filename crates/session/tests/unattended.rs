@@ -10,7 +10,7 @@ use hext_codec::{DecoderPreference, EncoderSettings};
 use hext_crypto::pake::Verifier;
 use hext_crypto::{DeviceKey, PublicKey};
 use hext_net::{Endpoint, EndpointConfig, NetError, PasswordLogin};
-use hext_proto::{Hello, PeerInfo, Permissions, RejectReason};
+use hext_proto::{Hello, HelloAsks, PeerInfo, Permissions, RejectReason};
 use hext_session::host::{Attempt, HostConfig, LocalDesktop, UnattendedAccess, UnattendedPassword};
 use hext_session::{
     Grant, KeptResume, Lockout, ResumeTokens, SessionCodes, SessionError, client, host,
@@ -234,11 +234,30 @@ impl Host {
         self.connect_with(viewer, grant, password, resume).await
     }
 
-    /// Opens a session as `viewer`, which the server sent with `grant`.
+    /// Opens a session as `viewer`, which the server sent with `grant`, the
+    /// viewer asking what the server passed on.
     async fn connect_with(
         &self,
         viewer: &DeviceKey,
         grant: Grant,
+        password: Option<&str>,
+        resume: Option<[u8; 32]>,
+    ) -> hext_session::Result<client::ClientHandle> {
+        let asks = HelloAsks {
+            remember: grant.remember,
+            account: grant.account,
+        };
+        self.connect_asking(viewer, grant, asks, password, resume)
+            .await
+    }
+
+    /// Opens a session as `viewer`, which the server sent with `grant`, the
+    /// viewer itself asking `asks`.
+    async fn connect_asking(
+        &self,
+        viewer: &DeviceKey,
+        grant: Grant,
+        asks: HelloAsks,
         password: Option<&str>,
         resume: Option<[u8; 32]>,
     ) -> hext_session::Result<client::ClientHandle> {
@@ -260,6 +279,7 @@ impl Host {
                 peer: PeerInfo::local("test", "viewer"),
                 access_code: code,
                 resume,
+                asks,
             },
             login,
             DecoderPreference::Software,
@@ -382,6 +402,42 @@ async fn asking_to_bind_to_an_account_takes_the_password() {
     );
     // Not as a technician of this computer: by the account, once on its list.
     assert!(host.kept.bound.lock().unwrap().is_empty());
+}
+
+/// The server says the technician asked, but the technician itself did not
+/// (or is from before it could say so): the server's word is not enough.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_server_asking_binds_nobody() {
+    let host = Host::start(Some(PASSWORD)).await;
+    let viewer = DeviceKey::generate().unwrap();
+    let grant = Grant {
+        account: Some([9; 32]),
+        ..remembering()
+    };
+    let session = host
+        .connect_asking(
+            &viewer,
+            grant.clone(),
+            HelloAsks::default(),
+            Some(PASSWORD),
+            None,
+        )
+        .await
+        .unwrap();
+    session.close().await.unwrap();
+    // Asking for another account than the one signed binds nothing either.
+    let other = HelloAsks {
+        remember: false,
+        account: Some([8; 32]),
+    };
+    let session = host
+        .connect_asking(&viewer, grant, other, Some(PASSWORD), None)
+        .await
+        .unwrap();
+    session.close().await.unwrap();
+    host.audit(4).await;
+    assert!(host.kept.bound.lock().unwrap().is_empty());
+    assert!(host.kept.accounts.lock().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

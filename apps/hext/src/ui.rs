@@ -1116,8 +1116,9 @@ fn connect(
 /// Puts computer `id`, called `name`, which a session just reached with its
 /// password (asking it to bind to the account), in the account's list: from
 /// then on the account's devices come in without the password. Its key is
-/// the one the connection proved (kept in `known_hosts`). The outcome shows
-/// on the home screen.
+/// the one the session proved: the viewer writes it to `known_hosts` only
+/// once in (with the password, once the computer proved it knows it), before
+/// it says it is connected. The outcome shows on the home screen.
 fn put_in_account(app: AppHandle, id: String, name: String) {
     tauri::async_runtime::spawn(async move {
         let shared = app.state::<Shared>();

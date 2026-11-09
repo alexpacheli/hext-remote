@@ -59,6 +59,10 @@ pub enum NetError {
     PasswordNeeded,
     #[error("o outro computador não confirmou a senha: pode ser outro se passando por ele")]
     HostNotConfirmed,
+    #[error(
+        "o outro computador aceitou sem pedir a senha: ele não provou que a conhece, pode ser outro se passando por ele"
+    )]
+    PasswordNotAsked,
     #[error("handshake timed out")]
     Timeout,
     #[error("unexpected message: {0}")]

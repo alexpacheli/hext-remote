@@ -183,12 +183,19 @@ pub async fn client_handshake(
         }
         control.send(&Control::Hello(hello)).await?;
         let mut answer = control.recv().await?;
+        let with_password = password.is_some();
         if let Control::PasswordChallenge { salt, message } = answer {
             let Some(password) = password else {
                 conn.close(0u32.into(), b"password needed");
                 return Err(NetError::PasswordNeeded);
             };
             answer = prove_password(conn, &mut control, password, salt, message).await?;
+        } else if with_password && matches!(answer, Control::HelloAck { .. }) {
+            // With the password, nobody accepts: a host letting us in without
+            // asking for it never proved it knows it (the real one always
+            // asks), and could be anyone the server pointed us at.
+            conn.close(0u32.into(), b"host not confirmed");
+            return Err(NetError::PasswordNotAsked);
         }
         match answer {
             Control::HelloAck { peer, permissions } => Ok((control, peer, permissions)),
@@ -236,6 +243,11 @@ async fn prove_password(
                 return Err(NetError::HostNotConfirmed);
             }
             control.recv().await
+        }
+        Control::HelloAck { .. } => {
+            // In without confirming: it does not know the password.
+            conn.close(0u32.into(), b"host not confirmed");
+            Err(NetError::HostNotConfirmed)
         }
         other => Ok(other),
     }

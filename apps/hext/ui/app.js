@@ -383,11 +383,38 @@ const account = {
   view: null,
   /** A panel the user is in, over the one the view calls for. */
   panel: null,
-  /** The password typed when registering, for confirming the address. */
+  /** The password typed when registering, for confirming the address: kept
+   * only while that panel is open, and 10 minutes at most. */
   password: "",
+  passwordTimer: null,
 };
 
+/** Keeps the password typed when registering, for the panel that follows. */
+function keepRegisterPassword(password) {
+  account.password = password;
+  clearTimeout(account.passwordTimer);
+  account.passwordTimer = setTimeout(forgetRegisterPassword, 10 * 60 * 1000);
+}
+
+function forgetRegisterPassword() {
+  account.password = "";
+  clearTimeout(account.passwordTimer);
+  account.passwordTimer = null;
+}
+
+/** Empties every password typed in the account's panels. */
+function clearAccountPasswords() {
+  for (const input of document.querySelectorAll(".account-panel input[type=password]")) {
+    input.value = "";
+  }
+}
+
 function accountPanel(name) {
+  // Leaving a panel (closed, cancelled or done): what was typed in it goes.
+  if (name !== account.panel) {
+    clearAccountPasswords();
+    if (name !== "verify") forgetRegisterPassword();
+  }
   account.panel = name;
   for (const panel of document.querySelectorAll(".account-panel")) {
     panel.hidden = panel.id !== `account-${name ?? (account.view ? "in" : "out")}`;
@@ -423,7 +450,7 @@ function startAccount() {
     });
   for (const cancel of document.querySelectorAll(".account-panel .cancel")) {
     cancel.addEventListener("click", () => {
-      account.password = "";
+      forgetRegisterPassword();
       accountStatus("");
       accountPanel(null);
     });
@@ -478,6 +505,9 @@ function startAccount() {
       $("delete-second").value = "";
       accountPanel(null);
       accountStatus("Conta excluída.");
+    } else {
+      // Wrong, or failed: typed again, not kept on screen.
+      $("delete-password").value = "";
     }
   });
   on("account-logout", async () => {
@@ -664,7 +694,7 @@ function startAccount() {
   });
   submit("account-join", async () => {
     const typed = $("join-code").value;
-    const recovery = typed.replace(/[^A-Za-z0-9]/g, "").length > 12;
+    const recovery = isRecoveryCode(typed);
     accountStatus(recovery ? "Entrando com a chave de recuperação…" : "Pedindo para entrar…");
     try {
       await invoke(recovery ? "chain_recover" : "chain_join", { code: typed });
@@ -699,6 +729,7 @@ function startAccount() {
       "Entrando…",
     );
     if (reply?.reply === "needs_second_factor") {
+      // (Kept: it goes again with the code.)
       $("login-second").hidden = false;
       $("login-second").focus();
       accountStatus("Escreva o código do app autenticador.");
@@ -706,6 +737,8 @@ function startAccount() {
       $("login-password").value = "";
       $("login-second").value = "";
       accountPanel(null);
+    } else {
+      $("login-password").value = "";
     }
   });
   submit("account-register", async () => {
@@ -716,14 +749,14 @@ function startAccount() {
     }
     const email = $("register-email").value;
     const reply = await accountCall({ call: "register", email, password }, "Criando…");
-    if (!reply) return;
-    account.password = password;
     $("register-password").value = "";
     $("register-again").value = "";
+    if (!reply) return;
     $("verify-email").textContent = email.trim();
     $("verify-password").hidden = true;
     $("verify-code").value = "";
     accountPanel("verify");
+    keepRegisterPassword(password);
   });
   submit("account-verify", async () => {
     const password = account.password || $("verify-password").value;
@@ -738,10 +771,14 @@ function startAccount() {
       "Confirmando…",
     );
     if (!reply) return;
-    // Straight in, with the same password.
-    const login = await accountCall({ call: "login", email, password }, "Entrando…");
-    account.password = "";
-    $("verify-password").value = "";
+    // Straight in, with the same password; then it goes.
+    let login;
+    try {
+      login = await accountCall({ call: "login", email, password }, "Entrando…");
+    } finally {
+      forgetRegisterPassword();
+      $("verify-password").value = "";
+    }
     if (login) {
       accountPanel(null);
       accountStatus("Conta criada. Ligue a verificação em duas etapas para ter computadores nela.");
@@ -769,8 +806,8 @@ function startAccount() {
       },
       "Trocando…",
     );
-    if (!reply) return;
     $("reset-password").value = "";
+    if (!reply) return;
     $("login-email").value = $("forgot-email").value;
     accountPanel("login");
     accountStatus("Senha trocada. Entre com a senha nova.");
@@ -802,6 +839,35 @@ function startAccount() {
     accountStatus("Senha trocada. Os outros computadores saíram da conta.");
   });
   accountPanel(null);
+  // A computer added from another device shows up without reopening the app:
+  // on coming back to the window, and every minute while it is in view.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshDevices();
+  });
+  window.addEventListener("focus", refreshDevices);
+  setInterval(refreshDevices, 60 * 1000);
+}
+
+/** The asking of the account's devices going on, if any. */
+let devicesRefresh = null;
+
+/** Asks for the account's devices again, if logged in and in view, and not
+ * already asking. Not while a share is being filled in: it would be redrawn
+ * empty. */
+function refreshDevices() {
+  if (!account.view || document.hidden || devicesRefresh || sharing) return;
+  devicesRefresh = loadDevices().finally(() => {
+    devicesRefresh = null;
+  });
+}
+
+/** Characters of a recovery key (RECOVERY_CODE_LEN in crates/signal/src/chain.rs).
+ * A code from another computer is shorter: 16 (12 up to 0.6.1). */
+const RECOVERY_CODE_LEN = 20;
+
+/** Whether what was typed is a recovery key, not a code from another computer. */
+function isRecoveryCode(typed) {
+  return typed.replace(/[^A-Za-z0-9]/g, "").length >= RECOVERY_CODE_LEN;
 }
 
 /** The account's devices, asked of the server (each signature checked). */

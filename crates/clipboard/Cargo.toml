@@ -14,7 +14,11 @@ hext-proto.workspace = true
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows.workspace = true
+windows = { workspace = true, features = ["Win32_System_Memory"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
+objc2-foundation = { workspace = true, features = ["NSArray", "NSEnumerator", "NSString"] }
 
 [lints]
 workspace = true
