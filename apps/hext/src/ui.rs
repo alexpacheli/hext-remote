@@ -1112,6 +1112,7 @@ fn put_in_account(app: AppHandle, id: String, name: String) {
                         view.computers.push(Computer {
                             id: id.clone(),
                             name: name.clone(),
+                            host: None,
                         });
                     }
                 }
@@ -1206,13 +1207,16 @@ async fn account_devices(
         .map(|d| {
             d.computers
                 .iter()
+                .filter(|c| !c.me)
                 .map(|c| Computer {
                     id: c.id.clone(),
                     name: c.name.clone(),
+                    host: Some(c.host.clone()),
                 })
                 .chain(d.shared.iter().map(|c| Computer {
                     id: c.id.clone(),
                     name: format!("{} (compartilhado)", c.name),
+                    host: None,
                 }))
                 .collect()
         })

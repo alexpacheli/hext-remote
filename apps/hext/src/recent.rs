@@ -16,6 +16,11 @@ const MAX: usize = 30;
 pub struct Computer {
     pub id: String,
     pub name: String,
+    /// In Meus computadores: its key on the account's list, for taking it
+    /// out (none: shared by another account, or not known yet). Never on a
+    /// recent one, nor in the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// The list, the latest first.
@@ -56,6 +61,7 @@ impl Recent {
         let computer = Computer {
             id: id.to_owned(),
             name: name.to_owned(),
+            host: None,
         };
         self.0.insert(0, computer);
         self.0.truncate(MAX);

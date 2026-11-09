@@ -357,9 +357,12 @@ function showRecent(computers, online) {
   $("recent").replaceChildren(
     ...computers.map(({ id, name }) => {
       const pick = tile(id, name, online);
+      pick.title = `Conectar a ${pick.title}`;
+      // Straight in: a technician trusted there (or with a password typed
+      // above) needs nothing more, and anyone else is asked on the screen.
       pick.addEventListener("click", () => {
         $("target").value = id;
-        $("password").focus();
+        $("connect").requestSubmit();
       });
       const forget = document.createElement("button");
       forget.type = "button";
@@ -1045,7 +1048,7 @@ let shownChain = "";
 function showComputers(computers, online) {
   $("computers-section").hidden = computers.length === 0;
   $("computers").replaceChildren(
-    ...computers.map(({ id, name }) => {
+    ...computers.map(({ id, name, host }) => {
       const pick = tile(id, name, online);
       pick.title = `Conectar a ${pick.title}`;
       pick.addEventListener("click", async () => {
@@ -1057,6 +1060,25 @@ function showComputers(computers, online) {
       });
       const item = document.createElement("li");
       item.append(pick);
+      // (A computer shared by another account is taken out by that one.)
+      if (host) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "forget";
+        remove.textContent = "×";
+        remove.title = "Remover de Meus computadores";
+        remove.setAttribute("aria-label", `Remover ${name || id} de Meus computadores`);
+        remove.addEventListener("click", async () => {
+          if (!confirm(`Remover ${name || id} de Meus computadores? Ele sai da lista da conta em todos os dispositivos.`)) return;
+          try {
+            await invoke("computer_remove", { host });
+            await invoke("account_devices");
+          } catch (message) {
+            showStatus(String(message), true);
+          }
+        });
+        item.append(remove);
+      }
       return item;
     }),
   );
