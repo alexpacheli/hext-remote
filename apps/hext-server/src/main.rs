@@ -39,6 +39,17 @@ struct Args {
     /// Remetente, como "Hext Remote <nao-responda@exemplo.com.br>".
     #[arg(long, env = "HEXT_MAIL_FROM")]
     mail_from: Option<String>,
+    /// Só para desenvolvimento: sem SMTP, escreve os e-mails (com os códigos)
+    /// no log. Sem esta opção e sem SMTP, os e-mails não são enviados e o log
+    /// não mostra os códigos.
+    #[arg(long, env = "HEXT_DEV_MAIL_LOG", value_parser = clap::builder::FalseyValueParser::new())]
+    dev_mail_log: bool,
+    /// Máximo de e-mails da conta por hora, somando todos (a cota do SMTP).
+    #[arg(long, env = "HEXT_MAIL_PER_HOUR", default_value_t = hext_server::accounts::MAILS_PER_HOUR)]
+    mail_per_hour: usize,
+    /// Máximo de e-mails da conta por dia, somando todos.
+    #[arg(long, env = "HEXT_MAIL_PER_DAY", default_value_t = hext_server::accounts::MAILS_PER_DAY)]
+    mail_per_day: usize,
     /// URL do relay sem o limite por dispositivo (ex.:
     /// https://relay-full.exemplo.com.br), para as contas da lista. Sem ela,
     /// todos usam o relay normal.
@@ -107,8 +118,19 @@ async fn main() -> anyhow::Result<()> {
             });
             State::with_mailer(db, mailer)
         }
-        None => State::new(db),
+        None if args.dev_mail_log => State::new(db),
+        None => {
+            warn!(
+                "contas: SMTP não configurado; os e-mails (códigos de confirmação e de troca de senha) não são enviados"
+            );
+            State::with_mailer(db, Arc::new(hext_server::accounts::NoMailer))
+        }
     };
+    state.set_mail_budget(args.mail_per_hour, args.mail_per_day);
+    info!(
+        "contas: até {} e-mails por hora e {} por dia",
+        args.mail_per_hour, args.mail_per_day
+    );
     if let Some(url) = args.relay_full_url.clone().filter(|u| !u.is_empty()) {
         info!(
             "relay sem limite: {url}, para as contas em {}",

@@ -143,17 +143,19 @@ async fn upgrade(
         .on_upgrade(move |socket| async move { signal::handle(socket, &app.state, ip).await })
 }
 
-/// The device's address, for the per-address limits.
+/// The device's address, for the per-address limits: as they count it
+/// ([`limits::ip_key`], an IPv6 address by its /64).
 fn client_ip(config: &Config, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
     let forwarded = || {
         let header = headers.get("x-forwarded-for")?.to_str().ok()?;
         header.rsplit(',').next()?.trim().parse().ok()
     };
-    if config.behind_proxy {
+    let ip = if config.behind_proxy {
         forwarded().unwrap_or(peer.ip())
     } else {
         peer.ip()
-    }
+    };
+    limits::ip_key(ip)
 }
 
 /// Serves on `listener` until the task is dropped.
@@ -202,5 +204,12 @@ mod tests {
         // Without a proxy the header is the device's own claim: ignored.
         assert_eq!(client_ip(&Config::default(), peer, &headers), peer.ip());
         assert_eq!(client_ip(&proxied, peer, &HeaderMap::new()), peer.ip());
+        // An IPv6 address counts by its /64.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "2001:db8:5:6:7::8".parse().unwrap());
+        assert_eq!(
+            client_ip(&proxied, peer, &headers).to_string(),
+            "2001:db8:5:6::"
+        );
     }
 }
