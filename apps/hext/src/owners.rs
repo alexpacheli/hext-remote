@@ -113,6 +113,15 @@ impl Owners {
         Some((checked.own.id, name))
     }
 
+    /// Bound, and this computer on the bound account's list (as last
+    /// checked).
+    pub fn listed(&self) -> bool {
+        let checked = self.0.checked.lock().expect("lock");
+        checked
+            .as_ref()
+            .is_some_and(|checked| checked.own.computer(&self.host()).is_some())
+    }
+
     /// What the home screen says of the binding (`None`: not bound).
     pub fn summary(&self) -> Option<String> {
         let checked = self.0.checked.lock().expect("lock").clone();
@@ -175,7 +184,7 @@ impl Owners {
             .context("o servidor não entregou a lista dessa conta")?;
         if own.0.computer(&self.host()).is_none() {
             bail!(
-                "este computador não está em Meus computadores dessa conta: ponha-o na lista pelo \
+                "este computador não está em Meus computadores dessa conta: insira-o na lista pelo \
                  app antes"
             );
         }

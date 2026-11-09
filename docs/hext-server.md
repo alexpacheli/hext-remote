@@ -62,7 +62,7 @@ Técnico                  Servidor                   Host
   entrou com a senha, nos últimos 90 dias (as tabelas `accepted` e `entered`). Qualquer outro ID aparece
   sempre offline, como num pedido, para não dar para sondar IDs. Até 6 perguntas por minuto por computador:
   as seguintes ficam sem resposta. Um servidor antigo não diz `aceita presence`, e o app não pergunta.
-- **Pôr o computador numa conta pela senha (F6):** num pedido com senha, o técnico pode mandar
+- **Inserir o computador numa conta pela senha (F6):** num pedido com senha, o técnico pode mandar
   `account {chain, signature}`: o ID da lista da conta dele, assinado pela chave dele junto com o ID do
   host (`hext-chain-bind-v1`). O servidor só repassa com a senha, como `remember`. O host confere a
   assinatura com a chave que a conexão prova; assim um servidor desonesto não consegue apontar o pedido

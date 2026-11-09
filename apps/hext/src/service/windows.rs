@@ -1261,8 +1261,11 @@ impl Ask for ConsoleAsk {
             self.1.bound()?;
             // One of the account: checked against the latest list. Anyone
             // else: at most every half minute (a device that just joined),
-            // or strangers would hold up every request.
-            let checked = if self.1.way(key).is_some() {
+            // or strangers would hold up every request. Bound but not yet on
+            // the account's list (a technician just bound it with the
+            // password, and their app is inserting it): every time, or the
+            // technician's next click would wait for the half minute.
+            let checked = if self.1.way(key).is_some() || !self.1.listed() {
                 self.1.refresh().await
             } else {
                 self.1.refresh_if_stale(Duration::from_secs(30)).await

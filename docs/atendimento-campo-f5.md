@@ -1,6 +1,6 @@
 # Atendimento de campo (F5, marco 8)
 
-As contas usadas de verdade, do começo ao fim: criar a conta, pôr dois computadores e um técnico nela, entrar
+As contas usadas de verdade, do começo ao fim: criar a conta, inserir dois computadores e um técnico nela, entrar
 sem aceite, compartilhar com outra conta, revogar e ver a atividade. Serve para fechar a F5. Marque cada passo
 e anote o que estranhar (tempo, mensagem confusa, clique a mais).
 
@@ -30,15 +30,15 @@ e anote o que estranhar (tempo, mensagem confusa, clique a mais).
 4. [ ] Em **Dispositivos**, **Criar a lista com este computador**. Guardar o código de recuperação da lista
    (aparece uma vez só).
 
-## 2. Pôr os computadores na conta
+## 2. Inserir os computadores na conta
 
 Em cada um, Escritório e Casa:
 
 1. [ ] Entrar na conta (senha e código do autenticador).
-2. [ ] **Colocar este computador na conta**: aparece um campo para o código. No notebook, **Adicionar outro
+2. [ ] **Inserir este computador na conta**: aparece um campo para o código. No notebook, **Adicionar outro
    dispositivo** mostra um código de 12 caracteres; digitá-lo no computador. Em até 5 segundos o notebook
    mostra o pedido e aceita; o computador aparece em **Dispositivos da conta**.
-3. [ ] **Pôr este computador em Meus computadores**. Ele aparece em **Computadores da conta**, e no notebook,
+3. [ ] **Inserir este computador em Meus computadores**. Ele aparece em **Computadores da conta**, e no notebook,
    na tela inicial, em **Meus computadores**, com a bolinha verde.
 4. [ ] No notebook, um clique no computador em Meus computadores conecta. **Ainda pede aceite** (falta o
    vínculo).
@@ -57,7 +57,7 @@ Em cada um, Escritório e Casa:
 
 1. [ ] No computador do cliente (Windows), instalar e definir a senha de acesso não assistido
    (`HextRemote.exe service password`, como administrador). **Não** entrar em conta nenhuma nele.
-2. [ ] No notebook, conectar pelo ID do cliente com a senha, marcando **Pôr em Meus computadores** (aparece
+2. [ ] No notebook, conectar pelo ID do cliente com a senha, marcando **Inserir em Meus computadores** (aparece
    com o notebook na lista da conta). A sessão abre, e a tela inicial diz que o computador está em Meus
    computadores.
 3. [ ] No cliente, a tela inicial mostra **Conta vinculada**, e o `audit.log` diz "conta vinculada ... a
@@ -72,7 +72,7 @@ Em cada um, Escritório e Casa:
 1. [ ] Com a sessão do notebook aberta no Escritório, tirar o notebook da lista a partir da Casa
    (**Dispositivos da conta → Remover**).
 2. [ ] Em até 30 segundos a sessão cai, e o `audit.log` diz "sessão encerrada: ... não está mais na conta".
-3. [ ] O notebook volta à lista: **Colocar este computador na conta**, com um código de **Adicionar outro
+3. [ ] O notebook volta à lista: **Inserir este computador na conta**, com um código de **Adicionar outro
    dispositivo** na Casa ou com a chave de recuperação guardada no passo 1.4. Depois disso, entra sem aceite
    de novo.
 

@@ -355,8 +355,8 @@ function showRecent(computers, online) {
       forget.type = "button";
       forget.className = "forget";
       forget.textContent = "×";
-      forget.title = "Tirar da lista";
-      forget.setAttribute("aria-label", `Tirar ${name || id} da lista`);
+      forget.title = "Remover da lista";
+      forget.setAttribute("aria-label", `Remover ${name || id} da lista`);
       forget.addEventListener("click", () => invoke("forget", { id }));
       const item = document.createElement("li");
       item.append(pick, forget);
@@ -759,10 +759,10 @@ async function loadDevices() {
   $("devices-hint").textContent = {
     none: account.view.totp
       ? "A conta ainda não tem a lista dos seus dispositivos. Comece por este computador."
-      : "Ligue a verificação em duas etapas para colocar computadores na conta.",
+      : "Ligue a verificação em duas etapas para inserir computadores na conta.",
     outside: "Este computador ainda não está na lista da conta.",
     member:
-      "Os dispositivos da lista entram nos computadores da conta. Para pôr o computador de um cliente, conecte nele com a senha de acesso e marque “Pôr em Meus computadores”.",
+      "Os dispositivos da lista entram nos computadores da conta. Para inserir o computador de um cliente, conecte-se a ele com a senha de acesso e marque “Inserir em Meus computadores”.",
   }[devices.state];
   $("devices-create").hidden = devices.state !== "none" || !account.view.totp;
   $("devices-invite").hidden = !member;
@@ -800,7 +800,7 @@ async function loadDevices() {
         remove.className = "link";
         remove.textContent = "Remover";
         remove.addEventListener("click", async () => {
-          if (!confirm(`Tirar ${computer.name} de Meus computadores?`)) return;
+          if (!confirm(`Remover ${computer.name} de Meus computadores?`)) return;
           try {
             await invoke("computer_remove", { host: computer.host });
             loadDevices();
@@ -835,7 +835,7 @@ async function loadDevices() {
         remove.className = "link";
         remove.textContent = "Remover";
         remove.addEventListener("click", async () => {
-          if (!confirm(`Tirar ${device.name} da conta? Ele deixa de entrar nos seus computadores.`)) {
+          if (!confirm(`Remover ${device.name} da conta? Ele deixa de acessar os seus computadores.`)) {
             return;
           }
           try {
@@ -880,7 +880,7 @@ let inAccount = false;
 function setInAccount(on) {
   inAccount = on;
   $("remember-text").textContent = on
-    ? "Pôr em Meus computadores: da próxima vez, os dispositivos da conta entram sem senha"
+    ? "Inserir em Meus computadores (nos próximos acessos, os dispositivos da conta entram sem senha)"
     : "Entrar sem senha da próxima vez (o outro computador pode revogar)";
 }
 

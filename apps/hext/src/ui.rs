@@ -1031,7 +1031,7 @@ fn connect(
     // (it checks the ask, signed by this device, and the account's list).
     let account = match account.unwrap_or(false) && password.is_some() {
         true => Some(the_account(&shared)?.chain_id().ok_or(
-            "Para pôr o computador na conta, entre na conta e crie a lista de dispositivos.",
+            "Para inserir o computador na conta, entre na conta e crie a lista de dispositivos.",
         )?),
         false => None,
     };
@@ -1101,7 +1101,7 @@ fn put_in_account(app: AppHandle, id: String, name: String) {
             match outcome {
                 Ok(_) => {
                     view.viewer_news = Some(format!(
-                        "{name} foi posto em Meus computadores. Com o Hext instalado nele \
+                        "{name} foi inserido em Meus computadores. Com o Hext instalado nele \
                          (Windows), os dispositivos da conta passam a entrar sem senha."
                     ));
                     if !view.computers.iter().any(|c| c.id == id) {
@@ -1113,7 +1113,7 @@ fn put_in_account(app: AppHandle, id: String, name: String) {
                 }
                 Err(e) => {
                     view.viewer_failure =
-                        Some(format!("{name} não foi posto em Meus computadores: {e}"));
+                        Some(format!("{name} não foi inserido em Meus computadores: {e}"));
                 }
             }
         }

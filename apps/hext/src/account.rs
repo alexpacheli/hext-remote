@@ -1247,6 +1247,10 @@ mod tests {
         assert_eq!(owners.bound().unwrap().0, chain);
         assert_eq!(owners.way(&me), None);
         assert!(
+            !owners.listed(),
+            "so the host checks the list on each request"
+        );
+        assert!(
             owners
                 .summary()
                 .unwrap()
@@ -1258,6 +1262,7 @@ mod tests {
         assert!(technician.adopt(&hex_key, &id, "Cliente").await.unwrap());
         assert!(!technician.adopt(&hex_key, &id, "Cliente").await.unwrap());
         owners.refresh().await.unwrap();
+        assert!(owners.listed());
         assert_eq!(owners.way(&me).unwrap().via, "entrou como dono");
         // Asking again changes nothing; a list the server lacks is refused.
         assert!(!owners.bind_asked(chain, &me).await.unwrap());
