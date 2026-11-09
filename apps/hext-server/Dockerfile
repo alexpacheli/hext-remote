@@ -6,6 +6,9 @@ COPY . .
 RUN cargo build --release --locked -p hext-server
 
 FROM debian:bookworm-slim
+# The system CAs, for TLS to the outside (SMTP).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --create-home --home-dir /data hext
 COPY --from=build /src/target/release/hext-server /usr/local/bin/hext-server
 USER hext
