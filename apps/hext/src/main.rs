@@ -383,6 +383,8 @@ fn main() -> Result<()> {
         }) => service::log_file("service"),
         Some(Command::Agent { .. }) => service::log_file("agent"),
         Some(Command::Ui { .. }) | None => service::user_log_file("ui"),
+        // Opened by the app: its output is the app's channel, not a terminal.
+        Some(Command::View(args)) if args.report_to_ui => service::user_log_file("view"),
         _ => None,
     };
     // noq_udp (iroh's QUIC) warns on every MTU probe that a link (e.g.

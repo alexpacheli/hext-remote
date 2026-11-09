@@ -376,9 +376,11 @@ async fn accept(
     if has_relay && endpoint.addr().relay_urls().next().is_none() {
         let _ = tokio::time::timeout(RELAY_WAIT, endpoint.online()).await;
     }
+    let addrs = hext_net::addr_to_strings(&endpoint.addr());
+    info!("endereços passados ao visualizador: {addrs:?}");
     ClientMsg::Accept {
         request,
-        addrs: hext_net::addr_to_strings(&endpoint.addr()),
+        addrs,
         session_code: codes.issue(from_key, grant),
     }
 }
@@ -447,6 +449,11 @@ pub async fn connect(
         );
     }
 
+    info!(
+        "endereços do host: {:?}; os nossos: {:?}",
+        access.addrs,
+        hext_net::addr_to_strings(&endpoint.addr())
+    );
     let addr = hext_net::addr_from_strings(&access.host_key, &access.addrs)?;
     let conn = match tokio::time::timeout(CONNECT_TIMEOUT, hext_net::connect(endpoint, addr)).await
     {
@@ -456,6 +463,7 @@ pub async fn connect(
             bail!("o outro computador aceitou, mas não respondeu (nem direto nem pelo relay)")
         }
     };
+    hext_net::log_paths(&conn, "visualizador");
     // The handshake proved the host holds that key.
     if check == Check::New {
         known

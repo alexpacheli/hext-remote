@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use hext_crypto::{DeviceKey, PublicKey};
-use iroh::endpoint::{IdleTimeout, QuicTransportConfig, presets};
+use iroh::endpoint::{IdleTimeout, PathEvent, QuicTransportConfig, presets};
 use iroh::{EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey};
 
 use crate::{Connection, Endpoint, NetError, Result};
@@ -143,6 +143,33 @@ pub struct PathInfo {
     /// Through the relay (otherwise direct, peer to peer).
     pub relay: bool,
     pub rtt: Duration,
+}
+
+/// Logs, until the session ends, each path it opens, closes and picks:
+/// direct (an IP address) or the relay. For seeing why a session stays on
+/// the relay.
+pub fn log_paths(conn: &Connection, side: &'static str) {
+    use futures_util::StreamExt;
+    let mut events = conn.path_events();
+    if let Some(p) = conn.paths().iter().find(|p| p.is_selected()) {
+        tracing::info!("{side}: caminho inicial {:?}", p.remote_addr());
+    }
+    tokio::spawn(async move {
+        while let Some(event) = events.next().await {
+            match event {
+                PathEvent::Opened { remote_addr, .. } => {
+                    tracing::info!("{side}: caminho aberto {remote_addr:?}");
+                }
+                PathEvent::Closed { remote_addr, .. } => {
+                    tracing::info!("{side}: caminho fechado {remote_addr:?}");
+                }
+                PathEvent::Selected { remote_addr, .. } => {
+                    tracing::info!("{side}: usando {remote_addr:?}");
+                }
+                other => tracing::debug!("{side}: {other:?}"),
+            }
+        }
+    });
 }
 
 /// The connection's selected path, if one is.

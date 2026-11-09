@@ -19,6 +19,7 @@ thiserror.workspace = true
 tokio.workspace = true
 bytes.workspace = true
 tracing.workspace = true
+futures-util.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
