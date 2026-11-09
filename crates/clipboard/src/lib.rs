@@ -156,14 +156,14 @@ impl Known {
 mod marks {
     /// Windows: formats on the clipboard, present at all. ("Clipboard Viewer
     /// Ignore": older password managers.)
-    #[cfg(any(windows, test))]
+    #[cfg(windows)]
     pub const WINDOWS: [&str; 2] = [
         "ExcludeClipboardContentFromMonitorProcessing",
         "Clipboard Viewer Ignore",
     ];
     /// Windows: a format whose value 0 keeps the content out of the history
     /// (and so out of here).
-    #[cfg(any(windows, test))]
+    #[cfg(windows)]
     pub const WINDOWS_HISTORY: &str = "CanIncludeInClipboardHistory";
     /// macOS: pasteboard types (nspasteboard.org).
     #[cfg(any(target_os = "macos", test))]
@@ -179,7 +179,7 @@ mod marks {
         names.any(|name| MAC.contains(&name))
     }
 
-    /// Whether the value of [`WINDOWS_HISTORY`] keeps the content here: `0`,
+    /// Whether the value of `WINDOWS_HISTORY` keeps the content here: `0`,
     /// or one that cannot be read (better here than out).
     #[cfg(any(windows, test))]
     pub fn history_private(value: Option<&[u8]>) -> bool {
