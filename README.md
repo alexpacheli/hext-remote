@@ -171,7 +171,7 @@ Variáveis da compilação, todas opcionais:
 | Variável | O que define | Sem ela |
 |---|---|---|
 | `HEXT_SERVER` | Servidor de sinalização | `wss://signal.hext.com.br` |
-| `HEXT_RELAY` | Relay | `https://relay.hext.com.br` |
+| `HEXT_RELAY` | Relay | `https://relay.hext.com.br`; com outro `HEXT_SERVER`, nenhum (só conexão direta) |
 | `HEXT_RELEASES` | Página das versões, onde o app procura atualizações | as Releases deste repositório |
 | `HEXT_UPDATE_KEY` | Chave pública que assina as atualizações | sem atualização automática |
 

@@ -65,7 +65,17 @@ pub(crate) const fn built_or(value: Option<&'static str>, ours: &'static str) ->
 
 /// The relay, for when the two computers cannot connect directly (ours is in
 /// São Paulo).
-const DEFAULT_RELAY: &str = built_or(option_env!("HEXT_RELAY"), "https://relay.hext.com.br");
+const DEFAULT_RELAY: &str = relay_built(option_env!("HEXT_SERVER"), option_env!("HEXT_RELAY"));
+
+/// The relay of the build: `HEXT_RELAY`; with another server and no relay of
+/// its own, none (ours admits only devices of our server); otherwise ours.
+const fn relay_built(server: Option<&'static str>, relay: Option<&'static str>) -> &'static str {
+    match (server, relay) {
+        (_, Some(relay)) if !relay.is_empty() => relay,
+        (Some(server), _) if !server.is_empty() => "off",
+        _ => "https://relay.hext.com.br",
+    }
+}
 
 /// The relay to use: the `--relay` option, except that the default relay
 /// serves only devices registered with the default server, so with another
@@ -474,7 +484,7 @@ fn parse_addr(addr: &str) -> Result<SocketAddr> {
 
 #[cfg(test)]
 mod tests {
-    use super::built_or;
+    use super::{built_or, relay_built};
 
     #[test]
     fn a_build_setting_left_empty_is_ours() {
@@ -484,6 +494,20 @@ mod tests {
         assert_eq!(
             built_or(Some("wss://signal.example.org"), "ours"),
             "wss://signal.example.org"
+        );
+    }
+
+    #[test]
+    fn another_server_does_not_use_our_relay() {
+        assert_eq!(relay_built(None, None), "https://relay.hext.com.br");
+        assert_eq!(relay_built(Some(""), Some("")), "https://relay.hext.com.br");
+        assert_eq!(relay_built(Some("wss://signal.example.org"), None), "off");
+        assert_eq!(
+            relay_built(
+                Some("wss://signal.example.org"),
+                Some("https://relay.example.org")
+            ),
+            "https://relay.example.org"
         );
     }
 }
