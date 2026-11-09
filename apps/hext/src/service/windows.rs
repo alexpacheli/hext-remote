@@ -499,23 +499,9 @@ pub fn name(change: super::NameChange) -> Result<()> {
 
 /// Turns unattended access on (with a new password) or `off`. It takes an
 /// administrator, because it holds for the whole computer. The service reads
-/// the file on each request: nothing to restart.
-pub fn password(off: bool, window: bool) -> Result<()> {
-    if window {
-        // Opened by the app (as administrator, with no console): one of its
-        // own, to type the password in, which stays until it is read.
-        own_console();
-        let done = password(off, false);
-        match &done {
-            Ok(()) => std::thread::sleep(std::time::Duration::from_secs(2)),
-            Err(e) => {
-                eprintln!("Erro: {e:#}");
-                eprintln!("Pressione Enter para fechar.");
-                let _ = std::io::stdin().read_line(&mut String::new());
-            }
-        }
-        return done;
-    }
+/// the file on each request: nothing to restart. `pipe`: started by the app
+/// (`password_from_app`), which sends the password typed in its own screen.
+pub fn password(off: bool, pipe: Option<&str>) -> Result<()> {
     require_admin()?;
     if !exists() {
         bail!("instale o serviço primeiro (HextRemote service install)");
@@ -526,42 +512,140 @@ pub fn password(off: bool, window: bool) -> Result<()> {
         println!("Acesso não assistido desligado.");
         return Ok(());
     }
-    let password = Zeroizing::new(rpassword::prompt_password("Nova senha: ")?);
-    if password.chars().count() < MIN_PASSWORD {
-        bail!("a senha precisa de ao menos {MIN_PASSWORD} caracteres");
-    }
-    let again = Zeroizing::new(rpassword::prompt_password("Repita a senha: ")?);
-    if *password != *again {
-        bail!("as senhas não são iguais");
-    }
+    let password = match pipe {
+        Some(name) => password_from_pipe(name)?,
+        None => {
+            let password = Zeroizing::new(rpassword::prompt_password("Nova senha: ")?);
+            if password.chars().count() < MIN_PASSWORD {
+                bail!("a senha precisa de ao menos {MIN_PASSWORD} caracteres");
+            }
+            let again = Zeroizing::new(rpassword::prompt_password("Repita a senha: ")?);
+            if *password != *again {
+                bail!("as senhas não são iguais");
+            }
+            password
+        }
+    };
     access.set_password(&password, &owners)?;
     println!("Acesso não assistido ligado.");
     println!("Durante a sessão, este computador mostra quem está conectado.");
     Ok(())
 }
 
-/// A console window for this process, if it has none (started by the app,
-/// not from a terminal).
-#[allow(unsafe_code)] // Win32 calls
-fn own_console() {
-    use windows::Win32::System::Console::{AllocConsole, GetConsoleWindow, SetConsoleTitleW};
-    use windows::Win32::UI::WindowsAndMessaging::{SW_SHOW, SetForegroundWindow, ShowWindow};
-    unsafe {
-        if GetConsoleWindow().is_invalid() {
-            let _ = AllocConsole();
-        }
-        let _ = SetConsoleTitleW(windows::core::w!("Hext Remote: senha de acesso"));
-        // Shown and in front, even if this was started hidden: the password
-        // is typed here, and the app waits for it.
-        let window = GetConsoleWindow();
-        if !window.is_invalid() {
-            // (Twice: started hidden, the first call takes the hidden state it was
-            // started with, whatever it asks.)
-            let _ = ShowWindow(window, SW_SHOW);
-            let _ = ShowWindow(window, SW_SHOW);
-            let _ = SetForegroundWindow(window);
+/// Turns the password off from the app: Windows asks for an administrator.
+pub async fn password_off_from_app() -> Result<()> {
+    let code =
+        tokio::task::spawn_blocking(|| crate::ui::run_elevated_wait("service password --off"))
+            .await?
+            .map_err(|_| anyhow::anyhow!("Nada mudou: é preciso permitir como administrador."))?;
+    if code != 0 {
+        bail!("A senha não mudou.");
+    }
+    Ok(())
+}
+
+/// The start of the pipes the app sends a password through.
+const PASSWORD_PIPE: &str = r"\\.\pipe\hext-password-";
+
+/// The password the app sends through `name` (`password_from_app`).
+fn password_from_pipe(name: &str) -> Result<Zeroizing<String>> {
+    use std::io::Read;
+    // Only a pipe of ours: this reads what comes, as administrator.
+    let ours = name
+        .strip_prefix(PASSWORD_PIPE)
+        .is_some_and(|nonce| nonce.len() == 32 && nonce.bytes().all(|b| b.is_ascii_hexdigit()));
+    if !ours {
+        bail!("canal inválido");
+    }
+    let mut bytes = Zeroizing::new(Vec::new());
+    std::fs::File::open(name)
+        .context("o canal do app")?
+        .take(4096)
+        .read_to_end(&mut bytes)?;
+    let password = Zeroizing::new(
+        String::from_utf8(std::mem::take(&mut *bytes)).context("a senha não é texto")?,
+    );
+    if password.chars().count() < MIN_PASSWORD {
+        bail!("a senha precisa de ao menos {MIN_PASSWORD} caracteres");
+    }
+    Ok(password)
+}
+
+/// Sets the password typed in the app's own screen. Windows asks for an
+/// administrator, and `service password --pipe` runs as one, hidden: the
+/// password goes to it through a pipe that only administrators and the
+/// system open, and only that process may be on the line. Nothing on the
+/// command line, nothing on disk.
+#[allow(unsafe_code)] // Win32 calls, on a handle this function owns
+pub async fn password_from_app(password: &str) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    use windows::Win32::System::Threading::{GetExitCodeProcess, GetProcessId, INFINITE};
+    use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    use windows::core::HSTRING;
+
+    struct Elevated(HANDLE);
+    // The handle is only a number to the kernel.
+    unsafe impl Send for Elevated {}
+    impl Drop for Elevated {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseHandle(self.0) };
         }
     }
+
+    if password.chars().count() < MIN_PASSWORD {
+        bail!("A senha precisa de ao menos {MIN_PASSWORD} caracteres.");
+    }
+    let name = pipe_name("password")?;
+    let mut pipe = restricted_pipe(&name, "D:P(A;;GA;;;SY)(A;;GA;;;BA)")?;
+    // (Off the async threads: it waits while Windows asks.)
+    let command = format!("service password --pipe {name}");
+    let elevated = tokio::task::spawn_blocking(move || {
+        let exe = HSTRING::from(std::env::current_exe()?.as_os_str());
+        let params = HSTRING::from(command);
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            lpVerb: w!("runas"),
+            lpFile: PCWSTR(exe.as_ptr()),
+            lpParameters: PCWSTR(params.as_ptr()),
+            nShow: SW_HIDE.0,
+            ..Default::default()
+        };
+        // (It fails, most often, because the user said no.)
+        if unsafe { ShellExecuteExW(&mut info) }.is_err() || info.hProcess.is_invalid() {
+            bail!("Nada mudou: é preciso permitir como administrador.");
+        }
+        anyhow::Ok(Elevated(info.hProcess))
+    })
+    .await??;
+    let pid = unsafe { GetProcessId(elevated.0) };
+    let sent = async {
+        wait_for(&pipe, pid).await?;
+        pipe.write_all(password.as_bytes()).await?;
+        pipe.flush().await?;
+        anyhow::Ok(())
+    }
+    .await;
+    drop(pipe);
+    let code = tokio::task::spawn_blocking(move || {
+        // (The whole handle, not its field: it is the one sent.)
+        let elevated = elevated;
+        let mut code = 1;
+        unsafe {
+            WaitForSingleObject(elevated.0, INFINITE);
+            let _ = GetExitCodeProcess(elevated.0, &mut code);
+        }
+        code
+    })
+    .await?;
+    if let Err(e) = sent {
+        warn!("senha pelo app: {e:#}");
+    }
+    if code != 0 {
+        bail!("A senha não mudou.");
+    }
+    Ok(())
 }
 
 /// Lists the technicians trusted without the password, or revokes them.
@@ -1494,6 +1578,33 @@ mod tests {
     use std::process::Stdio;
 
     use super::*;
+
+    #[tokio::test]
+    async fn the_password_goes_through_its_pipe_and_only_ours_is_read() {
+        use tokio::io::AsyncWriteExt;
+        let name = pipe_name("password").unwrap();
+        // (Open to everyone here: the test is the way through, not who opens it.)
+        let mut pipe = restricted_pipe(&name, "D:P(A;;GA;;;WD)").unwrap();
+        let reader = {
+            let name = name.clone();
+            tokio::task::spawn_blocking(move || password_from_pipe(&name))
+        };
+        if let Err(e) = wait_for(&pipe, std::process::id()).await {
+            panic!("{e:#}; leitor: {:?}", reader.await);
+        }
+        pipe.write_all("uma senha bem longa".as_bytes())
+            .await
+            .unwrap();
+        pipe.flush().await.unwrap();
+        drop(pipe);
+        assert_eq!(
+            reader.await.unwrap().unwrap().as_str(),
+            "uma senha bem longa"
+        );
+
+        assert!(password_from_pipe(r"\\.\pipe\outro").is_err());
+        assert!(password_from_pipe(&format!(r"{PASSWORD_PIPE}..\x")).is_err());
+    }
 
     #[test]
     fn an_update_gets_past_a_program_still_running() {

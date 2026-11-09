@@ -287,6 +287,12 @@
             <button type="button" class="primary" id="password-set">Definir a senha de acesso</button>
             <button type="button" id="password-off" hidden>Desligar a senha</button>
           </div>
+          <form class="account-panel" id="password-form" hidden>
+            <input id="password-new" class="wide" type="password" autocomplete="new-password" placeholder="Nova senha (pelo menos 10 caracteres)" aria-label="Nova senha de acesso" />
+            <input id="password-again" class="wide" type="password" autocomplete="new-password" placeholder="A mesma senha de novo" aria-label="Repita a senha de acesso" />
+            <button type="submit" class="primary">Salvar a senha</button>
+            <button type="button" class="cancel">Cancelar</button>
+          </form>
         </section>
 
         <section class="card" id="owners-section" hidden>

@@ -503,54 +503,15 @@ pub fn password(off: bool) -> Result<()> {
     Ok(())
 }
 
-/// Asks with the system's dialog, the answer hidden; `None`: cancelled.
-fn ask_hidden(prompt: &str) -> Result<Option<Zeroizing<String>>> {
-    let script = format!(
-        "text returned of (display dialog \"{prompt}\" default answer \"\" with hidden answer \
-         with title \"Hext Remote\" buttons {{\"Cancelar\", \"OK\"}} default button \"OK\" \
-         cancel button \"Cancelar\")"
-    );
-    let out = Command::new("/usr/bin/osascript")
-        .args(["-e", &script])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .context("osascript")?;
-    if !out.status.success() {
-        return Ok(None);
-    }
-    let text = Zeroizing::new(String::from_utf8(out.stdout).context("senha")?);
-    Ok(Some(Zeroizing::new(
-        text.trim_end_matches(['\r', '\n']).to_owned(),
-    )))
-}
-
-/// The Segurança tab's buttons: the password typed in the system's dialog
-/// (never in the page), or turned off. `Ok(false)`: cancelled.
-pub fn set_password_from_app(off: bool) -> Result<bool> {
+/// The Segurança tab's buttons: the password typed in the app's own screen
+/// (`Some`), or turned off (`None`).
+pub fn set_password_from_app(password: Option<&str>) -> Result<()> {
     require_installed()?;
     let (access, owners) = (access()?, owners()?);
-    if off {
-        access.password_off(&owners)?;
-        return Ok(true);
+    match password {
+        Some(password) => access.set_password(password, &owners),
+        None => access.password_off(&owners),
     }
-    let min = super::access::MIN_PASSWORD;
-    let Some(password) = ask_hidden(&format!(
-        "Nova senha de acesso (ao menos {min} caracteres):"
-    ))?
-    else {
-        return Ok(false);
-    };
-    if password.chars().count() < min {
-        bail!("a senha precisa de ao menos {min} caracteres");
-    }
-    let Some(again) = ask_hidden("Repita a senha de acesso:")? else {
-        return Ok(false);
-    };
-    if *password != *again {
-        bail!("as senhas não são iguais");
-    }
-    access.set_password(&password, &owners)?;
-    Ok(true)
 }
 
 /// `service technicians`.

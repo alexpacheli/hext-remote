@@ -524,23 +524,48 @@ function startAccount() {
     };
     setTimeout(ask, 5000);
   });
-  on("password-set", async () => {
-    showStatus(
-      onMac
-        ? "Digite a senha na janela que abrir."
-        : "Permita como administrador e digite a senha na janela que abrir.",
-    );
+  // The password is typed here; on Windows, saving it asks for an
+  // administrator (the system's prompt), and nothing else opens.
+  const passwordForm = $("password-form");
+  const closePasswordForm = () => {
+    passwordForm.reset();
+    passwordForm.hidden = true;
+    $("password-set").disabled = false;
+  };
+  on("password-set", () => {
+    passwordForm.hidden = false;
+    $("password-set").disabled = true;
+    $("password-new").focus();
+  });
+  passwordForm.querySelector(".cancel").addEventListener("click", closePasswordForm);
+  passwordForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const password = $("password-new").value;
+    if ([...password].length < 10) {
+      showStatus("A senha precisa de pelo menos 10 caracteres.", true);
+      return;
+    }
+    if (password !== $("password-again").value) {
+      showStatus("As duas senhas não são iguais.", true);
+      return;
+    }
+    const save = passwordForm.querySelector("button[type=submit]");
+    save.disabled = true;
+    showStatus(onMac ? "Salvando a senha…" : "Permita como administrador para salvar a senha.");
     try {
-      await invoke("password_set", { off: false });
+      await invoke("password_set", { password });
+      closePasswordForm();
       showStatus("Senha de acesso definida.");
     } catch (message) {
       showStatus(String(message), true);
+    } finally {
+      save.disabled = false;
     }
   });
   on("password-off", async () => {
     if (!confirm("Desligar a senha de acesso? Todo acesso volta a pedir aceite, e quem entrou com ela perde o acesso sem aceite.")) return;
     try {
-      await invoke("password_set", { off: true });
+      await invoke("password_set", { password: null });
       showStatus("Senha de acesso desligada.");
     } catch (message) {
       showStatus(String(message), true);
