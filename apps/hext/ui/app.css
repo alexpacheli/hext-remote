@@ -632,7 +632,12 @@ form.rename {
   color: var(--muted);
   font-size: 16px;
   line-height: 1;
-  opacity: 0.55;
+  opacity: 0;
+}
+
+.tiles li:hover .forget,
+.forget:focus-visible {
+  opacity: 1;
 }
 
 .forget:hover,
@@ -701,6 +706,10 @@ form.rename {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+#password-form {
+  margin-top: 16px;
 }
 
 .account-panel .wide,

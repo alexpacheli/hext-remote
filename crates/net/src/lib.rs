@@ -14,7 +14,7 @@ pub mod video;
 
 pub use endpoint::{
     EndpointConfig, PathInfo, RelaySwitch, addr_from_strings, addr_to_strings, bind, connect,
-    endpoint_id, path, remote_key,
+    endpoint_id, log_paths, path, remote_key,
 };
 pub use session::{
     Admission, ControlStream, FramedRecv, FramedSend, PasswordLogin, accept_uni, client_handshake,

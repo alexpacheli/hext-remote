@@ -285,7 +285,10 @@ pub async fn accept(
                 tokio::spawn(async move {
                     let remote = format!("{:?}", incoming.remote_addr());
                     let result = match incoming.await {
-                        Ok(conn) => host::serve(conn, config).await,
+                        Ok(conn) => {
+                            hext_net::log_paths(&conn, "host");
+                            host::serve(conn, config).await
+                        }
                         Err(e) => Err(NetError::from(e).into()),
                     };
                     match result {

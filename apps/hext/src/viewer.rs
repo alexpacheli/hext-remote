@@ -1841,6 +1841,7 @@ async fn reach(
             let conn = hext_net::connect(endpoint, host)
                 .await
                 .with_context(|| format!("falha ao conectar em {addr}"))?;
+            hext_net::log_paths(&conn, "visualizador");
             Ok((conn, code, None))
         }
     }
