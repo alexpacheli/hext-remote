@@ -161,9 +161,18 @@ struct UpdateView {
 
 /// How often the interface looks for a newer version.
 const UPDATE_CHECK: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+/// How often the installed Mac app, which installs it by itself, looks (as
+/// the Windows service does).
+#[cfg(target_os = "macos")]
+const SELF_UPDATE_CHECK: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+/// After a failed install, before the next try.
+#[cfg(target_os = "macos")]
+const SELF_UPDATE_RETRY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 /// Looks for a newer version now and then, and shows it. Not with the
-/// Windows service: it installs the new one by itself.
+/// Windows service: it installs the new one by itself. Neither does the
+/// installed Mac app, signed and where it may replace itself: it installs it
+/// between sessions and opens again.
 fn watch_updates(app: AppHandle) {
     if !crate::update::enabled() {
         return;
@@ -171,9 +180,36 @@ fn watch_updates(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         loop {
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+            let mut wait = UPDATE_CHECK;
             if !(cfg!(windows) && managed(&app)) {
                 match crate::update::check().await {
                     Ok(found) => {
+                        #[cfg(target_os = "macos")]
+                        if managed(&app) && crate::service::updatable_app().is_some() {
+                            wait = SELF_UPDATE_CHECK;
+                            if let Some(manifest) = &found {
+                                if !idle(&app) {
+                                    tracing::info!("versão {}: depois da sessão", manifest.version);
+                                } else {
+                                    match crate::service::update_app(manifest).await {
+                                        // launchd opens the new one (the agent
+                                        // restarts when it exits with a failure).
+                                        Ok(()) => {
+                                            tracing::info!(
+                                                "atualizado para {}: reabrindo",
+                                                manifest.version
+                                            );
+                                            std::process::exit(1);
+                                        }
+                                        Err(e) => {
+                                            warn!("atualização para {}: {e:#}", manifest.version);
+                                            wait = SELF_UPDATE_RETRY;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         let update = found.map(|m| UpdateView {
                             page: m.page(),
                             version: m.version,
@@ -184,9 +220,22 @@ fn watch_updates(app: AppHandle) {
                     Err(e) => warn!("atualização: {e:#}"),
                 }
             }
-            tokio::time::sleep(UPDATE_CHECK).await;
+            tokio::time::sleep(wait).await;
         }
     });
+}
+
+/// Nothing going on that an update would cut: no session on this computer,
+/// no computer open from here.
+#[cfg(target_os = "macos")]
+fn idle(app: &AppHandle) -> bool {
+    let shared = app.state::<Shared>();
+    // (One lock at a time.)
+    let quiet = {
+        let view = shared.view.lock().expect("lock");
+        view.session.is_none() && view.viewers.is_empty()
+    };
+    quiet && shared.hub.lock().expect("lock").is_none()
 }
 
 /// Installs the Hext Remote on this computer, from the portable app.

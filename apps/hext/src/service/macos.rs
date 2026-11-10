@@ -296,6 +296,122 @@ fn unload() {
     let _ = launchctl(&["bootout", &format!("{}/{LABEL}", domain())]);
 }
 
+// ---------------------------------------------------------------- updates
+
+/// The app this one runs from, if it can update itself: installed, signed
+/// with a Developer ID (a new one signed alike keeps the privacy settings
+/// the user gave), in a folder this user may write (Applications, for an
+/// administrator).
+pub fn updatable_app() -> Option<PathBuf> {
+    if !installed() {
+        return None;
+    }
+    let app = signed_bundle(&std::env::current_exe().ok()?)?;
+    may_write(app.parent()?).then_some(app)
+}
+
+/// Whether this user may make and remove things in `dir`.
+fn may_write(dir: &Path) -> bool {
+    let probe = dir.join(format!(".hext-update-{}", std::process::id()));
+    std::fs::create_dir(&probe).is_ok() && std::fs::remove_dir(&probe).is_ok()
+}
+
+/// The team that signed `app` (`TeamIdentifier`), as `codesign` says.
+fn team_of(app: &Path) -> Option<String> {
+    let details = Command::new("/usr/bin/codesign")
+        .arg("-dv")
+        .arg(app)
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&details.stderr)
+        .lines()
+        .find_map(|line| line.strip_prefix("TeamIdentifier="))
+        .map(str::trim)
+        .filter(|team| !team.is_empty() && *team != "not set")
+        .map(str::to_owned)
+}
+
+/// Puts version `manifest` in place of this app (see [`updatable_app`]):
+/// the signed list's app, checked against its hash on the way down and
+/// then against this app's signer. The program goes on running from the
+/// old files until it exits; launchd opens the new one after that.
+pub async fn update_app(manifest: &crate::update::Manifest) -> Result<()> {
+    let app = updatable_app().context("este app não se atualiza sozinho")?;
+    let dir = app.parent().context("pasta do app")?.to_owned();
+    let work = data_dir()?.join("update");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).with_context(|| work.display().to_string())?;
+    let result = replace_app(manifest, &app, &dir, &work).await;
+    let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
+async fn replace_app(
+    manifest: &crate::update::Manifest,
+    app: &Path,
+    dir: &Path,
+    work: &Path,
+) -> Result<()> {
+    let archive = crate::update::download(manifest, "macos-app", work).await?;
+    let unpacked = work.join("app");
+    std::fs::create_dir_all(&unpacked)?;
+    let status = Command::new("/usr/bin/tar")
+        .arg("-xzf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&unpacked)
+        .status()
+        .context("tar")?;
+    if !status.success() {
+        bail!("tar: {status}");
+    }
+    let new = unpacked.join("Hext Remote.app");
+    // Signed whole, and by whoever signed this one: anyone else's would not
+    // be ours, nor keep the permissions.
+    let verified = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(&new)
+        .output()
+        .context("codesign")?;
+    if !verified.status.success() {
+        bail!(
+            "a assinatura da versão nova não confere: {}",
+            String::from_utf8_lossy(&verified.stderr).trim()
+        );
+    }
+    let mine = team_of(app).context("sem a equipe que assinou este app")?;
+    if team_of(&new).as_deref() != Some(mine.as_str()) {
+        bail!("a versão nova foi assinada por outra equipe");
+    }
+    // Copied next to it, then in its place: never a moment without the app.
+    let next = dir.join(".Hext Remote.new.app");
+    let old = dir.join(".Hext Remote.old.app");
+    let _ = std::fs::remove_dir_all(&next);
+    let _ = std::fs::remove_dir_all(&old);
+    let copied = Command::new("/usr/bin/ditto")
+        .arg(&new)
+        .arg(&next)
+        .status()
+        .context("ditto")?;
+    if !copied.success() {
+        let _ = std::fs::remove_dir_all(&next);
+        bail!("ditto: {copied}");
+    }
+    std::fs::rename(app, &old).with_context(|| app.display().to_string())?;
+    if let Err(e) = std::fs::rename(&next, app) {
+        let _ = std::fs::rename(&old, app);
+        let _ = std::fs::remove_dir_all(&next);
+        return Err(e).with_context(|| app.display().to_string());
+    }
+    let _ = std::fs::remove_dir_all(&old);
+    audit(&format!(
+        "atualização automática: {} → {}",
+        crate::APP_VERSION,
+        manifest.version
+    ));
+    Ok(())
+}
+
 pub fn install(name: Option<String>) -> Result<()> {
     if getuid() == 0 {
         bail!(

@@ -24,6 +24,8 @@ mod windows;
 
 #[cfg(windows)]
 pub use banner::Banner;
+#[cfg(target_os = "macos")]
+pub use macos::{updatable_app, update_app};
 
 /// Above this size a log starts over (the previous one kept as `.old`).
 const MAX_LOG: u64 = 4 << 20;
