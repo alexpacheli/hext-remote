@@ -261,6 +261,10 @@ pub enum Control {
     /// to a host that offers one ([`Displays::virtual_display`]): an older
     /// host does not know this message.
     VirtualDisplay { on: bool },
+    /// Client → host: the virtual monitor's next size, round through the
+    /// ones the host offers. Only when it says it is `resizable`
+    /// ([`VirtualDisplay::On`]).
+    NextVirtualSize,
 }
 
 /// A message of the chat. It comes from the other computer, so what cannot be
@@ -340,8 +344,14 @@ pub enum VirtualDisplay {
     None,
     /// It can turn one on ([`Control::VirtualDisplay`]).
     Off,
-    /// It is on, as display `index`.
-    On { index: u8 },
+    /// It is on, as display `index`, at `width`×`height`. `resizable`: the
+    /// Hext turned it on, and [`Control::NextVirtualSize`] changes its size.
+    On {
+        index: u8,
+        width: u16,
+        height: u16,
+        resizable: bool,
+    },
 }
 
 /// What the receiving side did with a file.
@@ -534,10 +544,16 @@ mod tests {
             Control::Displays(Displays {
                 count: 3,
                 current: 1,
-                virtual_display: VirtualDisplay::On { index: 2 },
+                virtual_display: VirtualDisplay::On {
+                    index: 2,
+                    width: 1920,
+                    height: 1080,
+                    resizable: true,
+                },
             }),
             Control::SelectDisplay { index: 2 },
             Control::VirtualDisplay { on: true },
+            Control::NextVirtualSize,
             Control::Chat {
                 text: ChatText::new("Pode reiniciar?").unwrap(),
             },
@@ -590,7 +606,12 @@ mod tests {
         let new = encode(&Displays {
             count: 3,
             current: 2,
-            virtual_display: VirtualDisplay::On { index: 2 },
+            virtual_display: VirtualDisplay::On {
+                index: 2,
+                width: 1280,
+                height: 720,
+                resizable: false,
+            },
         })
         .unwrap();
         let seen: OldDisplays = decode(&new).unwrap();

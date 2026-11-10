@@ -47,6 +47,8 @@ pub enum ToAgent {
     Indicator(Option<Indicator>),
     /// Turn the virtual monitor on (and stream it) or off.
     VirtualDisplay(bool),
+    /// The virtual monitor's next size.
+    NextVirtualSize,
 }
 
 /// The session, as the agent shows it.
@@ -435,6 +437,10 @@ impl Screen for AgentScreen {
         self.hub.send(ToAgent::VirtualDisplay(on));
     }
 
+    fn next_virtual_size(&self) {
+        self.hub.send(ToAgent::NextVirtualSize);
+    }
+
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         Some(self.displays.clone())
     }
@@ -545,6 +551,11 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
             ToAgent::VirtualDisplay(on) => {
                 if let Some((screen, _)) = &screen {
                     screen.set_virtual_display(on);
+                }
+            }
+            ToAgent::NextVirtualSize => {
+                if let Some((screen, _)) = &screen {
+                    screen.next_virtual_size();
                 }
             }
             ToAgent::Stop => stop(&mut screen).await,

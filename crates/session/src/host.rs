@@ -234,6 +234,8 @@ pub trait Screen: Send {
     /// Turns the virtual monitor on and streams it, or turns it off (only
     /// one this session turned on). Where there is none, nothing changes.
     fn set_virtual_display(&self, _on: bool) {}
+    /// The virtual monitor's next size (only one this session turned on).
+    fn next_virtual_size(&self) {}
     /// The displays there are and the one streamed; `None`: one, and no news.
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         None
@@ -295,6 +297,7 @@ impl Desktop for LocalDesktop {
                 area: Mutex::new(Area::default()),
                 wanted: Mutex::new(None),
                 virtual_wanted: Mutex::new(None),
+                virtual_next: AtomicBool::new(false),
                 listed: Mutex::new(None),
                 displays: watch::Sender::default(),
             });
@@ -464,6 +467,10 @@ impl Screen for LocalScreen {
         *self.shared.virtual_wanted.lock().expect("lock") = Some(on);
     }
 
+    fn next_virtual_size(&self) {
+        self.shared.virtual_next.store(true, Ordering::Relaxed);
+    }
+
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         Some(self.shared.displays.subscribe())
     }
@@ -501,6 +508,8 @@ struct Shared {
     wanted: Mutex<Option<usize>>,
     /// The viewer asked for the virtual monitor on, or off.
     virtual_wanted: Mutex<Option<bool>>,
+    /// The viewer asked for the virtual monitor's next size.
+    virtual_next: AtomicBool,
     /// The monitors as last checked, until the capture takes them.
     listed: Mutex<Option<Vec<Display>>>,
     /// What the viewer is told.
@@ -514,6 +523,8 @@ struct Layout {
     current: Option<usize>,
     /// This computer can turn on a virtual monitor.
     virtual_offered: bool,
+    /// The virtual monitor is on because of this session: its size changes.
+    virtual_resizable: bool,
 }
 
 impl Layout {
@@ -524,9 +535,15 @@ impl Layout {
             current: self.current.unwrap_or(0).min(u8::MAX.into()) as u8,
             virtual_display: match self.virtual_index() {
                 _ if !self.virtual_offered => VirtualDisplay::None,
-                Some(index) => VirtualDisplay::On {
-                    index: index.min(u8::MAX.into()) as u8,
-                },
+                Some(index) => {
+                    let rect = self.displays[index].rect;
+                    VirtualDisplay::On {
+                        index: index.min(u8::MAX.into()) as u8,
+                        width: rect.width.min(u16::MAX.into()) as u16,
+                        height: rect.height.min(u16::MAX.into()) as u16,
+                        resizable: self.virtual_resizable,
+                    }
+                }
                 None => VirtualDisplay::Off,
             },
         }
@@ -971,6 +988,13 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                         screen.set_virtual_display(on);
                     }
                 }
+                Ok(Control::NextVirtualSize) => {
+                    if session.permissions.control
+                        && let Some(screen) = screen.lock().expect("lock").as_ref()
+                    {
+                        screen.next_virtual_size();
+                    }
+                }
                 // It takes no permission either: the host's user is who reads
                 // it, and who can end the session.
                 Ok(Control::Chat { text }) => {
@@ -1184,6 +1208,7 @@ fn open_first(
         displays,
         current,
         virtual_offered: false,
+        virtual_resizable: false,
     };
     Ok((capturer, layout))
 }
@@ -1267,6 +1292,11 @@ impl VirtualSwitch {
             }
             None
         }
+    }
+
+    /// The virtual monitor is on because of this session.
+    fn owns(&self) -> bool {
+        self.lease.as_ref().is_some_and(Lease::owns)
     }
 
     fn wait(&mut self, on: bool) {
@@ -1377,6 +1407,21 @@ fn fps(config: &CaptureSettings) -> u32 {
     config.encoder.max_fps.round() as u32
 }
 
+/// The viewer asked for the virtual monitor's next size: only one this
+/// session turned on changes. The list of monitors then shows the new size,
+/// and the capture follows it there.
+fn next_virtual_size(layout: &Layout, virtual_switch: &VirtualSwitch) {
+    let Some(index) = layout.virtual_index().filter(|_| virtual_switch.owns()) else {
+        return;
+    };
+    let display = &layout.displays[index];
+    let size = virtual_display::next_size((display.rect.width, display.rect.height));
+    match virtual_display::set_size(&display.id, size) {
+        Ok(()) => info!("monitor virtual: {}x{}", size.0, size.1),
+        Err(e) => warn!("monitor virtual: {e}"),
+    }
+}
+
 /// Sends the mouse where the capturer is.
 fn aim_input(shared: &Shared, capturer: &dyn Capturer) {
     let rect = capturer.rect();
@@ -1413,6 +1458,10 @@ fn follow_displays(
         news = true;
         asked = arrived.or(asked);
     }
+    if shared.virtual_next.swap(false, Ordering::Relaxed) {
+        next_virtual_size(layout, virtual_switch);
+    }
+    layout.virtual_resizable = virtual_switch.owns();
     let gone = layout.current.is_none().then_some(0);
     // The same display, somewhere else on the desktop: not every capture
     // notices, and the mouse must go there.
@@ -1504,6 +1553,7 @@ fn capture_loop(
     let (mut capturer, mut layout, mut encoder) = match opened {
         Ok(mut opened) => {
             opened.1.virtual_offered = virtual_offered;
+            opened.1.virtual_resizable = virtual_switch.owns();
             shared.displays.send_replace(opened.1.view());
             let _ = started.send(Ok(()));
             opened
@@ -1828,6 +1878,7 @@ mod tests {
             displays: ids.iter().map(|id| monitor(id)).collect(),
             current: Some(current),
             virtual_offered: false,
+            virtual_resizable: false,
         }
     }
 
@@ -1878,7 +1929,12 @@ mod tests {
             Displays {
                 count: 2,
                 current: 0,
-                virtual_display: VirtualDisplay::On { index: 1 },
+                virtual_display: VirtualDisplay::On {
+                    index: 1,
+                    width: 0,
+                    height: 0,
+                    resizable: false,
+                },
             }
         );
     }
@@ -1968,6 +2024,7 @@ mod tests {
             area: Mutex::new(Area::default()),
             wanted: Mutex::new(None),
             virtual_wanted: Mutex::new(None),
+            virtual_next: AtomicBool::new(false),
             listed: Mutex::new(None),
             displays: watch::Sender::default(),
         });
