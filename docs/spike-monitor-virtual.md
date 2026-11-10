@@ -44,14 +44,18 @@ Logo depois, um monitor novo aparece (a área de trabalho aumenta). Anote se apa
 .\vdd-spike.exe enable
 .\vdd-spike.exe capture
 .\vdd-spike.exe cycle 5
+.\vdd-spike.exe enable
+.\vdd-spike.exe resolution 2 1920x1080
+.\vdd-spike.exe capture
 ```
 
 Anote: o tempo de "monitor apareceu no DXGI" e se os 5 ciclos passam. Se `capture` disser "SEM IMAGEM", arraste
-uma janela para o monitor virtual e repita.
+uma janela para o monitor virtual e repita. (`2` é a posição do monitor virtual na lista do `status`; `modes 2`
+mostra as resoluções que ele aceita.)
 
 **4. Sem monitor, com o Hext 0.6.5** (o caso real):
 
-1. `.\vdd-spike.exe enable` e desligue o cabo do monitor físico.
+1. `.\vdd-spike.exe enable`, `.\vdd-spike.exe resolution 2 1920x1080` e desligue o cabo do monitor físico.
 2. Do Mac, conecte com o Hext: a imagem aparece? Em que resolução?
 3. Na sessão, `Win+L`: aparece a tela de bloqueio? Entre com a senha pela sessão.
 4. `Ctrl+Alt+Del` pelo menu do visualizador: aparece?
@@ -117,3 +121,12 @@ visualizador? Troque para ele: a imagem aparece?
 | `vd-captura.png` | |
 | Hext vê e mostra o monitor virtual | |
 | Mac sem monitor (SSH) | |
+
+## O que já se sabe (10/11/2026, PC de desenvolvimento)
+
+- O script do projeto instalou o driver 25.7.23; o dispositivo aparece como "Virtual Display Driver".
+- `enable` pela SetupAPI: o monitor aparece no DXGI em **284 ms**; `disable` o remove. Sem o pipe do driver.
+- A captura do Hext abre em 98 ms e recebe imagens (41 em 3 s).
+- O monitor virtual nasce em **800×600 a 30 Hz** (o primeiro modo da lista). Aceita 800×600, 1280×720, 1366×768,
+  1920×1080 e 2560×1440, de 30 a 165 Hz. O Hext precisa definir 1920×1080 a 60 Hz ao ligar.
+- O `vdd_settings.xml` não está em `C:\VirtualDisplayDriver\` nesta versão (onde fica: a confirmar).
