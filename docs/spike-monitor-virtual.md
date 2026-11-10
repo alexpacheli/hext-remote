@@ -151,3 +151,5 @@ visualizador? Troque para ele: a imagem aparece?
   está vazia" só pega o computador **sem cabo** de monitor; com um monitor ligado no cabo e desligado no botão, o
   Hext não sabe que ninguém está vendo. Por isso o monitor virtual precisa também ser uma opção do técnico no
   visualizador ("Monitor virtual"), não só automático.
+- Com o arquivo de configuração e os dois monitores desligados no botão, a sessão no monitor virtual roda normal,
+  com **um cursor só**: o cursor por hardware resolve o cursor duplicado.
