@@ -59,6 +59,10 @@ Os instaladores ficam em [Releases](https://github.com/alexpacheli/hext-remote/r
 | macOS | `HextRemote-<versão>.dmg` | Arraste o Hext Remote para Aplicativos. |
 | Linux | `.deb`, `.rpm` ou `.AppImage` | Por enquanto, linha de comando (`hext-remote`). |
 
+Free code signing on Windows provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/). Veja a [política de assinatura](#code-signing-policy) e a
+[privacidade](#privacy-policy).
+
 **Primeiro atendimento:**
 
 1. No computador do cliente, abra o Hext Remote. A tela inicial mostra o **ID** dele.
@@ -225,14 +229,25 @@ app is signed with an Apple Developer ID and notarized.
   (`.github/workflows/release.yml`) from a version tag. Nothing built on a developer's machine is signed.
 - **Team:** committer and approver: [Alex Pacheli](https://github.com/alexpacheli). Every release is
   approved by hand: the pipeline opens a draft, and only a maintainer publishes it.
-- **Privacy:** this program sends data only where its features need it:
-  - the Hext signaling server: the device's ID, public key, name and version, to find the other computer;
-  - with an account (optional): the e-mail and the sign-in data, the account's signed list of devices and
-    computers and, for a computer bound to the account, its access log (who connected and when), shown on
-    the account's Activity screen. Verification codes are sent to that e-mail through an e-mail provider;
-  - the relay: the session itself, end-to-end encrypted, when a direct connection is not possible;
-  - GitHub: update checks and downloads.
+- **Privacy:** see the [privacy policy](#privacy-policy) below.
 
-  Nobody connects to a computer without the user's acceptance on screen, an unattended password the
-  computer's owner set, or a device of an account the owner bound. Every session is shown on screen while it
-  lasts, and the installed app keeps a local log of them.
+## Privacy policy
+
+This program sends data only where its features need it:
+
+- the Hext signaling server: the device's ID, public key, name and version, to find the other computer;
+- with an account (optional): the e-mail and the sign-in data, the account's signed list of devices and
+  computers and, for a computer bound to the account, its access log (who connected and when), shown on
+  the account's Activity screen. Verification codes are sent to that e-mail through an e-mail provider;
+- the relay: the session itself, end-to-end encrypted, when a direct connection is not possible (the relay
+  cannot see its content);
+- GitHub: update checks and downloads.
+
+The screen, the keyboard, the files and the clipboard of a session go only to the other computer, end-to-end
+encrypted. Nothing is sold or shared with third parties, and there is no advertising or analytics. Accounts
+not confirmed by e-mail are deleted within 24 hours; an account can be deleted at any time by asking in
+[Issues](https://github.com/alexpacheli/hext-remote/issues).
+
+Nobody connects to a computer without the user's acceptance on screen, an unattended password the computer's
+owner set, or a device of an account the owner bound. Every session is shown on screen while it lasts, and
+the installed app keeps a local log of them.
