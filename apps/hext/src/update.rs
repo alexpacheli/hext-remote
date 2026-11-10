@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// project that publishes its own).
 const RELEASES: &str = crate::built_or(
     option_env!("HEXT_RELEASES"),
-    "https://github.com/alexpacheli/remote-control/releases",
+    "https://github.com/alexpacheli/hext-remote/releases",
 );
 
 /// The public half of the key that signs the releases (64 hex digits).

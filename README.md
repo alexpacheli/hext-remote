@@ -50,7 +50,7 @@ Detalhes em [ARCHITECTURE.md](ARCHITECTURE.md) e no plano de cada fase ([F3](doc
 
 ## Baixar e usar
 
-Os instaladores ficam em [Releases](https://github.com/alexpacheli/remote-control/releases):
+Os instaladores ficam em [Releases](https://github.com/alexpacheli/hext-remote/releases):
 
 | Sistema | Arquivo | Observação |
 |---|---|---|
@@ -100,8 +100,8 @@ Com o [Docker](https://docs.docker.com/engine/install/) 26 ou mais novo instalad
 pasta do próprio certificado, com `subpath`):
 
 ```sh
-git clone https://github.com/alexpacheli/remote-control.git
-cd remote-control/deploy/docker
+git clone https://github.com/alexpacheli/hext-remote.git
+cd hext-remote/deploy/docker
 cp .env.example .env
 nano .env        # HEXT_DOMAIN e HEXT_RELAY_TOKEN (gere com: openssl rand -hex 32)
 docker compose up -d --build
@@ -124,8 +124,8 @@ Sem ele, os computadores ganham IDs novos.
 Num Debian ou Ubuntu, com o [Rust](https://rustup.rs) instalado:
 
 ```sh
-git clone https://github.com/alexpacheli/remote-control.git
-cd remote-control
+git clone https://github.com/alexpacheli/hext-remote.git
+cd hext-remote
 HEXT_DOMAIN=<domínio> ./deploy/install.sh
 ```
 
@@ -198,7 +198,7 @@ Variáveis da compilação, todas opcionais:
 
 ## Contribuir
 
-Sugestões e relatos de problemas são bem-vindos em [Issues](https://github.com/alexpacheli/remote-control/issues).
+Sugestões e relatos de problemas são bem-vindos em [Issues](https://github.com/alexpacheli/hext-remote/issues).
 Para enviar uma mudança, abra um pull request. O CI roda nos três sistemas:
 
 ```sh

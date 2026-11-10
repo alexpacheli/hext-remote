@@ -27,7 +27,7 @@
 
     <Icon Id="HextRemote.ico" SourceFile="$(var.Icon)" />
     <Property Id="ARPPRODUCTICON" Value="HextRemote.ico" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/alexpacheli/remote-control" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/alexpacheli/hext-remote" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Hext Remote">
