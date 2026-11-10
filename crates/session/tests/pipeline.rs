@@ -42,6 +42,7 @@ async fn start_host() -> (
         access_code: Some(CODE.into()),
         session_codes: Default::default(),
         desktop: Arc::new(LocalDesktop {
+            virtual_display: false,
             display: 0,
             test_pattern: true,
             encoder: EncoderSettings::default(),
@@ -168,6 +169,7 @@ async fn host_ending_the_session_is_not_an_error() {
         access_code: Some(CODE.into()),
         session_codes: Default::default(),
         desktop: Arc::new(LocalDesktop {
+            virtual_display: false,
             display: 0,
             test_pattern: true,
             encoder: EncoderSettings::default(),

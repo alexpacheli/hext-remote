@@ -79,6 +79,9 @@ pub struct Stream {
     pub display: usize,
     pub test_pattern: bool,
     pub encoder: EncoderSettings,
+    /// The session asked for the virtual monitor (the next agent turns it
+    /// on too).
+    pub virtual_display: bool,
 }
 
 impl Stream {
@@ -87,6 +90,7 @@ impl Stream {
             display: self.display,
             test_pattern: self.test_pattern,
             encoder: self.encoder,
+            virtual_display: self.virtual_display,
         }
     }
 }
@@ -424,6 +428,10 @@ impl Screen for AgentScreen {
     }
 
     fn set_virtual_display(&self, on: bool) {
+        // Kept for an agent that is yet to come, as the display is.
+        if let Some(session) = &mut self.hub.state.lock().expect("lock").session {
+            session.stream.virtual_display = on;
+        }
         self.hub.send(ToAgent::VirtualDisplay(on));
     }
 
@@ -589,6 +597,7 @@ mod tests {
             display: 0,
             test_pattern: true,
             encoder: EncoderSettings::default(),
+            virtual_display: false,
         }
     }
 

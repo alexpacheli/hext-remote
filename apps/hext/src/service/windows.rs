@@ -1369,6 +1369,7 @@ async fn serve() -> Result<()> {
             display: 0,
             test_pattern: false,
             encoder,
+            virtual_display: false,
         })),
         presence: Some(Arc::new(Indicators {
             ui: ui.clone(),

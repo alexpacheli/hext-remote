@@ -149,6 +149,12 @@ virtual ligado (por ele ou pelo técnico), a sessão começa nele.
    caem) e `Start-Service HextRemote`. No `service.log`: "monitor virtual: desligado (ficou ligado de uma sessão
    anterior)".
 7. Sem permissão de controle (só ver): o **+** não aparece e Ctrl+Alt+0 vai para o computador remoto.
+8. Virtual ligado pelo dono (`vdd-spike.exe enable` antes de conectar, com os monitores ligados): a sessão abre
+   no monitor principal, e o virtual é só mais um número na barra; no fim da sessão, ele continua ligado.
+
+O **+** só aparece com o Hext instalado como serviço (é o agent, como SYSTEM, que pode ligar o dispositivo, e a
+pasta do serviço guarda a marca); o app avulso não oferece o monitor virtual. Um dispositivo com outro problema
+além de "desabilitado" (código 10, por exemplo) não é ligado: o `agent.log` diz o código.
 
 ## Testes automáticos
 

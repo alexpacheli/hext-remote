@@ -24,16 +24,44 @@ pub struct Lease(());
 /// How many leases there are, and whether the first found the monitor off.
 static LEASES: Mutex<(usize, bool)> = Mutex::new((0, false));
 
-/// Whether this computer can have a virtual monitor (the driver is installed).
+/// The driver's device, as found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    On,
+    /// Disabled: off, and the Hext may turn it on.
+    Off,
+    /// Some other problem (`CM_PROB_*`): it would not come on.
+    Broken(u32),
+}
+
+/// Whether this process can turn a virtual monitor on: the driver is
+/// installed, this process may change devices (an administrator: the agent
+/// of the service, as SYSTEM), and the service's folder is there to keep the
+/// mark (what is turned on is turned off even if this process dies).
 pub fn available() -> bool {
-    imp::installed()
+    imp::can_change() && imp::installed()
+}
+
+/// Whether the virtual monitor that is on was turned on by the Hext (this
+/// process, or one before it that left the mark), and not by the computer's
+/// owner.
+pub fn turned_on_by_hext() -> bool {
+    LEASES.lock().expect("lock").1 || imp::marked()
 }
 
 /// Turns the virtual monitor on (if it is not), for as long as the lease lives.
 pub fn turn_on() -> Result<Lease, CaptureError> {
     let mut leases = LEASES.lock().expect("lock");
     if leases.0 == 0 {
-        let was_on = imp::is_on()?;
+        let was_on = match imp::state()? {
+            State::On => true,
+            State::Off => false,
+            State::Broken(problem) => {
+                return Err(CaptureError::Platform(format!(
+                    "monitor virtual: o dispositivo não funciona (código {problem} no Gerenciador de Dispositivos)"
+                )));
+            }
+        };
         if !was_on {
             imp::mark(true);
             if let Err(e) = imp::set_on(true) {
@@ -67,6 +95,14 @@ impl Drop for Lease {
     }
 }
 
+impl Lease {
+    /// Whether letting go of the last lease turns the monitor off (the Hext
+    /// turned it on).
+    pub fn owns(&self) -> bool {
+        LEASES.lock().expect("lock").1
+    }
+}
+
 /// Turns off a virtual monitor the Hext left on (a service or agent that
 /// died during a session). For the service, when it starts.
 pub fn turn_off_leftover() {
@@ -89,15 +125,20 @@ mod imp {
 
     use windows::Win32::Devices::DeviceAndDriverInstallation::{
         CM_DEVNODE_STATUS_FLAGS, CM_Get_DevNode_Status, CM_PROB, CR_SUCCESS, DI_FUNCTION,
-        DICS_DISABLE, DICS_ENABLE, DICS_FLAG_GLOBAL, DIF_PROPERTYCHANGE, DIGCF_ALLCLASSES,
+        DICS_DISABLE, DICS_ENABLE, DICS_FLAG_GLOBAL, DIF_PROPERTYCHANGE, GUID_DEVCLASS_DISPLAY,
         HDEVINFO, SP_CLASSINSTALL_HEADER, SP_DEVINFO_DATA, SP_PROPCHANGE_PARAMS, SPDRP_HARDWAREID,
         SetupDiCallClassInstaller, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
         SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW, SetupDiSetClassInstallParamsW,
     };
     use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
+    use windows::Win32::UI::Shell::IsUserAnAdmin;
     use windows::core::{HSTRING, PCWSTR};
 
+    use super::State;
     use crate::CaptureError;
+
+    /// Disabled (`CM_PROB_DISABLED`).
+    const PROBLEM_DISABLED: u32 = 22;
 
     /// The driver's device (its INF installs `Root\MttVDD`).
     const HARDWARE_ID: &str = "root\\mttvdd";
@@ -189,11 +230,15 @@ mod imp {
         String::from_utf16_lossy(&wide[..end])
     }
 
-    /// The driver's devices (one, unless installed twice).
+    /// The driver's devices (one, unless installed twice), among the display
+    /// adapters (its class): not every device of the computer.
     fn devices() -> Result<(List, Vec<SP_DEVINFO_DATA>), CaptureError> {
+        let flags = Default::default();
         let list = List(
-            unsafe { SetupDiGetClassDevsW(None, PCWSTR::null(), None, DIGCF_ALLCLASSES) }
-                .map_err(|e| CaptureError::Platform(format!("SetupAPI: {e}")))?,
+            unsafe {
+                SetupDiGetClassDevsW(Some(&GUID_DEVCLASS_DISPLAY), PCWSTR::null(), None, flags)
+            }
+            .map_err(|e| CaptureError::Platform(format!("SetupAPI: {e}")))?,
         );
         let mut found = Vec::new();
         for index in 0.. {
@@ -223,9 +268,24 @@ mod imp {
         devices().is_ok_and(|(_, found)| !found.is_empty())
     }
 
-    pub fn is_on() -> Result<bool, CaptureError> {
+    pub fn state() -> Result<State, CaptureError> {
         let (_list, found) = devices()?;
-        Ok(found.iter().any(|data| problem(data) == Some(0)))
+        let problems: Vec<u32> = found.iter().filter_map(problem).collect();
+        Ok(if problems.contains(&0) {
+            State::On
+        } else if let Some(&other) = problems.iter().find(|&&p| p != PROBLEM_DISABLED) {
+            State::Broken(other)
+        } else {
+            State::Off
+        })
+    }
+
+    pub fn can_change() -> bool {
+        unsafe { IsUserAnAdmin() }.as_bool()
+            && mark_path()
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .is_some_and(std::path::Path::exists)
     }
 
     pub fn set_on(on: bool) -> Result<(), CaptureError> {
@@ -323,12 +383,18 @@ mod imp {
 mod imp {
     use crate::CaptureError;
 
+    use super::State;
+
     pub fn installed() -> bool {
         false
     }
 
-    pub fn is_on() -> Result<bool, CaptureError> {
-        Ok(false)
+    pub fn can_change() -> bool {
+        false
+    }
+
+    pub fn state() -> Result<State, CaptureError> {
+        Ok(State::Off)
     }
 
     pub fn set_on(_on: bool) -> Result<(), CaptureError> {
