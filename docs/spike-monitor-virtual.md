@@ -142,3 +142,6 @@ visualizador? Troque para ele: a imagem aparece?
   `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver\VDDPATH` ou, sem essa chave, de `C:\VirtualDisplayDriver`. O
   instalador do Hext deve gravar um arquivo próprio (cursor por hardware, 1920×1080 a 60 Hz primeiro), só com
   permissão de administrador.
+- Com o `vdd_settings.xml` de exemplo em `C:\VirtualDisplayDriver`, o monitor nasce em **1920×1080 a 60 Hz** e só
+  oferece os modos do arquivo (1920×1080, 2560×1440 e 3840×2160, de 60 a 240 Hz): o arquivo controla a resolução
+  inicial sem precisar do `ChangeDisplaySettingsEx`.
