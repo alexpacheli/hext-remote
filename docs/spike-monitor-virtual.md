@@ -135,3 +135,10 @@ visualizador? Troque para ele: a imagem aparece?
 - **A cada habilitação o Windows dá um nome novo** ao monitor (`\.\DISPLAY46`, 47, 48…): o Hext deve achar o
   monitor virtual pelo dispositivo, nunca guardar o nome.
 - `resolution 2 1920x1080` muda para 1920×1080 a 60 Hz na hora, e a captura acompanha.
+- **Dois cursores na sessão sem monitor:** sem o `vdd_settings.xml`, o driver não declara cursor por hardware
+  (`hardwareCursor = false` no código) e o Windows desenha o cursor dentro da imagem; o Hext já desenha o próprio
+  cursor no visualizador, então aparecem dois, um atrasado. O arquivo de exemplo do projeto liga
+  `<HardwareCursor>true</HardwareCursor>` e começa a lista em 1920×1080 a 60 Hz. O driver lê o arquivo de
+  `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver\VDDPATH` ou, sem essa chave, de `C:\VirtualDisplayDriver`. O
+  instalador do Hext deve gravar um arquivo próprio (cursor por hardware, 1920×1080 a 60 Hz primeiro), só com
+  permissão de administrador.
