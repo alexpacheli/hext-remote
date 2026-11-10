@@ -15,15 +15,14 @@ O Parsec resolve isso com o próprio driver de monitor virtual (fechado, não po
 
 ## Quando o monitor virtual liga
 
-1. A sessão começa e `displays()` volta vazio (ou só com monitores desligados).
-2. O Hext liga o monitor virtual, espera ele aparecer na lista (como a espera de `open_waking`, até 8 s) e abre a
-   captura nele.
+1. **Automático:** a sessão começa e `displays()` volta vazio (computador sem cabo de monitor). O Hext liga o
+   monitor virtual, espera ele aparecer na lista (como a espera de `open_waking`, até 8 s) e abre a captura nele.
+2. **Pelo técnico:** um monitor ligado no cabo mas desligado no botão continua na lista do Windows (o spike
+   mostrou), e o Hext não tem como saber que ninguém o vê. Por isso o visualizador tem a opção "Monitor
+   virtual" na lista de monitores: liga o virtual e mostra ele.
 3. Ao fim da sessão, o Hext desliga o monitor virtual. Um monitor fantasma que ficasse ligado aumentaria a área
    de trabalho e "esconderia" janelas para quem usa o computador com um monitor de verdade depois.
-4. Com um monitor de verdade ligado, nada muda: o virtual não é criado.
-
-Opção futura: o técnico liga um monitor virtual extra mesmo com monitor real (por exemplo, para ter uma segunda
-tela na sessão). Fica fora deste plano.
+4. Com um monitor de verdade ligado, e sem o técnico pedir, nada muda: o virtual não é criado.
 
 ## Windows
 
@@ -105,7 +104,7 @@ depende do compositor).
 | # | Marco | Pronto quando |
 |---|---|---|
 | 0 | **Spike** | Num Windows 11 24H2 limpo, com Secure Boot e Integridade de Memória: o MttVDD instala em silêncio, o serviço habilita e desabilita o dispositivo, o DXGI captura o monitor virtual, inclusive na tela de login. No Mac: um monitor `CGVirtualDisplay` criado por um programa de teste aparece no ScreenCaptureKit, num Mac sem monitor. Relatório em `docs/` |
-| 1 | **Windows: liga e desliga na sessão** | Sessão num PC sem monitor (com o driver instalado à mão) abre com imagem em 1920×1080; ao fim, o dispositivo fica desabilitado; o serviço reiniciado no meio desabilita |
+| 1 | **Windows: liga e desliga na sessão** | Sessão num PC sem monitor (com o driver instalado à mão) abre com imagem em 1920×1080 (pelo `vdd_settings.xml` do Hext, com cursor por hardware); "Monitor virtual" na lista do visualizador liga o virtual num PC com monitores desligados no botão; ao fim, o dispositivo fica desabilitado; o serviço reiniciado no meio desabilita |
 | 2 | **Windows: instalação** | Opção no MSI e `service virtual-display install/remove`; desinstalar remove driver e certificados; release confere o hash do driver |
 | 3 | **macOS** | Sessão num Mac mini sem monitor abre com imagem; sem a API, mensagem clara em vez de sessão fechando |
 | 4 | **Resolução pelo visualizador** | O técnico escolhe a resolução do monitor virtual num menu |

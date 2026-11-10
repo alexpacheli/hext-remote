@@ -145,3 +145,9 @@ visualizador? Troque para ele: a imagem aparece?
 - Com o `vdd_settings.xml` de exemplo em `C:\VirtualDisplayDriver`, o monitor nasce em **1920×1080 a 60 Hz** e só
   oferece os modos do arquivo (1920×1080, 2560×1440 e 3840×2160, de 60 a 240 Hz): o arquivo controla a resolução
   inicial sem precisar do `ChangeDisplaySettingsEx`.
+- **Monitor desligado no botão continua na lista.** Com os dois monitores físicos desligados, o log da sessão das
+  16:16 mostra o técnico trocando entre os monitores 1, 2 e 3: o Windows (e o DXGI) ainda listam os dois
+  desligados, e a sessão abriu num deles (imagem preta). Sem erro no log. Consequência para o plano: "a lista
+  está vazia" só pega o computador **sem cabo** de monitor; com um monitor ligado no cabo e desligado no botão, o
+  Hext não sabe que ninguém está vendo. Por isso o monitor virtual precisa também ser uma opção do técnico no
+  visualizador ("Monitor virtual"), não só automático.
