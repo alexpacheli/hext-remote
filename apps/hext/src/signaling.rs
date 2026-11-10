@@ -582,7 +582,7 @@ mod tests {
                 account: None,
             };
             viewer.send(&request).await.unwrap();
-            let answer = viewer.recv().await.unwrap();
+            let answer = answer_within(viewer.recv()).await;
             assert!(matches!(answer, ServerMsg::Accepted { .. }), "{answer:?}");
             let attempt = Attempt {
                 viewer: id.to_string(),
@@ -608,6 +608,18 @@ mod tests {
                 &slot,
             ) => panic!("the host left: {end:?}"),
         }
+    }
+
+    /// The server's answer, or a failure that says so: on CI these tests
+    /// have hung waiting for it (now and then, on Windows), until the job's
+    /// time ran out.
+    async fn answer_within(
+        answer: impl std::future::Future<Output = Result<ServerMsg, hext_signal::ClientError>>,
+    ) -> ServerMsg {
+        tokio::time::timeout(Duration::from_secs(60), answer)
+            .await
+            .expect("o servidor não respondeu ao pedido em 60 s")
+            .unwrap()
     }
 
     /// Trusts `bound` without the password (on or off: `on`); asking the
@@ -694,7 +706,7 @@ mod tests {
                 account,
             };
             viewer.send(&request).await.unwrap();
-            viewer.recv().await.unwrap()
+            answer_within(viewer.recv()).await
         };
         let answer = tokio::select! {
             answer = technician => answer,
