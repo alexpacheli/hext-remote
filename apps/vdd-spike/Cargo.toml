@@ -1,0 +1,16 @@
+[package]
+name = "vdd-spike"
+description = "Spike: liga e desliga o monitor virtual (MttVDD) e captura nele"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hext-capture.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Devices_DeviceAndDriverInstallation"] }

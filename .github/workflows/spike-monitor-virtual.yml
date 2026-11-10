@@ -1,0 +1,43 @@
+# Spike do monitor virtual (docs/monitor-virtual.md, marco 0): compila as duas
+# ferramentas de teste. Só na branch spike/monitor-virtual.
+name: Spike monitor virtual
+
+on:
+  push:
+    branches: [spike/monitor-virtual]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Compilar vd
+        run: |
+          clang -fobjc-arc -Wall -Werror -framework Foundation -framework CoreGraphics \
+            -framework ScreenCaptureKit -framework ImageIO -framework UniformTypeIdentifiers \
+            apps/vdd-spike/macos/vd.m -o vd
+          ./vd 0 || true   # sem permissão de tela no runner: só confere que abre
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vd-macos
+          path: vd
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache-save-if: false
+      - name: Compilar vdd-spike
+        run: cargo build --release --locked -p vdd-spike
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vdd-spike-windows
+          path: target/release/vdd-spike.exe
