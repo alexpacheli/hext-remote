@@ -1,11 +1,12 @@
 //! A monitor that exists only for the session (docs/monitor-virtual.md), for a
 //! computer with no monitor to capture.
 //!
-//! Windows: the Virtual Display Driver (`Root\MttVDD`, installed apart), whose
-//! device is enabled while a session needs it and disabled after, through the
-//! SetupAPI (as Device Manager does): the driver's own control pipe takes
-//! orders from any local user, so it is not used. Needs an administrator (the
-//! agent runs as SYSTEM).
+//! Windows: the Virtual Display Driver (`Root\MttVDD`, installed by
+//! `service virtual-display install`, see [`device`]), whose device is enabled
+//! while a session needs it and disabled after, through the SetupAPI (as
+//! Device Manager does): the driver's own control pipe takes orders from any
+//! local user, so it is not used. Needs an administrator (the agent runs as
+//! SYSTEM).
 //!
 //! macOS: `CGVirtualDisplay`, which Apple does not document: the process
 //! that captures creates the monitor, and it exists while that process keeps
@@ -131,14 +132,18 @@ mod imp {
 
     use windows::Win32::Devices::DeviceAndDriverInstallation::{
         CM_DEVNODE_STATUS_FLAGS, CM_Get_DevNode_Status, CM_PROB, CR_SUCCESS, DI_FUNCTION,
-        DICS_DISABLE, DICS_ENABLE, DICS_FLAG_GLOBAL, DIF_PROPERTYCHANGE, GUID_DEVCLASS_DISPLAY,
-        HDEVINFO, SP_CLASSINSTALL_HEADER, SP_DEVINFO_DATA, SP_PROPCHANGE_PARAMS, SPDRP_HARDWAREID,
-        SetupDiCallClassInstaller, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
-        SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW, SetupDiSetClassInstallParamsW,
+        DI_REMOVEDEVICE_GLOBAL, DICD_GENERATE_ID, DICS_DISABLE, DICS_ENABLE, DICS_FLAG_GLOBAL,
+        DIF_PROPERTYCHANGE, DIF_REGISTERDEVICE, DIF_REMOVE, GUID_DEVCLASS_DISPLAY, HDEVINFO,
+        SP_CLASSINSTALL_HEADER, SP_DEVINFO_DATA, SP_PROPCHANGE_PARAMS, SP_REMOVEDEVICE_PARAMS,
+        SPDRP_HARDWAREID, SetupDiCallClassInstaller, SetupDiCreateDeviceInfoList,
+        SetupDiCreateDeviceInfoW, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
+        SetupDiGetClassDevsW, SetupDiGetDevicePropertyW, SetupDiGetDeviceRegistryPropertyW,
+        SetupDiSetClassInstallParamsW, SetupDiSetDeviceRegistryPropertyW,
     };
+    use windows::Win32::Devices::Properties::{DEVPKEY_Device_DriverInfPath, DEVPROPTYPE};
     use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
     use windows::Win32::UI::Shell::IsUserAnAdmin;
-    use windows::core::{HSTRING, PCWSTR};
+    use windows::core::{HSTRING, PCWSTR, w};
 
     use super::State;
     use crate::CaptureError;
@@ -148,6 +153,8 @@ mod imp {
 
     /// The driver's device (its INF installs `Root\MttVDD`).
     const HARDWARE_ID: &str = "root\\mttvdd";
+    /// The hardware ID a device made by the Hext gets, as the INF writes it.
+    pub const NEW_HARDWARE_ID: &str = "Root\\MttVDD";
     /// Its monitor, as Windows names it (`MONITOR\MTT1337\…`).
     const MONITOR_ID: &str = "\\MTT1337";
     /// Where the driver reads its settings when nothing in the registry says
@@ -227,13 +234,112 @@ mod imp {
         {
             return String::new();
         }
+        // A list of strings: the first is the one.
+        first_string(&buf)
+    }
+
+    /// The first string of a buffer of UTF-16 strings, as the SetupAPI gives.
+    fn first_string(buf: &[u8]) -> String {
         let wide: Vec<u16> = buf
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
-        // A list of strings: the first is the one.
         let end = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
         String::from_utf16_lossy(&wide[..end])
+    }
+
+    fn platform(e: windows::core::Error) -> CaptureError {
+        CaptureError::Platform(format!("monitor virtual: {e}"))
+    }
+
+    /// Makes a new device of the driver, root-enumerated, with no driver yet
+    /// (as `devcon install` does before installing the INF on it).
+    pub fn create_device() -> Result<(), CaptureError> {
+        let list = List(
+            unsafe { SetupDiCreateDeviceInfoList(Some(&GUID_DEVCLASS_DISPLAY), None) }
+                .map_err(platform)?,
+        );
+        let mut data = SP_DEVINFO_DATA {
+            cbSize: size_of::<SP_DEVINFO_DATA>() as u32,
+            ..Default::default()
+        };
+        // A list of strings, ending with an empty one.
+        let ids: Vec<u8> = NEW_HARDWARE_ID
+            .encode_utf16()
+            .chain([0, 0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        unsafe {
+            SetupDiCreateDeviceInfoW(
+                list.0,
+                w!("Display"),
+                &GUID_DEVCLASS_DISPLAY,
+                PCWSTR::null(),
+                None,
+                DICD_GENERATE_ID,
+                Some(&mut data),
+            )
+            .and_then(|()| {
+                SetupDiSetDeviceRegistryPropertyW(list.0, &mut data, SPDRP_HARDWAREID, Some(&ids))
+            })
+            .and_then(|()| SetupDiCallClassInstaller(DIF_REGISTERDEVICE, list.0, Some(&data)))
+        }
+        .map_err(platform)
+    }
+
+    /// Takes away every device of the driver (and the mark: nothing is left
+    /// to turn off); how many there were.
+    pub fn remove_devices() -> Result<usize, CaptureError> {
+        let (list, found) = devices()?;
+        for data in &found {
+            let params = SP_REMOVEDEVICE_PARAMS {
+                ClassInstallHeader: SP_CLASSINSTALL_HEADER {
+                    cbSize: size_of::<SP_CLASSINSTALL_HEADER>() as u32,
+                    InstallFunction: DIF_REMOVE,
+                },
+                Scope: DI_REMOVEDEVICE_GLOBAL,
+                HwProfile: 0,
+            };
+            unsafe {
+                SetupDiSetClassInstallParamsW(
+                    list.0,
+                    Some(data),
+                    Some(&params.ClassInstallHeader),
+                    size_of::<SP_REMOVEDEVICE_PARAMS>() as u32,
+                )
+                .and_then(|()| SetupDiCallClassInstaller(DIF_REMOVE, list.0, Some(data)))
+            }
+            .map_err(platform)?;
+        }
+        mark(false);
+        Ok(found.len())
+    }
+
+    /// The INF in the driver store (`oemNN.inf`) of each device of the driver.
+    pub fn driver_infs() -> Vec<String> {
+        let Ok((list, found)) = devices() else {
+            return Vec::new();
+        };
+        found
+            .iter()
+            .filter_map(|data| {
+                let mut kind = DEVPROPTYPE(0);
+                let mut buf = [0u8; 1024];
+                unsafe {
+                    SetupDiGetDevicePropertyW(
+                        list.0,
+                        data,
+                        &DEVPKEY_Device_DriverInfPath,
+                        &mut kind,
+                        Some(&mut buf),
+                        None,
+                        0,
+                    )
+                }
+                .ok()?;
+                Some(first_string(&buf)).filter(|inf| !inf.is_empty())
+            })
+            .collect()
     }
 
     /// The driver's devices (one, unless installed twice), among the display
@@ -582,6 +688,25 @@ mod imp {
 /// driver for something else keeps its setup).
 pub fn settings() -> Option<(std::path::PathBuf, &'static str)> {
     imp::settings()
+}
+
+/// Installing the driver's device and taking it away (Windows: `service
+/// virtual-display install|remove`; the driver files come with the MSI).
+#[cfg(windows)]
+pub mod device {
+    pub use super::imp::{NEW_HARDWARE_ID, create_device, driver_infs, remove_devices};
+    use crate::CaptureError;
+
+    /// Whether a device of the driver is there (on or off).
+    pub fn present() -> bool {
+        super::imp::installed()
+    }
+
+    /// Turns the device off (after installing: the Hext turns it on only
+    /// for a session).
+    pub fn disable() -> Result<(), CaptureError> {
+        super::imp::set_on(false)
+    }
 }
 
 /// Whether display `id` ([`crate::Display::id`]) is the virtual monitor.

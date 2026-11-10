@@ -167,6 +167,7 @@ pub fn command(action: ServiceAction) -> Result<()> {
                 windows::technicians(revoke.as_deref(), revoke_all)
             }
             ServiceAction::Account { chain, off } => windows::account(chain.as_deref(), off),
+            ServiceAction::VirtualDisplay { action } => windows::virtual_display(action),
             ServiceAction::Run => windows::run(),
             ServiceAction::Name { .. } => unreachable!("answered above"),
         }
@@ -182,6 +183,9 @@ pub fn command(action: ServiceAction) -> Result<()> {
                 macos::technicians(revoke.as_deref(), revoke_all)
             }
             ServiceAction::Account { chain, off } => macos::account(chain.as_deref(), off),
+            ServiceAction::VirtualDisplay { .. } => {
+                anyhow::bail!("no Mac, o monitor virtual não precisa de instalação")
+            }
             ServiceAction::Run => anyhow::bail!("no Mac, quem inicia o Hext Remote é o login"),
             ServiceAction::Name { .. } => unreachable!("answered above"),
         }

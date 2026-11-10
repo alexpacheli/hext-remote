@@ -108,13 +108,41 @@ jobs:
           & $env:SIGNTOOL sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
             /f "$env:RUNNER_TEMP\cert.pfx" /p $env:WINDOWS_CERTIFICATE_PASSWORD dist\HextRemote.exe
 
+      # The virtual monitor's driver (docs/monitor-virtual.md): the release
+      # pinned here, checked against its hash (GitHub's digest of the file,
+      # the same as Get-FileHash gives). The asset says x86, but it is the
+      # x64 build (the one the project's own script installs): checked too.
+      # It goes inside the MSI: nothing is downloaded on the customer's
+      # computer.
+      - name: Virtual monitor driver
+        shell: pwsh
+        env:
+          VDD_URL: https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip
+          VDD_SHA256: e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a
+        run: |
+          $zip = "$env:RUNNER_TEMP\vdd.zip"
+          Invoke-WebRequest $env:VDD_URL -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          if ($hash -ne $env:VDD_SHA256) { throw "driver do monitor virtual: SHA-256 $hash, esperado $env:VDD_SHA256" }
+          Expand-Archive $zip "$env:RUNNER_TEMP\vdd"
+          $out = New-Item -ItemType Directory "$env:RUNNER_TEMP\vdd-msi"
+          foreach ($name in "MttVDD.inf", "MttVDD.dll", "mttvdd.cat") {
+            Copy-Item "$env:RUNNER_TEMP\vdd\VirtualDisplayDriver\$name" $out
+          }
+          Copy-Item installer\windows\driver\LICENSE.txt $out
+          $dll = [IO.File]::ReadAllBytes("$out\MttVDD.dll")
+          $machine = [BitConverter]::ToUInt16($dll, [BitConverter]::ToInt32($dll, 0x3c) + 4)
+          if ($machine -ne 0x8664) { throw ("driver do monitor virtual: não é x64 (0x{0:X})" -f $machine) }
+          "VDD_DIR=$out" >> $env:GITHUB_ENV
+
       - name: Installer (.msi)
         shell: pwsh
         run: |
           dotnet tool install --global wix --version 5.0.2
-          wix build installer\windows\HextRemote.wxs -arch x64 `
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          wix build installer\windows\HextRemote.wxs -arch x64 -culture pt-BR -ext WixToolset.UI.wixext `
             -d Version=$env:VERSION -d Exe=dist\HextRemote.exe -d Icon=apps\hext\icons\icon.ico `
-            -o "dist\HextRemote-$env:VERSION-x64.msi"
+            -d Driver=$env:VDD_DIR -o "dist\HextRemote-$env:VERSION-x64.msi"
           # (WiX's debug symbols: not for the release.)
           Remove-Item dist\*.wixpdb -ErrorAction SilentlyContinue
 
@@ -140,6 +168,35 @@ jobs:
           $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn /l*v uninstall.log" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content uninstall.log -Tail 60; exit $p.ExitCode }
           if (Test-Path "C:\Program Files\Hext Remote\HextRemote.exe") { throw "ficou instalado" }
+
+      # The same with the virtual monitor (on GitHub's machine, never on a
+      # developer's): the device installed and disabled, the certificate in
+      # TrustedPublisher, and nothing of it left after removing the Hext.
+      # Informative: a runner without what the driver needs does not hold
+      # the release (the step shows the failure).
+      - name: Install test (virtual monitor)
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          SIGNER: 3CF8CF26D8BA266C3A483AB7D26D4A818E317D76
+        run: |
+          function Get-Vdd { Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object { $_.HardwareID -contains 'Root\MttVDD' } }
+          $msi = (Resolve-Path "dist\HextRemote-$env:VERSION-x64.msi").Path
+          $p = Start-Process msiexec -ArgumentList "/i `"$msi`" ADDLOCAL=ALL /qn /l*v install-vdd.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install-vdd.log -Tail 60; exit $p.ExitCode }
+          Get-Content "$env:ProgramData\HextRemote\service.log" -Tail 20 -ErrorAction SilentlyContinue
+          & "C:\Program Files\Hext Remote\HextRemote.exe" service status
+          $device = Get-Vdd
+          $device | Format-List FriendlyName, Status, Problem, InstanceId
+          if (-not $device) { throw "o dispositivo do monitor virtual não foi criado" }
+          if ("$($device.Problem)" -notin 'CM_PROB_DISABLED', '22') { throw "o dispositivo não ficou desabilitado: $($device.Problem)" }
+          if (-not (Test-Path "Cert:\LocalMachine\TrustedPublisher\$env:SIGNER")) { throw "o certificado não foi inserido" }
+          $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn /l*v uninstall-vdd.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content uninstall-vdd.log -Tail 60; exit $p.ExitCode }
+          if (Get-Vdd) { throw "o dispositivo ficou" }
+          if (Test-Path "Cert:\LocalMachine\TrustedPublisher\$env:SIGNER") { throw "o certificado ficou" }
+          if ((pnputil /enum-drivers) -match 'mttvdd\.inf') { throw "o driver ficou no repositório" }
 
       - name: Portable
         shell: bash
