@@ -130,3 +130,8 @@ visualizador? Troque para ele: a imagem aparece?
 - O monitor virtual nasce em **800×600 a 30 Hz** (o primeiro modo da lista). Aceita 800×600, 1280×720, 1366×768,
   1920×1080 e 2560×1440, de 30 a 165 Hz. O Hext precisa definir 1920×1080 a 60 Hz ao ligar.
 - O `vdd_settings.xml` não está em `C:\VirtualDisplayDriver\` nesta versão (onde fica: a confirmar).
+- `cycle 5` passou: o monitor aparece em 174 a 203 ms e sai em 138 a 257 ms; a captura abre em 83 a 118 ms e recebe
+  50 a 57 imagens em 3 s.
+- **A cada habilitação o Windows dá um nome novo** ao monitor (`\.\DISPLAY46`, 47, 48…): o Hext deve achar o
+  monitor virtual pelo dispositivo, nunca guardar o nome.
+- `resolution 2 1920x1080` muda para 1920×1080 a 60 Hz na hora, e a captura acompanha.
