@@ -1,209 +1,212 @@
 # Hext Remote
 
-Acesso e suporte remoto para Windows, macOS e Linux, focado em fluidez. Software livre ([AGPL-3.0](LICENSE)),
-escrito em Rust.
+**English** | [Português](README.pt-BR.md)
 
-- **Conexão pelo ID:** cada computador tem um ID de 9 dígitos. O técnico digita o ID, e quem está do outro lado
-  aceita ou recusa.
-- **Direto quando possível:** os dois computadores se conectam direto, mesmo em redes diferentes. Quando não dá
-  (um firewall corporativo, por exemplo), a sessão passa por um relay, sempre cifrada de ponta a ponta.
-- **Vídeo pela placa de vídeo:** captura, codificação H.264 e exibição pela GPU, com volta automática para o
-  processador.
-- **Acesso não assistido:** com o serviço instalado, o computador fica online desde o boot. O técnico entra com
-  uma senha definida pelo dono ou, depois, sem senha, pela chave dele ou pela conta. No Windows, isso vale
-  também na tela de login e no UAC.
-- **Na sessão:** vários monitores, área de transferência, arquivos, chat, reinício remoto e até 8 sessões ao
-  mesmo tempo.
-- **Contas (opcionais):** lista de computadores sincronizada, compartilhamento com outras contas e registro dos
-  acessos.
-- **Transparente:** toda sessão aparece na tela enquanto dura, e cada acesso fica registrado no computador.
+Remote access and support for Windows, macOS and Linux, focused on smoothness. Free software
+([AGPL-3.0](LICENSE)), written in Rust.
 
-## Como funciona
+- **Connect by ID:** each computer has a 9-digit ID. The technician types the ID, and the person on the other
+  side accepts or declines.
+- **Direct when possible:** the two computers connect directly, even on different networks. When they cannot
+  (a corporate firewall, for example), the session goes through a relay, always end-to-end encrypted.
+- **Video on the graphics card:** capture, H.264 encoding and display on the GPU, falling back to the CPU
+  automatically.
+- **Unattended access:** with the service installed, the computer is online from boot. The technician gets in
+  with a password the owner set or, later, without a password, by their key or by the account. On Windows, this
+  also works on the sign-in screen and UAC prompts.
+- **In the session:** multiple monitors, clipboard, files, chat, remote restart and up to 8 sessions at once.
+- **Accounts (optional):** a synced list of computers, sharing with other accounts and an access log.
+- **Transparent:** every session is shown on screen while it lasts, and each access is logged on the computer.
+
+## How it works
 
 ```
                     ┌──────────────────────────────┐
-         ┌─────────►│  Servidor de sinalização     │◄─────────┐
+         ┌─────────►│  Signaling server            │◄─────────┐
          │          │  (hext-server): IDs,         │          │
-         │          │  presença e pedidos          │          │
+         │          │  presence and requests       │          │
          │          └──────────────────────────────┘          │
          │                                                    │
-  ┌──────┴───────┐     sessão direta (P2P, QUIC)       ┌──────┴───────┐
-  │   Técnico    │◄───────────────────────────────────►│   Cliente    │
+  ┌──────┴───────┐     direct session (P2P, QUIC)      ┌──────┴───────┐
+  │  Technician  │◄───────────────────────────────────►│   Customer   │
   │ Hext Remote  │                                     │ Hext Remote  │
   └──────┬───────┘                                     └──────┬───────┘
          │          ┌──────────────────────────────┐          │
-         └─────────►│  Relay (iroh-relay): só sem  │◄─────────┘
-                    │  conexão direta; não vê o    │
-                    │  conteúdo                    │
+         └─────────►│  Relay (iroh-relay): only    │◄─────────┘
+                    │  without a direct path; it   │
+                    │  cannot see the content      │
                     └──────────────────────────────┘
 ```
 
-1. Ao abrir, o app se registra no **servidor de sinalização** com a chave do computador (Ed25519, criada na
-   primeira execução) e recebe o seu ID.
-2. O técnico pede para conectar a um ID. O servidor repassa o pedido, e o outro lado aceita, ou confere a senha
-   ou a chave do técnico.
-3. Os dois abrem uma conexão **QUIC** entre si, atravessando o NAT. Se não conseguirem, usam o **relay**.
-4. A sessão é cifrada de ponta a ponta entre os dois computadores: nem o servidor nem o relay veem a tela, o
-   teclado ou os arquivos. A senha de acesso nunca trafega (SPAKE2).
+1. When it opens, the app registers with the **signaling server** using the computer's key (Ed25519, created on
+   first run) and gets its ID.
+2. The technician asks to connect to an ID. The server passes the request on, and the other side accepts, or
+   checks the technician's password or key.
+3. The two open a **QUIC** connection to each other, through NAT. If they cannot, they use the **relay**.
+4. The session is end-to-end encrypted between the two computers: neither the server nor the relay sees the
+   screen, the keyboard or the files. The access password never travels (SPAKE2).
 
-Detalhes em [ARCHITECTURE.md](ARCHITECTURE.md) e no plano de cada fase ([F3](docs/F3.md) a [F6](docs/F6.md)).
+Details in [ARCHITECTURE.md](ARCHITECTURE.md) and in each phase's plan ([F3](docs/F3.md) to [F6](docs/F6.md)),
+in Portuguese.
 
-## Baixar e usar
+## Download and use
 
-Os instaladores ficam em [Releases](https://github.com/alexpacheli/hext-remote/releases):
+The installers are in [Releases](https://github.com/alexpacheli/hext-remote/releases):
 
-| Sistema | Arquivo | Observação |
+| System | File | Notes |
 |---|---|---|
-| Windows | `HextRemote-<versão>-x64.msi` | Instala o app e o serviço (acesso não assistido, tela de login). Para muitos computadores: `msiexec /i HextRemote-<versão>-x64.msi /qn`. |
-| Windows | `HextRemote-<versão>-portable.exe` | Para um atendimento rápido, sem instalar. |
-| macOS | `HextRemote-<versão>.dmg` | Arraste o Hext Remote para Aplicativos. |
-| Linux | `.deb`, `.rpm` ou `.AppImage` | Por enquanto, linha de comando (`hext-remote`). |
+| Windows | `HextRemote-<version>-x64.msi` | Installs the app and the service (unattended access, sign-in screen). For many computers: `msiexec /i HextRemote-<version>-x64.msi /qn`. |
+| Windows | `HextRemote-<version>-portable.exe` | For a quick support session, without installing. |
+| macOS | `HextRemote-<version>.dmg` | Drag Hext Remote to Applications. |
+| Linux | `.deb`, `.rpm` or `.AppImage` | Command line for now (`hext-remote`). |
 
 Free code signing on Windows provided by [SignPath.io](https://about.signpath.io/), certificate by
-[SignPath Foundation](https://signpath.org/). Veja a [política de assinatura](#code-signing-policy) e a
-[privacidade](#privacy-policy).
+[SignPath Foundation](https://signpath.org/). See the [code signing policy](#code-signing-policy) and the
+[privacy policy](#privacy-policy).
 
-**Primeiro atendimento:**
+**First session:**
 
-1. No computador do cliente, abra o Hext Remote. A tela inicial mostra o **ID** dele.
-2. No computador do técnico, abra o Hext Remote, digite esse ID e clique em **Conectar**.
-3. No cliente, aparece o pedido com o nome do técnico e as permissões. Ao aceitar, a sessão começa.
+1. On the customer's computer, open Hext Remote. The home screen shows its **ID**.
+2. On the technician's computer, open Hext Remote, type that ID and click **Conectar** (Connect).
+3. The customer sees the request with the technician's name and permissions. Once accepted, the session starts.
 
-Para entrar sem ninguém aceitar, instale o serviço (o `.msi` já instala) e defina a senha de acesso na aba
-**Segurança**. O roteiro completo de cada recurso, inclusive pela linha de comando, está em
-[docs/testes.md](docs/testes.md), e os roteiros de atendimento em campo, em
-[docs/atendimento-campo.md](docs/atendimento-campo.md).
+To get in without anyone accepting, install the service (the `.msi` does) and set the access password in the
+**Segurança** (Security) tab. The full walkthrough of each feature, including the command line, is in
+[docs/testes.md](docs/testes.md), and the field support checklists in
+[docs/atendimento-campo.md](docs/atendimento-campo.md) (in Portuguese). The interface is in Portuguese for now.
 
-**Atualização.** Com o serviço do Windows, o Hext Remote se atualiza sozinho, entre uma sessão e outra. Nos
-outros casos, a tela inicial avisa quando há uma versão nova (no Linux: `hext-remote update check`). Cada versão é
-assinada pelo pipeline de release, e o app recusa qualquer outra.
+**Updates.** Installed on Windows (the service) or on a Mac (in Applications), Hext Remote updates itself
+between sessions. Otherwise, the home screen says when there is a new version (on Linux:
+`hext-remote update check`). Each version is signed by the release pipeline, and the app refuses any other.
 
-## Servidor próprio
+## Your own server
 
-A versão oficial usa o nosso servidor (`signal.hext.com.br` e `relay.hext.com.br`). Quem atende muitos
-computadores, quer os dados na própria infraestrutura ou distribui uma versão modificada sobe o próprio servidor
-e compila o app apontando para ele. O servidor e o relay são deste repositório e do projeto
-[iroh](https://github.com/n0-computer/iroh), sem nenhum serviço pago.
+The official build uses our server (`signal.hext.com.br` and `relay.hext.com.br`). Whoever supports many
+computers, wants the data on their own infrastructure or distributes a modified build runs their own server and
+builds the app pointing to it. The server and the relay come from this repository and the
+[iroh](https://github.com/n0-computer/iroh) project, with no paid service.
 
-**Do que precisa:**
+**What it takes:**
 
-- Um servidor Linux com IP público. Para começar, 1 a 2 vCPU e 1 a 2 GB de RAM bastam (a Oracle Cloud tem
-  um plano gratuito com bastante tráfego). Prefira um servidor perto dos usuários, por causa do relay.
-- Um domínio com dois nomes apontando para o IP do servidor: `signal.<domínio>` e `relay.<domínio>`. Com a
-  Cloudflare, deixe os dois em **DNS only** (nuvem cinza).
-- As portas **80 e 443 TCP** e **7842 UDP** abertas no firewall do provedor.
+- A Linux server with a public IP. To start, 1 to 2 vCPUs and 1 to 2 GB of RAM are enough (Oracle Cloud has a
+  free tier with plenty of traffic). Prefer a server close to the users, because of the relay.
+- A domain with two names pointing to the server's IP: `signal.<domain>` and `relay.<domain>`. On Cloudflare,
+  leave both as **DNS only** (grey cloud).
+- Ports **80 and 443 TCP** and **7842 UDP** open in the provider's firewall.
 
-**Quanto consome.** A sinalização é leve: ela só guarda IDs e presença e repassa os pedidos de conexão, e um
-servidor pequeno atende milhares de computadores conectados. O que custa é o **relay**: uma sessão que passa por
-ele usa de 0,5 a 3 Mbps (cerca de 0,2 a 1,3 GB por hora). A maioria das sessões é direta e não passa por ele. Cada dispositivo envia no máximo 5 Mbit/s pelo relay, e o app ajusta a
-qualidade a isso. Para acompanhar o tráfego do mês e o uso do relay: `./deploy/uso.sh`, no servidor.
+**What it uses.** Signaling is light: it only keeps IDs and presence and passes connection requests on, and a
+small server handles thousands of connected computers. What costs is the **relay**: a session through it uses
+0.5 to 3 Mbps (about 0.2 to 1.3 GB per hour). Most sessions are direct and do not go through it. Each device
+sends at most 5 Mbit/s through the relay, and the app adjusts the quality to that. To follow the month's
+traffic and the relay's use: `./deploy/uso.sh`, on the server.
 
-### Opção 1: Docker
+### Option 1: Docker
 
-Com o [Docker](https://docs.docker.com/engine/install/) 26 ou mais novo instalado no servidor (o relay monta só a
-pasta do próprio certificado, com `subpath`):
+With [Docker](https://docs.docker.com/engine/install/) 26 or newer on the server (the relay mounts only its own
+certificate's folder, with `subpath`):
 
 ```sh
 git clone https://github.com/alexpacheli/hext-remote.git
 cd hext-remote/deploy/docker
 cp .env.example .env
-nano .env        # HEXT_DOMAIN e HEXT_RELAY_TOKEN (gere com: openssl rand -hex 32)
+nano .env        # HEXT_DOMAIN and HEXT_RELAY_TOKEN (generate with: openssl rand -hex 32)
 docker compose up -d --build
 ```
 
-Isso sobe três contêineres: o `hext-server`, o `iroh-relay` e o Caddy, que obtém os certificados da Let's Encrypt
-sozinho. Na primeira vez, a compilação leva alguns minutos, e o relay reinicia algumas vezes até o Caddy obter o
-certificado (menos de um minuto). Para conferir:
+This starts three containers: `hext-server`, `iroh-relay` and Caddy, which gets the Let's Encrypt certificates
+by itself. The first time, the build takes a few minutes, and the relay restarts a few times until Caddy gets
+the certificate (under a minute). To check:
 
 ```sh
-curl https://signal.<domínio>/health        # ok
+curl https://signal.<domain>/health        # ok
 docker compose logs -f
 ```
 
-Para atualizar: `git pull && docker compose up -d --build`. O banco fica no volume `hext_server`: faça backup dele.
-Sem ele, os computadores ganham IDs novos.
+To update: `git pull && docker compose up -d --build`. The database lives in the `hext_server` volume: back it
+up. Without it, the computers get new IDs.
 
-### Opção 2: direto no sistema (systemd)
+### Option 2: directly on the system (systemd)
 
-Num Debian ou Ubuntu, com o [Rust](https://rustup.rs) instalado:
+On Debian or Ubuntu, with [Rust](https://rustup.rs) installed:
 
 ```sh
 git clone https://github.com/alexpacheli/hext-remote.git
 cd hext-remote
-HEXT_DOMAIN=<domínio> ./deploy/install.sh
+HEXT_DOMAIN=<domain> ./deploy/install.sh
 ```
 
-O script instala o Caddy, compila o `hext-server` e o `iroh-relay`, gera o segredo do relay, cria os serviços do
-systemd, libera as portas no iptables e testa os dois endereços. Para atualizar: `git pull && ./deploy/install.sh`
-(o domínio fica guardado). Detalhes, logs e backup em [docs/deploy.md](docs/deploy.md).
+The script installs Caddy, builds `hext-server` and `iroh-relay`, generates the relay's secret, creates the
+systemd services, opens the ports in iptables and tests both addresses. To update: `git pull && ./deploy/install.sh`
+(the domain is kept). Details, logs and backups in [docs/deploy.md](docs/deploy.md) (in Portuguese).
 
-### E-mails da conta (opcional)
+### Account e-mails (optional)
 
-Para que as contas recebam os códigos de verificação, informe um servidor SMTP: no Docker, as linhas
-`HEXT_SMTP_*` do `.env`; no systemd, o arquivo `/etc/hext/mail.env`
-([docs/hext-server.md](docs/hext-server.md)). Sem isso, os códigos vão só para o log do servidor.
+For accounts to get their verification codes, set an SMTP server: on Docker, the `HEXT_SMTP_*` lines of `.env`;
+on systemd, the file `/etc/hext/mail.env` ([docs/hext-server.md](docs/hext-server.md)). Without it, no e-mail is
+sent (for development, `--dev-mail-log` writes the codes to the server's log).
 
-### O app para o seu servidor
+### The app for your server
 
-O endereço do servidor e do relay entra no app na compilação, pelas variáveis `HEXT_SERVER` e `HEXT_RELAY`:
+The server and relay addresses go into the app at build time, through the `HEXT_SERVER` and `HEXT_RELAY`
+variables:
 
-- **Pelo GitHub (recomendado):** faça um fork deste repositório e, em **Settings → Secrets and variables →
-  Actions → Variables**, crie `HEXT_SERVER` = `wss://signal.<domínio>` e `HEXT_RELAY` = `https://relay.<domínio>`.
-  Cada tag `v*` gera os instaladores em Releases do seu fork, e o app procura atualizações lá. Para assinar as
-  atualizações e os instaladores, veja a seção 4 de [docs/F6.md](docs/F6.md).
-- **Na sua máquina:**
+- **On GitHub (recommended):** fork this repository and, in **Settings → Secrets and variables → Actions →
+  Variables**, create `HEXT_SERVER` = `wss://signal.<domain>` and `HEXT_RELAY` = `https://relay.<domain>`. Each
+  `v*` tag builds the installers in your fork's Releases, and the app looks for updates there. To sign the
+  updates and the installers, see section 4 of [docs/F6.md](docs/F6.md).
+- **On your machine:**
 
   ```sh
-  HEXT_SERVER=wss://signal.<domínio> HEXT_RELAY=https://relay.<domínio> cargo build --release -p hext
+  HEXT_SERVER=wss://signal.<domain> HEXT_RELAY=https://relay.<domain> cargo build --release -p hext
   ```
 
-Para um teste rápido, sem compilar: `HextRemote host --server wss://signal.<domínio> --relay https://relay.<domínio>`
-e o mesmo no `view`. Os computadores de um servidor não enxergam os de outro.
+For a quick test, without building: `HextRemote host --server wss://signal.<domain> --relay https://relay.<domain>`
+and the same for `view`. The computers of one server do not see those of another.
 
-## Compilar
+## Building
 
-Precisa do [Rust](https://rustup.rs). A versão é fixada em `rust-toolchain.toml` e instalada sozinha. No Windows,
-precisa também do Visual Studio Build Tools com a carga "Desenvolvimento para desktop com C++".
+You need [Rust](https://rustup.rs). The version is pinned in `rust-toolchain.toml` and installed by itself. On
+Windows, you also need the Visual Studio Build Tools with the "Desktop development with C++" workload.
 
 ```sh
-cargo run -p hext              # a interface
-cargo run -p hext -- --help    # a linha de comando
-cargo run -p hext-server       # o servidor, em http://127.0.0.1:8080 (teste: --server ws://127.0.0.1:8080)
-cargo test --workspace         # testes (inclui um de ponta a ponta host → cliente)
+cargo run -p hext              # the interface
+cargo run -p hext -- --help    # the command line
+cargo run -p hext-server       # the server, at http://127.0.0.1:8080 (test: --server ws://127.0.0.1:8080)
+cargo test --workspace         # tests (including an end-to-end host → viewer one)
 ```
 
-Variáveis da compilação, todas opcionais:
+Build variables, all optional:
 
-| Variável | O que define | Sem ela |
+| Variable | What it sets | Without it |
 |---|---|---|
-| `HEXT_SERVER` | Servidor de sinalização | `wss://signal.hext.com.br` |
-| `HEXT_RELAY` | Relay | `https://relay.hext.com.br`; com outro `HEXT_SERVER`, nenhum (só conexão direta) |
-| `HEXT_RELEASES` | Página das versões, onde o app procura atualizações | as Releases deste repositório |
-| `HEXT_UPDATE_KEY` | Chave pública que assina as atualizações | sem atualização automática |
+| `HEXT_SERVER` | Signaling server | `wss://signal.hext.com.br` |
+| `HEXT_RELAY` | Relay | `https://relay.hext.com.br`; with another `HEXT_SERVER`, none (direct connections only) |
+| `HEXT_RELEASES` | The releases page, where the app looks for updates | this repository's Releases |
+| `HEXT_UPDATE_KEY` | Public key that signs the updates | no automatic updates |
 
-## Estrutura
+## Layout
 
-| Pasta | Conteúdo |
+| Folder | Contents |
 |---|---|
-| `apps/hext` | O app: interface (Tauri), `host`, `view` e `service` |
-| `apps/hext-server` | Servidor: IDs, presença, sinalização e contas ([docs/hext-server.md](docs/hext-server.md)) |
-| `crates/proto` | Mensagens do protocolo: handshake, vídeo, input |
-| `crates/crypto` | Identidade do computador (Ed25519) e senha de acesso (SPAKE2) |
-| `crates/signal` | Sinalização: ID de 9 dígitos, mensagens entre o app e o servidor, cliente WebSocket |
-| `crates/net` | Transporte (`iroh`/QUIC): direto quando possível, relay senão |
-| `crates/capture` | Captura de tela (DXGI no Windows, ScreenCaptureKit no macOS) |
-| `crates/codec` | H.264: placa de vídeo (Media Foundation, VideoToolbox) ou OpenH264 em software |
-| `crates/input` | Mapa de teclas e injeção de mouse e teclado (SendInput, CGEvent) |
-| `crates/render` | Renderização na GPU (wgpu), YUV → RGB no shader |
-| `crates/session` | Pipelines do host e do cliente |
-| `crates/metrics` | Estatísticas de latência |
-| `deploy` | Servidor: script do systemd, Caddy, relay e Docker |
-| `installer` | Instalador do Windows (WiX) |
+| `apps/hext` | The app: interface (Tauri), `host`, `view` and `service` |
+| `apps/hext-server` | Server: IDs, presence, signaling and accounts ([docs/hext-server.md](docs/hext-server.md)) |
+| `crates/proto` | Protocol messages: handshake, video, input |
+| `crates/crypto` | The computer's identity (Ed25519) and access password (SPAKE2) |
+| `crates/signal` | Signaling: 9-digit ID, messages between the app and the server, WebSocket client |
+| `crates/net` | Transport (`iroh`/QUIC): direct when possible, relay otherwise |
+| `crates/capture` | Screen capture (DXGI on Windows, ScreenCaptureKit on macOS) |
+| `crates/codec` | H.264: graphics card (Media Foundation, VideoToolbox) or OpenH264 in software |
+| `crates/input` | Key map and mouse and keyboard injection (SendInput, CGEvent) |
+| `crates/render` | GPU rendering (wgpu), YUV → RGB in the shader |
+| `crates/session` | Host and viewer pipelines |
+| `crates/metrics` | Latency statistics |
+| `deploy` | Server: systemd script, Caddy, relay and Docker |
+| `installer` | Installers (WiX on Windows, `.dmg` on macOS, Linux packages) |
 
-## Contribuir
+## Contributing
 
-Sugestões e relatos de problemas são bem-vindos em [Issues](https://github.com/alexpacheli/hext-remote/issues).
-Para enviar uma mudança, abra um pull request. O CI roda nos três sistemas:
+Suggestions and bug reports are welcome in [Issues](https://github.com/alexpacheli/hext-remote/issues). To send
+a change, open a pull request. CI runs on all three systems:
 
 ```sh
 cargo fmt --all --check
@@ -211,13 +214,13 @@ cargo clippy --workspace --all-targets --locked
 cargo test --workspace --locked
 ```
 
-Ao contribuir, você concorda em licenciar a sua contribuição sob a mesma licença do projeto.
+By contributing, you agree to license your contribution under the project's license.
 
-## Licença
+## License
 
-O Hext Remote é software livre, sob a [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
-Quem distribuir o programa modificado, ou oferecer uma versão modificada do servidor pela rede, precisa
-publicar o código-fonte dessa versão sob a mesma licença.
+Hext Remote is free software, under the [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
+Whoever distributes a modified program, or offers a modified server over a network, must publish that version's
+source code under the same license.
 
 ## Code signing policy
 
