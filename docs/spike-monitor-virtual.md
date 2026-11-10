@@ -153,3 +153,9 @@ visualizador? Troque para ele: a imagem aparece?
   visualizador ("Monitor virtual"), não só automático.
 - Com o arquivo de configuração e os dois monitores desligados no botão, a sessão no monitor virtual roda normal,
   com **um cursor só**: o cursor por hardware resolve o cursor duplicado.
+- **Cada sessão começa no monitor 1** (o físico, desligado no botão): a imagem aparece e logo fica preta, e o
+  técnico reconecta (sessões de 18 a 68 s no log das 16:28 às 16:32); trocando para o 3, a imagem volta. Uma
+  abertura falhou com `Acesso negado (0x80070005)` do DXGI (16:28:42), que a espera de `open_waking` da 0.6.5
+  repete. Para o marco 1: com o virtual ligado, a sessão começa nele; e o visualizador lembra o último monitor
+  escolhido para cada computador. O "1 de N" no título não aparece em tela cheia: a escolha precisa estar na
+  interface.
