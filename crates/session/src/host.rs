@@ -810,8 +810,13 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             (Arc::new(Mutex::new(Some(screen))), displays)
         }
         Err(e) => {
-            // What failed, for the technician to read.
-            let reason = format!("captura indisponível: {e}");
+            // What failed, for the technician to read (short: the reason
+            // goes in one packet).
+            let mut reason = format!("captura indisponível: {e}");
+            if reason.len() > 400 {
+                let end = (0..=400).rev().find(|&i| reason.is_char_boundary(i));
+                reason.truncate(end.unwrap_or(0));
+            }
             conn.close(1u32.into(), reason.as_bytes());
             return Err(e);
         }
@@ -1462,7 +1467,7 @@ fn capture_loop(
     // Why there is nothing to show, if there is not: said instead of
     // "display not found".
     let mut no_display = None;
-    let none = !config.test_pattern && hext_capture::displays(false).is_ok_and(|d| d.is_empty());
+    let none = !config.test_pattern && virtual_display::no_monitor();
     if none && !virtual_offered {
         no_display = Some(CaptureError::Platform(
             "nenhum monitor ligado, e este computador não tem monitor virtual".into(),

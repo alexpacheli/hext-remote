@@ -48,6 +48,13 @@ pub fn available() -> bool {
     imp::can_change() && imp::installed()
 }
 
+/// Whether the computer has no monitor connected: nothing to show without
+/// the virtual one. A monitor asleep counts (on a Mac, it is not in the list
+/// to capture until it wakes, which it does for the session).
+pub fn no_monitor() -> bool {
+    imp::no_monitor()
+}
+
 /// Whether the virtual monitor that is on was turned on by the Hext (this
 /// process, or one before it that left the mark), and not by the computer's
 /// owner.
@@ -348,6 +355,11 @@ mod imp {
         Some((PathBuf::from(SETTINGS), SETTINGS_XML))
     }
 
+    /// Windows lists a monitor that is asleep (its image is black).
+    pub fn no_monitor() -> bool {
+        crate::displays(false).is_ok_and(|displays| displays.is_empty())
+    }
+
     /// The mark that the Hext turned it on, in the service's folder
     /// (`%ProgramData%\HextRemote`; without a service, there is none).
     fn mark_path() -> Option<PathBuf> {
@@ -394,7 +406,7 @@ mod imp {
     use objc2::msg_send;
     use objc2::rc::{Allocated, Retained};
     use objc2::runtime::{AnyClass, AnyObject};
-    use objc2_core_graphics::CGDisplayVendorNumber;
+    use objc2_core_graphics::{CGDisplayVendorNumber, CGError, CGGetOnlineDisplayList};
     use objc2_foundation::{NSArray, NSSize, NSString};
 
     use super::State;
@@ -527,6 +539,16 @@ mod imp {
         }
     }
 
+    /// Online: connected, awake or asleep (not only the active ones).
+    pub fn no_monitor() -> bool {
+        let mut ids = [0u32; 32];
+        let mut count = 0u32;
+        let error =
+            unsafe { CGGetOnlineDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+        let ids = &ids[..(count as usize).min(ids.len())];
+        error == CGError::Success && ids.iter().all(|&id| CGDisplayVendorNumber(id) == VENDOR)
+    }
+
     pub fn is_virtual(id: &str) -> bool {
         id.parse()
             .is_ok_and(|id| CGDisplayVendorNumber(id) == VENDOR)
@@ -555,6 +577,10 @@ mod imp {
     }
 
     pub fn can_change() -> bool {
+        false
+    }
+
+    pub fn no_monitor() -> bool {
         false
     }
 
