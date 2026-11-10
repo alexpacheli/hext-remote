@@ -125,14 +125,25 @@ fn signed_bundle(exe: &Path) -> Option<PathBuf> {
         .arg(app)
         .output()
         .ok()?;
+    // `-dvv`: with one `v`, codesign leaves out who signed (the `Authority`
+    // lines), and every app looked unsigned: the installed Mac app never
+    // updated itself (0.6.4, 0.6.5).
     let details = Command::new("/usr/bin/codesign")
-        .arg("-dv")
+        .arg("-dvv")
         .arg(app)
         .output()
         .ok()?;
-    // (codesign describes it on stderr; an ad hoc one names no authority.)
-    let signed = String::from_utf8_lossy(&details.stderr).contains("Authority=Developer ID");
+    // (codesign describes it on stderr.)
+    let signed = by_developer_id(&String::from_utf8_lossy(&details.stderr));
     (verified.status.success() && signed).then(|| app.to_owned())
+}
+
+/// Whether `codesign -dvv` says a Developer ID signed it (an ad hoc
+/// signature names no authority).
+fn by_developer_id(details: &str) -> bool {
+    details
+        .lines()
+        .any(|line| line.starts_with("Authority=Developer ID Application:"))
 }
 
 /// Puts `new` in the bundle, and signs the bundle (ad hoc, with its
@@ -833,5 +844,25 @@ mod tests {
         assert!(text.contains("<string>ui</string>"));
         assert!(text.contains("<string>Aqua</string>"));
         assert!(text.contains(&format!("<string>{LABEL}</string>")));
+    }
+
+    #[test]
+    fn only_a_developer_id_counts_as_signed() {
+        // What `codesign -dvv` says of the release's app.
+        let release = "Executable=/Applications/Hext Remote.app/Contents/MacOS/HextRemote\n\
+            Identifier=br.com.hext.remote\n\
+            Format=app bundle with Mach-O universal (x86_64 arm64)\n\
+            Authority=Developer ID Application: Fulano de Tal (ABCDE12345)\n\
+            Authority=Developer ID Certification Authority\n\
+            Authority=Apple Root CA\n\
+            TeamIdentifier=ABCDE12345\n";
+        assert!(by_developer_id(release));
+        // `-dv` (what 0.6.4 asked): no `Authority` lines.
+        let short = "Executable=/Applications/Hext Remote.app/Contents/MacOS/HextRemote\n\
+            Identifier=br.com.hext.remote\n\
+            TeamIdentifier=ABCDE12345\n";
+        assert!(!by_developer_id(short));
+        let ad_hoc = "Identifier=br.com.hext.remote\nSignature=adhoc\nTeamIdentifier=not set\n";
+        assert!(!by_developer_id(ad_hoc));
     }
 }
