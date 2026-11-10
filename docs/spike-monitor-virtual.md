@@ -164,3 +164,8 @@ visualizador? Troque para ele: a imagem aparece?
   com o virtual ligado, a sessão começa nele; e o visualizador lembra o último monitor escolhido para cada
   computador. O "1 de N" no título não aparece em tela cheia: a escolha precisa estar na interface.
 - Depois de os fantasmas saírem, sem cabo e só com o virtual, a sessão abre e reabre normalmente.
+- Uma tela preta às 16:39, já só com o virtual na lista, ficou sem explicação: nenhum erro no host nem no
+  visualizador, e na sessão seguinte o host mandava 60 quadros/s com imagem de verdade (7 a 8 Mbps). Depois disso a
+  sessão ficou estável. A observar no marco 1 (estatísticas no título e o `service.log` do minuto exato).
+- O `view.log` do visualizador confirma o erro do Mac corrigido na 0.6.5: "o host encerrou a sessão: capture
+  unavailable" às 13:10 e 14:09 UTC.
