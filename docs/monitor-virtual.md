@@ -156,6 +156,26 @@ O **+** só aparece com o Hext instalado como serviço (é o agent, como SYSTEM,
 pasta do serviço guarda a marca); o app avulso não oferece o monitor virtual. Um dispositivo com outro problema
 além de "desabilitado" (código 10, por exemplo) não é ligado: o `agent.log` diz o código.
 
+## Marco 3: macOS
+
+Feito junto com o marco 1 (o spike passou no macOS 27.2: o monitor apareceu no ScreenCaptureKit em 0,5 s, e o
+visualizador o mostrou como mais um monitor). O app que captura (o que abre no login) cria o monitor com
+`CGVirtualDisplay`: 1920×1080 (também 1600×900 e 1280×720, nos Ajustes do Mac), 24", sem HiDPI, fornecedor
+`0x4858` ("HX"), pelo qual o Hext o reconhece na lista. Ele existe enquanto o app o mantém: some no fim da sessão e
+some se o app fechar ou cair (não há marca em disco). Nada a instalar: o **+** aparece em qualquer Mac com a API.
+
+Sem a API (um macOS que a removeu) ou sem monitor nenhum, o técnico recebe o motivo ("captura indisponível: …"),
+em vez de "capture unavailable".
+
+**Roteiro** (Mac com o Hext de teste, login automático ligado):
+
+1. Com os monitores ligados: conecte. A barra mostra os números e o **+**. Clique no **+** (ou Ctrl+Alt+0): a
+   imagem passa para o virtual em 1920×1080. No `ui.log`: "monitor virtual: ligado".
+2. Encerre a sessão: "monitor virtual: desligado"; o monitor some dos Ajustes do Mac > Monitores.
+3. Sem monitor (cabos desligados): conecte. A sessão abre direto no virtual. Encerre: ele some.
+4. Queda no meio: com o virtual ligado, feche o Hext pelo Monitor de Atividade: o monitor some junto.
+5. Sem permissão de controle: o **+** não aparece.
+
 ## Testes automáticos
 
 - Em qual monitor a sessão começa (o pedido, o virtual ligado, o principal), o que o visualizador fica sabendo
