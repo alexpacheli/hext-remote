@@ -159,3 +159,7 @@ visualizador? Troque para ele: a imagem aparece?
   repete. Para o marco 1: com o virtual ligado, a sessão começa nele; e o visualizador lembra o último monitor
   escolhido para cada computador. O "1 de N" no título não aparece em tela cheia: a escolha precisa estar na
   interface.
+- **Sem os cabos**, o DXGI lista só o monitor virtual (`\.\DISPLAY54`, 1920×1080 em (0, 0)): os físicos saem da
+  lista. Ao tirar os cabos no meio da sessão (16:35:51), o Hext passou sozinho para o monitor que sobrou e a
+  imagem continuou. A tela preta só acontece com o cabo ligado e o monitor desligado no botão, porque aí o
+  Windows mantém o monitor na lista.
