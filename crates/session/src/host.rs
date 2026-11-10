@@ -1142,6 +1142,50 @@ fn open_first(
     Ok((capturer, Layout { displays, current }))
 }
 
+/// How long opening the capture is retried while a display wakes up.
+const WAKE_WAIT: Duration = Duration::from_secs(8);
+/// Between tries.
+const WAKE_RETRY: Duration = Duration::from_millis(250);
+
+/// [`open_first`], retried for up to [`WAKE_WAIT`] while the display wakes:
+/// a Mac whose display slept lists no display to capture until it is on.
+fn open_waking(
+    config: &CaptureSettings,
+) -> std::result::Result<(Box<dyn Capturer>, Layout), CaptureError> {
+    retry_while_waking(|| open_first(config), WAKE_WAIT, WAKE_RETRY)
+}
+
+fn retry_while_waking<T>(
+    mut open: impl FnMut() -> std::result::Result<T, CaptureError>,
+    wait: Duration,
+    retry: Duration,
+) -> std::result::Result<T, CaptureError> {
+    let start = Instant::now();
+    let mut told = false;
+    loop {
+        match open() {
+            Ok(opened) => {
+                if told {
+                    info!("captura: aberta depois de {:?}", start.elapsed());
+                }
+                return Ok(opened);
+            }
+            // No use waiting: these do not change with the display waking.
+            Err(e @ (CaptureError::PermissionDenied(_) | CaptureError::Unsupported)) => {
+                return Err(e);
+            }
+            Err(e) if start.elapsed() + retry > wait => return Err(e),
+            Err(e) => {
+                if !told {
+                    info!("captura: {e}; esperando a tela acordar");
+                    told = true;
+                }
+                std::thread::sleep(retry);
+            }
+        }
+    }
+}
+
 fn fps(config: &CaptureSettings) -> u32 {
     config.encoder.max_fps.round() as u32
 }
@@ -1215,7 +1259,12 @@ fn capture_loop(
     frames: &mpsc::Sender<VideoFrame>,
     started: oneshot::Sender<Result<()>>,
 ) {
-    let opened = open_first(config)
+    // The screen on while it is shown, and woken before capture opens: one
+    // that went off for being idle has nothing to capture (Windows: black;
+    // macOS: no display to open, and the session ended at once). Here, on
+    // the capture thread, which follows the desktop getting input.
+    let _awake = (!config.test_pattern).then(hext_capture::KeepAwake::new);
+    let opened = open_waking(config)
         .map_err(SessionError::from)
         .and_then(|(capturer, layout)| {
             Ok((capturer, layout, hext_codec::open_encoder(config.encoder)?))
@@ -1232,10 +1281,6 @@ fn capture_loop(
         }
     };
     info!("codificador: {}", encoder.name());
-    // The screen on while it is shown: one that went off for being idle has
-    // nothing to capture (the viewer would see black). Here, on the capture
-    // thread, which follows the desktop getting input.
-    let _awake = (!config.test_pattern).then(hext_capture::KeepAwake::new);
     let mut hardware = encoder.is_hardware();
     let min_interval = Duration::from_secs_f32(1.0 / config.encoder.max_fps.max(1.0));
     let mut last_encode: Option<Instant> = None;
@@ -1491,6 +1536,51 @@ mod tests {
             id: id.into(),
             rect: Rect::default(),
         }
+    }
+
+    #[test]
+    fn capture_opens_once_the_display_wakes() {
+        let mut tries = 0;
+        let opened = retry_while_waking(
+            || {
+                tries += 1;
+                if tries < 3 {
+                    Err(CaptureError::NoSuchDisplay(0))
+                } else {
+                    Ok(tries)
+                }
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        );
+        assert_eq!(opened.unwrap(), 3);
+    }
+
+    #[test]
+    fn a_display_that_never_wakes_gives_up_in_time() {
+        let start = Instant::now();
+        let opened: std::result::Result<(), _> = retry_while_waking(
+            || Err(CaptureError::Platform("sem monitor".into())),
+            Duration::from_millis(50),
+            Duration::from_millis(5),
+        );
+        assert!(matches!(opened, Err(CaptureError::Platform(_))));
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn no_permission_is_not_retried() {
+        let mut tries = 0;
+        let opened: std::result::Result<(), _> = retry_while_waking(
+            || {
+                tries += 1;
+                Err(CaptureError::PermissionDenied("tela".into()))
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        );
+        assert!(matches!(opened, Err(CaptureError::PermissionDenied(_))));
+        assert_eq!(tries, 1);
     }
 
     fn layout(ids: &[&str], current: usize) -> Layout {
