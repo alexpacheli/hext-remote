@@ -25,6 +25,8 @@ pub struct Lease(());
 static LEASES: Mutex<(usize, bool)> = Mutex::new((0, false));
 
 /// The driver's device, as found.
+/// (Only Windows finds it on or broken, for now.)
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     On,
