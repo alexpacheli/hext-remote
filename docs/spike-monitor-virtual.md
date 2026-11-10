@@ -145,21 +145,22 @@ visualizador? Troque para ele: a imagem aparece?
 - Com o `vdd_settings.xml` de exemplo em `C:\VirtualDisplayDriver`, o monitor nasce em **1920×1080 a 60 Hz** e só
   oferece os modos do arquivo (1920×1080, 2560×1440 e 3840×2160, de 60 a 240 Hz): o arquivo controla a resolução
   inicial sem precisar do `ChangeDisplaySettingsEx`.
-- **Monitor desligado no botão continua na lista.** Com os dois monitores físicos desligados, o log da sessão das
-  16:16 mostra o técnico trocando entre os monitores 1, 2 e 3: o Windows (e o DXGI) ainda listam os dois
-  desligados, e a sessão abriu num deles (imagem preta). Sem erro no log. Consequência para o plano: "a lista
-  está vazia" só pega o computador **sem cabo** de monitor; com um monitor ligado no cabo e desligado no botão, o
-  Hext não sabe que ninguém está vendo. Por isso o monitor virtual precisa também ser uma opção do técnico no
-  visualizador ("Monitor virtual"), não só automático.
-- Com o arquivo de configuração e os dois monitores desligados no botão, a sessão no monitor virtual roda normal,
-  com **um cursor só**: o cursor por hardware resolve o cursor duplicado.
-- **Cada sessão começa no monitor 1** (o físico, desligado no botão): a imagem aparece e logo fica preta, e o
-  técnico reconecta (sessões de 18 a 68 s no log das 16:28 às 16:32); trocando para o 3, a imagem volta. Uma
-  abertura falhou com `Acesso negado (0x80070005)` do DXGI (16:28:42), que a espera de `open_waking` da 0.6.5
-  repete. Para o marco 1: com o virtual ligado, a sessão começa nele; e o visualizador lembra o último monitor
-  escolhido para cada computador. O "1 de N" no título não aparece em tela cheia: a escolha precisa estar na
-  interface.
-- **Sem os cabos**, o DXGI lista só o monitor virtual (`\.\DISPLAY54`, 1920×1080 em (0, 0)): os físicos saem da
-  lista. Ao tirar os cabos no meio da sessão (16:35:51), o Hext passou sozinho para o monitor que sobrou e a
-  imagem continuou. A tela preta só acontece com o cabo ligado e o monitor desligado no botão, porque aí o
-  Windows mantém o monitor na lista.
+- **Monitores sem cabo continuam na lista ("fantasmas").** Todos os testes das 16:16 às 16:32 foram com os dois
+  cabos tirados, e mesmo assim o Windows (e o DXGI) listavam três monitores: os dois físicos, sem cabo, e o
+  virtual. A sessão abria no monitor 1, um fantasma, e a imagem ficava preta. Às 16:33 o `status` ainda mostrava os
+  dois Dell como "OK" e ativos, e o virtual desabilitado. Às 16:35:51, ao habilitar o virtual de novo, o Windows
+  refez a lista e os fantasmas saíram: ficou só o virtual (`\.\DISPLAY54`, 1920×1080 em (0, 0)), e o Hext passou
+  sozinho para ele. Ou seja: depois de tirar um cabo, o Windows pode manter o monitor na lista até a próxima
+  mudança de monitores. Consequências para o plano:
+  - ligar o virtual é uma mudança de monitores e limpa os fantasmas: quando o Hext liga o virtual, a sessão deve
+    começar nele;
+  - "a lista está vazia" não basta para decidir sozinho (os fantasmas contam): o técnico precisa da opção
+    "Monitor virtual" no visualizador.
+- Com o arquivo de configuração, a sessão no monitor virtual roda normal, com **um cursor só**: o cursor por
+  hardware resolve o cursor duplicado.
+- **Cada sessão começava no monitor 1** (o fantasma): a imagem aparece e logo fica preta, e o técnico reconecta
+  (sessões de 18 a 68 s no log das 16:28 às 16:32); trocando para o 3, a imagem volta. Uma abertura falhou com
+  `Acesso negado (0x80070005)` do DXGI (16:28:42), que a espera de `open_waking` da 0.6.5 repete. Para o marco 1:
+  com o virtual ligado, a sessão começa nele; e o visualizador lembra o último monitor escolhido para cada
+  computador. O "1 de N" no título não aparece em tela cheia: a escolha precisa estar na interface.
+- Depois de os fantasmas saírem, sem cabo e só com o virtual, a sessão abre e reabre normalmente.

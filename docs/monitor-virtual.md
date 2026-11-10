@@ -17,9 +17,9 @@ O Parsec resolve isso com o próprio driver de monitor virtual (fechado, não po
 
 1. **Automático:** a sessão começa e `displays()` volta vazio (computador sem cabo de monitor). O Hext liga o
    monitor virtual, espera ele aparecer na lista (como a espera de `open_waking`, até 8 s) e abre a captura nele.
-2. **Pelo técnico:** um monitor ligado no cabo mas desligado no botão continua na lista do Windows (o spike
-   mostrou), e o Hext não tem como saber que ninguém o vê. Por isso o visualizador tem a opção "Monitor
-   virtual" na lista de monitores: liga o virtual e mostra ele.
+2. **Pelo técnico:** um monitor que perdeu o cabo pode continuar na lista do Windows até a próxima mudança
+   de monitores (o spike mostrou), e o Hext não tem como saber que ninguém o vê. Por isso o visualizador tem a
+   opção "Monitor virtual" na lista de monitores: liga o virtual e mostra ele.
 3. Ao fim da sessão, o Hext desliga o monitor virtual. Um monitor fantasma que ficasse ligado aumentaria a área
    de trabalho e "esconderia" janelas para quem usa o computador com um monitor de verdade depois.
 4. Com um monitor de verdade ligado, e sem o técnico pedir, nada muda: o virtual não é criado.
