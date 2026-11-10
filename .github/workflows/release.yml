@@ -12,15 +12,28 @@ name: Release
 #   Update:  UPDATE_SIGNING_KEY (marco 2), with the public half in the variable HEXT_UPDATE_KEY
 #
 # Each secret reaches only the steps that use it, and none of them runs for a
-# pull request. The actions are pinned by commit (the tag in the comment).
+# pull request (nor for main). The actions are pinned by commit (the tag in
+# the comment).
+#
+# Caches: a tag can only read the caches of main (GitHub keeps each ref's to
+# itself and the default branch), so main builds the installers too, unsigned
+# and unpublished, and is the only one that saves them (`cache-save-if`):
+# a tag then compiles only this project's crates, not every dependency.
 
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths-ignore: ["docs/**", "**.md"]
   # The installers changed: built and tested, not published.
   pull_request:
     paths: ["installer/**", ".github/workflows/release.yml", "apps/hext/Cargo.toml"]
   workflow_dispatch:
+
+# A newer main replaces the build of the last one (a tag always finishes).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 # Reading only; the job that opens the release (publish) asks for writing.
 permissions:
@@ -59,13 +72,15 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       # Whether to sign ("true" or "false"), not the certificate: that one only
-      # in the steps that sign, and never for a pull request.
-      SIGN: ${{ github.event_name != 'pull_request' && secrets.WINDOWS_CERTIFICATE != '' }}
+      # in the steps that sign; only for a tag or by hand (never a pull request
+      # nor main).
+      SIGN: ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && secrets.WINDOWS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           target: x86_64-pc-windows-msvc
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build
         shell: bash
@@ -136,28 +151,55 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  macos:
+  # The two halves of the universal app, at the same time (one after the other
+  # they took most of the release).
+  macos-build:
     needs: version
     runs-on: macos-latest
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
-      # Whether to sign ("true" or "false"), not the certificate: that one only
-      # in the steps that sign, and never for a pull request.
-      SIGN: ${{ github.event_name != 'pull_request' && secrets.APPLE_CERTIFICATE != '' }}
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
-          target: aarch64-apple-darwin,x86_64-apple-darwin
+          target: ${{ matrix.target }}
+          # One cache per half; saved only from main (see the top).
+          cache-key: ${{ matrix.target }}
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build
+        run: cargo build --release --locked -p hext --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/hext
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Build (universal)
+  macos:
+    needs: [version, macos-build]
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # Whether to sign ("true" or "false"), not the certificate: that one only
+      # in the steps that sign; only for a tag or by hand (never a pull request
+      # nor main).
+      SIGN: ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && secrets.APPLE_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: macos-*
+          path: halves
+
+      - name: Universal
         run: |
-          cargo build --release --locked -p hext --target aarch64-apple-darwin
-          cargo build --release --locked -p hext --target x86_64-apple-darwin
           mkdir dist
           lipo -create -output dist/HextRemote \
-            target/aarch64-apple-darwin/release/hext \
-            target/x86_64-apple-darwin/release/hext
+            halves/macos-aarch64-apple-darwin/hext \
+            halves/macos-x86_64-apple-darwin/hext
+          chmod +x dist/HextRemote
+          lipo -info dist/HextRemote
 
       - name: Certificate
         id: certificate
@@ -215,6 +257,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           target: x86_64-unknown-linux-gnu
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build
         run: |
@@ -272,6 +315,15 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+      # The program publish signs the list with: the one built above from the
+      # source (not the AppImage, whose runtime is someone else's code).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signer
+          path: target/x86_64-unknown-linux-gnu/release/hext
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
     if: github.ref_type == 'tag'
     needs: [version, windows, macos, linux]
@@ -284,19 +336,21 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # No cache here: this job holds the update key.
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
-        with:
-          cache: false
+      # The installers only (not the Mac halves nor the signer).
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          pattern: release-*
           path: dist
           merge-multiple: true
-      # The program that signs the list, built here from the source (not the
-      # AppImage, whose runtime is someone else's code), and without the key:
-      # the build scripts never see it.
-      - name: Build the signer
-        run: cargo build --release --locked -p hext
+      # The program that signs the list: built from the source by the Linux
+      # job (no build here: nothing compiled ever runs next to the key but
+      # this one program), away from dist so it is not released.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: signer
+          path: ${{ runner.temp }}/signer
+      - name: Signer
+        run: chmod +x "$RUNNER_TEMP/signer/hext" && "$RUNNER_TEMP/signer/hext" --version
       # The signed list the apps update from (none without the key).
       - name: Update manifest
         env:
@@ -306,7 +360,7 @@ jobs:
             echo "::warning::sem UPDATE_SIGNING_KEY: esta versão não vai para a atualização automática"
             exit 0
           fi
-          target/release/hext update manifest dist "$VERSION"
+          "$RUNNER_TEMP/signer/hext" update manifest dist "$VERSION"
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Draft release
