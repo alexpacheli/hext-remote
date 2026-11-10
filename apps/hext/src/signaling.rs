@@ -547,27 +547,90 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn the_outcome_of_a_request_reaches_the_server() {
+    /// How long each step of these tests may take (they take milliseconds).
+    const STEP: Duration = Duration::from_secs(20);
+    /// How long a whole test may take before it fails.
+    const WHOLE: Duration = Duration::from_secs(90);
+
+    /// Runs `test` on its own thread and runtime, and fails if it does not
+    /// end within [`WHOLE`]. On the Windows runner of CI these tests have
+    /// hung now and then (until the job's 45 minutes ran out) and a
+    /// `tokio::time::timeout` inside never fired: something blocked the
+    /// test's only thread outright (the iroh endpoint registers its network
+    /// callbacks with Win32 synchronously). A watchdog on another thread
+    /// fails whatever blocks; with more than one worker, the timeouts of
+    /// each step still fire and say which one it was.
+    fn within(test: impl std::future::Future<Output = ()> + Send + 'static) {
+        let (done, ended) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(test);
+            let _ = done.send(());
+        });
+        match ended.recv_timeout(WHOLE) {
+            Ok(()) => {}
+            // It panicked: the same failure here.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                if let Err(panic) = thread.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+            // Left behind, blocked: the process ends with the tests.
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("o teste não terminou em {WHOLE:?}: algo bloqueou a thread")
+            }
+        }
+    }
+
+    /// `step`'s result, or a failure naming it.
+    async fn step<T>(what: &str, step: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(STEP, step)
+            .await
+            .unwrap_or_else(|_| panic!("{what}: não terminou em {STEP:?}"))
+    }
+
+    /// A signaling server on this machine, the host and the technician
+    /// logged in to it, and the host's endpoint: on loopback, direct only
+    /// (no relay, nothing outside this machine).
+    async fn logged_in(
+        host_key: &DeviceKey,
+        viewer_key: &DeviceKey,
+    ) -> (Arc<hext_server::State>, Client, Client, Endpoint) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let db = hext_server::Db::in_memory().unwrap();
         let state = Arc::new(hext_server::State::new(db));
         let config = hext_server::Config::default();
         tokio::spawn(hext_server::serve(listener, state.clone(), config));
+        let host = Client::connect(&url, host_key, "Host", "t", Role::Host);
+        let host = step("login do host", host).await.unwrap();
+        let viewer = Client::connect(&url, viewer_key, "Técnico", "t", Role::Viewer);
+        let viewer = step("login do técnico", viewer).await.unwrap();
+        let config = hext_net::EndpointConfig {
+            relay: None,
+            bind: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+            accept: true,
+        };
+        let endpoint = step("endpoint do host", hext_net::bind(host_key, &config))
+            .await
+            .unwrap();
+        (state, host, viewer, endpoint)
+    }
 
+    #[test]
+    fn the_outcome_of_a_request_reaches_the_server() {
+        within(the_outcome_of_a_request_reaches_the_server_());
+    }
+
+    async fn the_outcome_of_a_request_reaches_the_server_() {
         let host_key = DeviceKey::generate().unwrap();
         let viewer_key = DeviceKey::generate().unwrap();
-        let mut host = Client::connect(&url, &host_key, "Host", "t", Role::Host)
-            .await
-            .unwrap();
-        let mut viewer = Client::connect(&url, &viewer_key, "Técnico", "t", Role::Viewer)
-            .await
-            .unwrap();
+        let (state, mut host, mut viewer, endpoint) = logged_in(&host_key, &viewer_key).await;
         let (to, id) = (host.id(), viewer.id());
-        let endpoint = hext_net::bind(&host_key, &hext_net::EndpointConfig::default())
-            .await
-            .unwrap();
         let (codes, resumes) = (SessionCodes::default(), ResumeTokens::default());
         let slot = Semaphore::new(1);
         let (attempts, mut outcomes) = mpsc::unbounded_channel();
@@ -610,15 +673,12 @@ mod tests {
         }
     }
 
-    /// The server's answer, or a failure that says so: on CI these tests
-    /// have hung waiting for it (now and then, on Windows), until the job's
-    /// time ran out.
+    /// The server's answer, or a failure that says so.
     async fn answer_within(
         answer: impl std::future::Future<Output = Result<ServerMsg, hext_signal::ClientError>>,
     ) -> ServerMsg {
-        tokio::time::timeout(Duration::from_secs(60), answer)
+        step("resposta do servidor ao pedido", answer)
             .await
-            .expect("o servidor não respondeu ao pedido em 60 s")
             .unwrap()
     }
 
@@ -662,27 +722,10 @@ mod tests {
         on: bool,
         signed_by_it: Option<bool>,
     ) -> (ServerMsg, usize, Option<Grant>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("ws://{}", listener.local_addr().unwrap());
-        let db = hext_server::Db::in_memory().unwrap();
-        let state = Arc::new(hext_server::State::new(db));
-        tokio::spawn(hext_server::serve(
-            listener,
-            state,
-            hext_server::Config::default(),
-        ));
         let host_key = DeviceKey::generate().unwrap();
         let viewer_key = DeviceKey::generate().unwrap();
-        let mut host = Client::connect(&url, &host_key, "Host", "t", Role::Host)
-            .await
-            .unwrap();
-        let mut viewer = Client::connect(&url, &viewer_key, "Técnico", "t", Role::Viewer)
-            .await
-            .unwrap();
+        let (_, mut host, mut viewer, endpoint) = logged_in(&host_key, &viewer_key).await;
         let to = host.id();
-        let endpoint = hext_net::bind(&host_key, &hext_net::EndpointConfig::default())
-            .await
-            .unwrap();
         let (codes, resumes) = (SessionCodes::default(), ResumeTokens::default());
         let slot = Semaphore::new(1);
         let mut outcomes = no_attempts();
@@ -728,8 +771,12 @@ mod tests {
         (answer, ask.asked, grant)
     }
 
-    #[tokio::test]
-    async fn a_bound_technician_is_let_in_without_anyone_asked() {
+    #[test]
+    fn a_bound_technician_is_let_in_without_anyone_asked() {
+        within(a_bound_technician_is_let_in_without_anyone_asked_());
+    }
+
+    async fn a_bound_technician_is_let_in_without_anyone_asked_() {
         let (answer, asked, grant) = as_technician((false, false), true).await;
         assert!(matches!(answer, ServerMsg::Accepted { .. }), "{answer:?}");
         assert_eq!(asked, 0);
@@ -738,15 +785,23 @@ mod tests {
         assert!(grant.permissions.restart && grant.permissions.files);
     }
 
-    #[tokio::test]
-    async fn with_the_password_off_a_bound_technician_waits_for_a_yes() {
+    #[test]
+    fn with_the_password_off_a_bound_technician_waits_for_a_yes() {
+        within(with_the_password_off_a_bound_technician_waits_for_a_yes_());
+    }
+
+    async fn with_the_password_off_a_bound_technician_waits_for_a_yes_() {
         let (answer, asked, _) = as_technician((false, false), false).await;
         assert!(matches!(answer, ServerMsg::Rejected { .. }), "{answer:?}");
         assert_eq!(asked, 1);
     }
 
-    #[tokio::test]
-    async fn asking_to_be_remembered_reaches_the_session() {
+    #[test]
+    fn asking_to_be_remembered_reaches_the_session() {
+        within(asking_to_be_remembered_reaches_the_session_());
+    }
+
+    async fn asking_to_be_remembered_reaches_the_session_() {
         let (_, _, grant) = as_technician((true, true), true).await;
         let grant = grant.expect("a code");
         assert!(grant.needs_password && grant.remember && !grant.bound);
@@ -754,8 +809,12 @@ mod tests {
         assert!(!grant.expect("a code").remember);
     }
 
-    #[tokio::test]
-    async fn an_ask_to_bind_to_an_account_reaches_the_session_only_as_signed() {
+    #[test]
+    fn an_ask_to_bind_to_an_account_reaches_the_session_only_as_signed() {
+        within(an_ask_to_bind_to_an_account_reaches_the_session_only_as_signed_());
+    }
+
+    async fn an_ask_to_bind_to_an_account_reaches_the_session_only_as_signed_() {
         let (_, _, grant) = as_technician_asking((true, false), true, Some(true)).await;
         assert_eq!(grant.expect("a code").account, Some([4; 32]));
         // Signed by someone else (a server pointing it at its own account):
