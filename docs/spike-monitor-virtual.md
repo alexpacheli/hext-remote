@@ -169,3 +169,4 @@ visualizador? Troque para ele: a imagem aparece?
   sessão ficou estável. A observar no marco 1 (estatísticas no título e o `service.log` do minuto exato).
 - O `view.log` do visualizador confirma o erro do Mac corrigido na 0.6.5: "o host encerrou a sessão: capture
   unavailable" às 13:10 e 14:09 UTC.
+- Do Mac (visualizador), o PC sem cabo de monitor abre normal no monitor virtual.
