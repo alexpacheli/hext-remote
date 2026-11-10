@@ -257,6 +257,10 @@ pub enum Control {
     Chat { text: ChatText },
     /// Host → client: nobody at that computer can read the chat.
     ChatNoOne,
+    /// Client → host: turn the virtual monitor on (and show it) or off. Only
+    /// to a host that offers one ([`Displays::virtual_display`]): an older
+    /// host does not know this message.
+    VirtualDisplay { on: bool },
 }
 
 /// A message of the chat. It comes from the other computer, so what cannot be
@@ -320,6 +324,24 @@ impl std::fmt::Debug for ChatText {
 pub struct Displays {
     pub count: u8,
     pub current: u8,
+    /// Whether the host can show a monitor of its own for the session. Last
+    /// on purpose: an older host sends nothing ([`VirtualDisplay::None`]),
+    /// and an older viewer ignores it.
+    #[serde(default, deserialize_with = "absent_is_default")]
+    pub virtual_display: VirtualDisplay,
+}
+
+/// The virtual monitor of a host (docs/monitor-virtual.md): a monitor that
+/// exists only for the session, for a computer with none to show.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VirtualDisplay {
+    /// The host has none (or is older).
+    #[default]
+    None,
+    /// It can turn one on ([`Control::VirtualDisplay`]).
+    Off,
+    /// It is on, as display `index`.
+    On { index: u8 },
 }
 
 /// What the receiving side did with a file.
@@ -512,8 +534,10 @@ mod tests {
             Control::Displays(Displays {
                 count: 3,
                 current: 1,
+                virtual_display: VirtualDisplay::On { index: 2 },
             }),
             Control::SelectDisplay { index: 2 },
+            Control::VirtualDisplay { on: true },
             Control::Chat {
                 text: ChatText::new("Pode reiniciar?").unwrap(),
             },
@@ -544,6 +568,33 @@ mod tests {
             let bytes = encode(&msg).unwrap();
             assert_eq!(decode::<Control>(&bytes).unwrap(), msg);
         }
+    }
+
+    #[test]
+    fn displays_go_both_ways_between_versions() {
+        #[derive(Serialize, Deserialize)]
+        struct OldDisplays {
+            count: u8,
+            current: u8,
+        }
+        // From an older host: no virtual monitor.
+        let old = encode(&OldDisplays {
+            count: 2,
+            current: 1,
+        })
+        .unwrap();
+        let displays: Displays = decode(&old).unwrap();
+        assert_eq!(displays.virtual_display, VirtualDisplay::None);
+        assert_eq!((displays.count, displays.current), (2, 1));
+        // To an older viewer: what it knows, the rest ignored.
+        let new = encode(&Displays {
+            count: 3,
+            current: 2,
+            virtual_display: VirtualDisplay::On { index: 2 },
+        })
+        .unwrap();
+        let seen: OldDisplays = decode(&new).unwrap();
+        assert_eq!((seen.count, seen.current), (3, 2));
     }
 
     #[test]

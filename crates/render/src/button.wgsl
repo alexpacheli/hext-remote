@@ -87,8 +87,9 @@ fn fs_handle(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(color, inside * mix(0.75, 0.9, rim));
 }
 
-// How many displays there are, and the one shown (from 0).
-@group(0) @binding(0) var<uniform> displays: vec2<u32>;
+// How many buttons there are, the one shown (from 0), and whether the last is
+// a "+" (the virtual monitor, off now).
+@group(0) @binding(0) var<uniform> displays: vec4<u32>;
 
 // Half a cell's width, in units of half its height (BAR_CELL / BUTTON_HEIGHT).
 const CELL_HALF_WIDTH: f32 = 32.0 / 28.0;
@@ -117,6 +118,12 @@ fn digit(p: vec2<f32>, n: u32) -> f32 {
     return d;
 }
 
+// Distance to a "+".
+fn plus_sign(p: vec2<f32>) -> f32 {
+    let r = 0.4;
+    return min(segment(p, vec2<f32>(-r, 0.0), vec2<f32>(r, 0.0)), segment(p, vec2<f32>(0.0, -r), vec2<f32>(0.0, r)));
+}
+
 // The numbered buttons, side by side: the one shown stands out.
 @fragment
 fn fs_bar(in: VsOut) -> @location(0) vec4<f32> {
@@ -128,7 +135,9 @@ fn fs_bar(in: VsOut) -> @location(0) vec4<f32> {
     let shape = rounded(p, vec2<f32>(CELL_HALF_WIDTH - 0.08, 1.0));
     let inside = 1.0 - smoothstep(-edge, edge, shape);
     let number = (u32(cell) + 1u) % 10u;
-    let line = 1.0 - smoothstep(-edge, edge, digit(p, number) - 0.08);
+    let plus = displays.z == 1u && u32(cell) == displays.x - 1u;
+    let mark = select(digit(p, number), plus_sign(p), plus);
+    let line = 1.0 - smoothstep(-edge, edge, mark - 0.08);
     let shown = u32(cell) == displays.y;
     let back = select(0.12, 0.95, shown);
     let ink = select(1.0, 0.1, shown);

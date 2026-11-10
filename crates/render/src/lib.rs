@@ -108,21 +108,31 @@ pub enum ButtonAction {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DisplayBar {
     pub rect: VideoRect,
+    /// Buttons, the `plus` one included.
     pub count: u32,
     /// The one shown, from 0.
     pub current: u32,
+    /// The last button is a "+": the host's virtual monitor, off now.
+    pub plus: bool,
 }
 
 impl DisplayBar {
     /// The bar for `count` displays, left of the full screen `button`;
     /// `None` when the window has no room for it.
-    pub fn new(button: VideoRect, count: u32, current: u32, scale: f64) -> Option<Self> {
+    pub fn new(
+        button: VideoRect,
+        count: u32,
+        current: u32,
+        plus: bool,
+        scale: f64,
+    ) -> Option<Self> {
         let width = (BAR_CELL * scale) as f32 * count as f32;
         let x = button.x - (BAR_GAP * scale) as f32 - width;
         (x >= 0.0).then_some(Self {
             rect: VideoRect { x, width, ..button },
             count,
             current,
+            plus,
         })
     }
 
@@ -363,7 +373,7 @@ impl Renderer {
         let handle_pipeline = button_pipeline("fs_handle");
         let bar_displays = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("display bar"),
-            size: 8,
+            size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -425,9 +435,10 @@ impl Renderer {
     pub fn set_display_bar(&mut self, bar: Option<DisplayBar>) {
         self.bar = bar;
         if let Some(bar) = bar {
-            let mut bytes = [0; 8];
+            let mut bytes = [0; 16];
             bytes[..4].copy_from_slice(&bar.count.to_le_bytes());
-            bytes[4..].copy_from_slice(&bar.current.to_le_bytes());
+            bytes[4..8].copy_from_slice(&bar.current.to_le_bytes());
+            bytes[8..12].copy_from_slice(&u32::from(bar.plus).to_le_bytes());
             self.queue.write_buffer(&self.bar_displays, 0, &bytes);
         }
     }
@@ -730,7 +741,7 @@ mod tests {
     #[test]
     fn the_display_bar_sits_left_of_the_button() {
         let button = button_rect((1000, 800), 2.0);
-        let bar = DisplayBar::new(button, 3, 1, 2.0).unwrap();
+        let bar = DisplayBar::new(button, 3, 1, false, 2.0).unwrap();
         assert_eq!((bar.rect.y, bar.rect.height), (button.y, button.height));
         assert_eq!(bar.rect.x + bar.rect.width + 16.0, button.x);
         assert_eq!(bar.rect.width, 192.0);
@@ -739,7 +750,7 @@ mod tests {
     #[test]
     fn each_part_of_the_display_bar_is_a_display() {
         let button = button_rect((1000, 800), 1.0);
-        let bar = DisplayBar::new(button, 3, 0, 1.0).unwrap();
+        let bar = DisplayBar::new(button, 3, 0, false, 1.0).unwrap();
         let y = f64::from(bar.rect.y) + 2.0;
         let x = f64::from(bar.rect.x);
         assert_eq!(bar.display_at(x + 1.0, y), Some(0));
@@ -762,7 +773,7 @@ mod tests {
     #[test]
     fn a_window_too_small_goes_without_the_display_bar() {
         let button = button_rect((200, 100), 1.0);
-        assert!(DisplayBar::new(button, 9, 0, 1.0).is_none());
+        assert!(DisplayBar::new(button, 9, 0, false, 1.0).is_none());
     }
 
     #[test]

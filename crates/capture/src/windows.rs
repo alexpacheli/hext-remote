@@ -407,9 +407,13 @@ fn outputs() -> Result<Vec<(IDXGIAdapter1, IDXGIOutput, DXGI_OUTPUT_DESC)>, Capt
 pub fn displays() -> Result<Vec<Display>, CaptureError> {
     Ok(outputs()?
         .iter()
-        .map(|(_, _, desc)| Display {
-            id: device_name(desc),
-            rect: rect(desc),
+        .map(|(_, _, desc)| {
+            let id = device_name(desc);
+            Display {
+                virtual_display: crate::virtual_display::is_virtual(&id),
+                id,
+                rect: rect(desc),
+            }
         })
         .collect())
 }

@@ -344,6 +344,7 @@ pub fn displays() -> Result<Vec<Display>, CaptureError> {
         .map(|display| Display {
             id: display_id(display),
             rect: rect_of(display),
+            virtual_display: false,
         })
         .collect())
 }

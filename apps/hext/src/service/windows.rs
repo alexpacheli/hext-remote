@@ -94,6 +94,10 @@ const SHUTDOWN_WITHOUT_LOGON: &str = "shutdownwithoutlogon";
 /// The computer's folder: the administrators' (as owner), open only to them
 /// and the system, passed on to all inside, nothing inherited from above.
 const MACHINE_DIR_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+/// The virtual monitor driver's folder: changed only by the system and the
+/// administrators, read by the driver (a service account) and the users.
+const VIRTUAL_DISPLAY_DIR_SDDL: &str =
+    "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LS)(A;OICI;FR;;;AU)";
 /// The rights that change a file or folder (or what is in it), or who may.
 const WRITE_RIGHTS: u32 = 0x0002 // write data, add file
     | 0x0004 // append, add subfolder
@@ -342,7 +346,12 @@ fn trusted_file(path: &Path) -> bool {
 /// moment in which another account could put something in it. Whether it is
 /// new (`false`: it was there already).
 fn create_locked_dir(dir: &Path) -> Result<bool> {
-    let sddl: Vec<u16> = MACHINE_DIR_SDDL.encode_utf16().chain([0]).collect();
+    create_dir_with(dir, MACHINE_DIR_SDDL)
+}
+
+/// Makes `dir` with these rights from the start; whether it is new.
+fn create_dir_with(dir: &Path, sddl: &str) -> Result<bool> {
+    let sddl: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -506,6 +515,39 @@ fn check_machine_dir() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// At the service's start: the virtual monitor a session left on goes off
+/// (the service or the agent stopped in the middle), and, where the driver
+/// is installed, its settings are the Hext's (docs/monitor-virtual.md),
+/// unless there are some already.
+fn prepare_virtual_display() {
+    use hext_capture::virtual_display;
+    virtual_display::turn_off_leftover();
+    let Some((path, xml)) = virtual_display::settings() else {
+        return;
+    };
+    if path.exists() || !virtual_display::available() {
+        return;
+    }
+    let Some(dir) = path.parent() else { return };
+    let written = create_dir_with(dir, VIRTUAL_DISPLAY_DIR_SDDL).and_then(|new| {
+        // Someone else's folder: what goes in it, they could change.
+        if !new && !trusted_file(dir) {
+            bail!(
+                "{}: a pasta não é do Hext; o arquivo fica de fora",
+                dir.display()
+            );
+        }
+        std::fs::write(&path, xml).with_context(|| path.display().to_string())
+    });
+    match written {
+        Ok(()) => info!(
+            "monitor virtual: configuração gravada em {}",
+            path.display()
+        ),
+        Err(e) => warn!("monitor virtual: {e:#}"),
+    }
 }
 
 pub fn install(name: Option<String>) -> Result<()> {
@@ -1239,6 +1281,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
 async fn serve() -> Result<()> {
     info!("serviço iniciado (v{APP_VERSION})");
     check_machine_dir()?;
+    prepare_virtual_display();
     let key =
         Arc::new(load_or_create(&FileKeyStore::machine(machine_dir()?.join("device.key")))?.0);
     let name = crate::name::in_dir(&machine_dir()?);

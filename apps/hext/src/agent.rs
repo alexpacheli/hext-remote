@@ -45,6 +45,8 @@ pub enum ToAgent {
     /// The indicator for where the interface cannot be seen (the sign-in
     /// screen, a locked computer); `None`: no session.
     Indicator(Option<Indicator>),
+    /// Turn the virtual monitor on (and stream it) or off.
+    VirtualDisplay(bool),
 }
 
 /// The session, as the agent shows it.
@@ -421,6 +423,10 @@ impl Screen for AgentScreen {
         self.hub.send(ToAgent::SelectDisplay(index));
     }
 
+    fn set_virtual_display(&self, on: bool) {
+        self.hub.send(ToAgent::VirtualDisplay(on));
+    }
+
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         Some(self.displays.clone())
     }
@@ -526,6 +532,11 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
             ToAgent::SelectDisplay(index) => {
                 if let Some((screen, _)) = &screen {
                     screen.select_display(index);
+                }
+            }
+            ToAgent::VirtualDisplay(on) => {
+                if let Some((screen, _)) = &screen {
+                    screen.set_virtual_display(on);
                 }
             }
             ToAgent::Stop => stop(&mut screen).await,
@@ -834,6 +845,7 @@ mod tests {
             displays: Displays {
                 count: 2,
                 current: 1,
+                ..Default::default()
             },
         };
         write_msg(&mut writer, &displays_news).await.unwrap();

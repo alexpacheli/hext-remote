@@ -53,13 +53,22 @@ O que a instalação faz (script `silent-install.ps1` do próprio projeto):
 
 ### Como o Hext controla
 
-Sem o pipe: o serviço (SYSTEM) **habilita e desabilita o dispositivo** com a SetupAPI (`SetupDiChangeState` com
-`DICS_ENABLE`/`DICS_DISABLE`, o mesmo que o Gerenciador de Dispositivos faz).
+Sem o pipe: o agent (SYSTEM, na sessão do usuário) **habilita e desabilita o dispositivo** com a SetupAPI
+(`DIF_PROPERTYCHANGE` com `DICS_ENABLE`/`DICS_DISABLE`, o mesmo que o Gerenciador de Dispositivos faz). Código em
+`crates/capture/src/virtual_display.rs`.
 
-- Instalado com `vdd_settings.xml` fixo: **1 monitor**, resoluções comuns (1280×720, 1600×900, 1920×1080,
-  2560×1440) a 60 Hz; o arquivo em `C:\VirtualDisplayDriver\` com permissão só para administradores.
-- Dispositivo **desabilitado** por padrão. No início de uma sessão sem monitor, o serviço o habilita; no fim,
-  desabilita. Se o serviço cair no meio, ao reiniciar ele desabilita (estado guardado em arquivo).
+- **Configuração:** ao iniciar, o serviço grava o `vdd_settings.xml` do Hext em `C:\VirtualDisplayDriver\`, se o
+  driver estiver instalado e não houver arquivo lá: **1 monitor**, 1920×1080 primeiro (o modo em que ele nasce),
+  1280×720, 1600×900 e 2560×1440, a 60 Hz, com **cursor por hardware** (sem ele aparecem dois cursores). A pasta é
+  criada fechada: só o sistema e os administradores alteram; o driver e os usuários só leem. Um arquivo que já
+  esteja lá fica (quem usa o driver para outra coisa mantém a configuração).
+- Dispositivo **desabilitado** por padrão. Quem ligou desliga: o Hext só desliga o que ele mesmo ligou; um monitor
+  virtual que o dono do computador deixa ligado continua ligado.
+- Ao ligar, o Hext grava a marca `%ProgramData%\HextRemote\monitor-virtual-ligado`; ao desligar, apaga. Se o
+  serviço ou o agent cair no meio da sessão, o serviço desliga ao reiniciar (a marca diz que foi o Hext), e um
+  agent novo que encontra o virtual ligado com a marca também o desliga ao fim da sessão.
+- O Windows dá um nome novo ao monitor a cada habilitação (`\\.\DISPLAY46`, 47…): o Hext o reconhece pelo
+  dispositivo (`MTT1337` no ID do monitor), nunca pelo nome.
 - A resolução: a captura já acompanha a troca de resolução; o técnico escolhe pela própria configuração de vídeo
   do Windows na sessão (primeira versão), e depois por um menu no visualizador (`ChangeDisplaySettingsEx` no
   agent).
@@ -111,9 +120,41 @@ depende do compositor).
 
 Ordem: 0 → 1 → 2 e 3 em paralelo → 4. Testes manuais entram no roteiro de `docs/testes.md`.
 
+Fica para depois do marco 1: o visualizador lembrar o último monitor escolhido para cada computador (com o
+virtual ligado, a sessão já começa nele, o que resolve o caso dos monitores fantasmas).
+
+## Marco 1: como funciona e roteiro
+
+**No visualizador:** quando o computador do outro lado tem o driver, a barra de monitores (ao lado da alça,
+também em tela cheia) mostra um botão **+**: "Monitor virtual". Ele liga o virtual e mostra ele; depois, o virtual
+vira um número na barra. Atalho: **Ctrl+Alt+0**. Ligar o virtual muda os monitores do computador, então só aparece
+com permissão de controle. O título diz "monitor 3 de 3 (virtual)" (fora da tela cheia).
+
+**Sozinho:** a sessão começa, o Windows não lista nenhum monitor, e o Hext liga o virtual e abre nele. Com o
+virtual ligado (por ele ou pelo técnico), a sessão começa nele.
+
+**Roteiro** (PC com o driver instalado à mão, como no spike, e o Hext de teste instalado como serviço):
+
+1. Apague o arquivo de exemplo do spike (`C:\VirtualDisplayDriver\vdd_settings.xml`) e a pasta, e desabilite o
+   virtual (`vdd-spike.exe disable`). Reinicie o serviço (`Restart-Service HextRemote`). No `service.log`:
+   "monitor virtual: configuração gravada em C:\VirtualDisplayDriver\vdd_settings.xml".
+2. Com os monitores ligados: conecte. A barra mostra os números e o **+**. Clique no **+** (ou Ctrl+Alt+0): a
+   imagem passa para o virtual em 1920×1080, com um cursor só. No `agent.log`: "monitor virtual: ligado".
+3. Encerre a sessão: "monitor virtual: desligado"; `vdd-spike.exe status` mostra o dispositivo desabilitado.
+4. Sem os cabos dos monitores (depois que o Windows tirar os fantasmas da lista): conecte. A sessão abre direto
+   no virtual ("nenhum monitor: ligando o monitor virtual"). Encerre: ele desliga.
+5. Com os monitores fantasmas na lista (logo depois de tirar os cabos): conecte, a imagem fica preta; Ctrl+Alt+0
+   liga o virtual e a imagem volta.
+6. Queda no meio: com o virtual ligado pela sessão, `Stop-Process -Name HextRemote -Force` (o serviço e o agent
+   caem) e `Start-Service HextRemote`. No `service.log`: "monitor virtual: desligado (ficou ligado de uma sessão
+   anterior)".
+7. Sem permissão de controle (só ver): o **+** não aparece e Ctrl+Alt+0 vai para o computador remoto.
+
 ## Testes automáticos
 
-- A decisão "precisa de monitor virtual?" (lista vazia, só desligados, com monitor real) como função pura, com
-  testes.
-- O estado guardado do serviço (habilitou, caiu, reiniciou → desabilita) com testes.
-- O CI não tem GPU nem driver: a parte que liga o dispositivo é testada no spike e no roteiro manual.
+- Em qual monitor a sessão começa (o pedido, o virtual ligado, o principal), o que o visualizador fica sabendo
+  (sem virtual, desligado, ligado como monitor N) e que o único monitor não desliga: testes em `host.rs`.
+- O protocolo entre versões (host antigo não manda nada; visualizador antigo ignora o campo novo): teste em
+  `crates/proto`.
+- O CI não tem GPU nem driver: a parte que liga o dispositivo e a marca do serviço são testadas no spike e no
+  roteiro manual.
