@@ -246,7 +246,7 @@ This program sends data only where its features need it:
 The screen, the keyboard, the files and the clipboard of a session go only to the other computer, end-to-end
 encrypted. Nothing is sold or shared with third parties, and there is no advertising or analytics. Accounts
 not confirmed by e-mail are deleted within 24 hours, and an account can be deleted at any time in the app
-(Conta → Excluir conta).
+(Conta → Excluir a conta).
 
 Nobody connects to a computer without the user's acceptance on screen, an unattended password the computer's
 owner set, or a device of an account the owner bound. Every session is shown on screen while it lasts, and
