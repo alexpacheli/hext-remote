@@ -1977,7 +1977,7 @@ mod tests {
 
     #[test]
     fn an_update_gets_past_a_program_still_running() {
-        let dir = std::env::temp_dir().join(format!("hext-update-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("hext-replace-exe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("HextRemote.exe");
         let new = dir.join("new.exe");

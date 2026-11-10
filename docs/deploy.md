@@ -36,8 +36,8 @@ iroh-relay ──"este computador pode usar o relay?"──► hext-server (/v1/
    (`rustup`):
 
    ```sh
-   git clone https://github.com/alexpacheli/remote-control.git   # se ainda não clonou
-   cd remote-control
+   git clone https://github.com/alexpacheli/hext-remote.git   # se ainda não clonou
+   cd hext-remote
    git pull
    HEXT_DOMAIN=hext.com.br ./deploy/install.sh
    ```
@@ -70,7 +70,7 @@ A versão oficial do app usa o servidor de `hext.com.br`. Para o seu domínio, c
 ## Atualizar
 
 ```sh
-cd remote-control && git pull && ./deploy/install.sh
+cd hext-remote && git pull && ./deploy/install.sh   # num clone de antes da troca de nome: cd remote-control
 ```
 
 O domínio, o banco e o segredo continuam os mesmos. Os computadores reconectam sozinhos depois do reinício.

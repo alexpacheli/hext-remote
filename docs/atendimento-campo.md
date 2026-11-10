@@ -14,7 +14,7 @@ passa pelo servidor e pelo relay como num atendimento de verdade.
 
 ## Antes de começar
 
-- [ ] O servidor está na versão da `main` (na VM: `cd remote-control && git pull && ./deploy/install.sh`).
+- [ ] O servidor está na versão da `main` (na VM: `cd hext-remote && git pull && ./deploy/install.sh`; num clone de antes da troca de nome, `cd remote-control`).
 - [ ] Os dois computadores têm o mesmo build do app.
 - [ ] No cliente, `HextRemote.exe service status` mostra "rodando", o ID e o nome.
 - [ ] No cliente há um arquivo pequeno para mandar ao técnico (ex.: `Documentos\relatorio.txt`).

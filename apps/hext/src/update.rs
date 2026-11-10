@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// project that publishes its own).
 const RELEASES: &str = crate::built_or(
     option_env!("HEXT_RELEASES"),
-    "https://github.com/alexpacheli/remote-control/releases",
+    "https://github.com/alexpacheli/hext-remote/releases",
 );
 
 /// The public half of the key that signs the releases (64 hex digits).
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn the_manifest_lists_each_installer_with_its_hash() {
-        let dir = std::env::temp_dir().join(format!("hext-update-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("hext-manifest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for name in [
