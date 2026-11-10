@@ -224,7 +224,7 @@ fn plain_name(name: &str) -> bool {
 }
 
 /// Downloads the file of `kind` into `dir`, checked against the manifest.
-#[cfg_attr(not(windows), allow(dead_code))] // the Windows service installs it
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // the Windows service and the Mac app install it
 pub async fn download(manifest: &Manifest, kind: &str, dir: &Path) -> Result<PathBuf> {
     let asset = manifest
         .files
