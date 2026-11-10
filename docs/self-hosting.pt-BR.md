@@ -14,8 +14,8 @@ São três partes:
 ## 1. Preparar
 
 - **Um servidor Linux com IP público:** Debian 11+ ou Ubuntu 22.04+ (systemd 247 ou mais novo). Para começar,
-  1 a 2 vCPUs e 1 a 2 GB de RAM bastam. Prefira um servidor perto dos seus usuários, porque as sessões sem
-  caminho direto passam pelo relay dele.
+  1 a 2 vCPUs e 1 a 2 GB de RAM bastam (a Oracle Cloud tem um plano gratuito com bastante tráfego). Prefira um
+  servidor perto dos seus usuários, porque as sessões sem caminho direto passam pelo relay dele.
 - **Um domínio com dois nomes** apontando para o IP do servidor: `signal.<domínio>` e `relay.<domínio>`. No
   Cloudflare, deixe os dois como **somente DNS** (nuvem cinza): o Caddy precisa receber as conexões para obter
   os certificados.
@@ -91,7 +91,8 @@ o seu); a conexão é sempre criptografada (STARTTLS na 587, TLS na 465).
 
 O servidor limita os e-mails (5 por hora por IP e por endereço; no total, 100 por hora e 250 por dia, ajustáveis
 com `HEXT_MAIL_PER_HOUR` e `HEXT_MAIL_PER_DAY` conforme a cota do seu provedor). Detalhes em
-[hext-server.md](hext-server.md).
+[hext-server.md](hext-server.md). Apenas para desenvolvimento, `hext-server --dev-mail-log` grava os códigos no
+log do servidor em vez de enviá-los.
 
 ## 4. Gerar o app para o seu servidor
 
@@ -105,7 +106,8 @@ servidor.**
    - `HEXT_SERVER` = `wss://signal.<domínio>`
    - `HEXT_RELAY` = `https://relay.<domínio>`
 3. **Chave de atualização** (sem ela, os apps nunca se atualizam sozinhos):
-   1. Compile ou baixe qualquer `hext` e rode `hext update keygen` (no Windows: `HextRemote.exe update keygen`).
+   1. Com qualquer versão do Hext Remote, rode `update keygen` (veja [o nome do programa](#o-nome-do-programa)):
+      por exemplo, `HextRemote.exe update keygen` no Windows.
    2. Guarde a metade privada no **secret** `UPDATE_SIGNING_KEY` e a metade pública na **variável**
       `HEXT_UPDATE_KEY`.
    3. Proteja a metade privada: quem a tiver consegue enviar atualizações para todos os computadores com a sua
@@ -115,12 +117,16 @@ servidor.**
    Publique-a manualmente; os apps procuram atualizações nas releases do seu fork.
 
 **Assinar os instaladores (opcional).** Sem certificados, os instaladores saem sem assinatura: o SmartScreen do
-Windows e o Gatekeeper do macOS avisam na primeira abertura. Para assinar, crie os secrets listados na seção 4
-do [F6.md](F6.md):
+Windows e o Gatekeeper do macOS avisam na primeira abertura.
 
-- **Windows:** `WINDOWS_CERTIFICATE` e `WINDOWS_CERTIFICATE_PASSWORD`;
+- **Windows:** o workflow assina com um arquivo `.pfx` (secrets `WINDOWS_CERTIFICATE`, o arquivo em base64, e
+  `WINDOWS_CERTIFICATE_PASSWORD`). Desde junho de 2023, as autoridades certificadoras só entregam chaves de
+  assinatura de código num token físico ou num HSM na nuvem, então um certificado novo não vem como `.pfx`. Os
+  caminhos possíveis hoje são a [SignPath Foundation](https://signpath.org) (gratuita para projetos de código
+  aberto) ou o Azure Trusted Signing; os dois exigem mudar a etapa de assinatura em
+  `.github/workflows/release.yml`.
 - **macOS:** `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
-  `APPLE_APP_PASSWORD` e `APPLE_TEAM_ID` (Apple Developer Program).
+  `APPLE_APP_PASSWORD` e `APPLE_TEAM_ID` (Apple Developer Program; detalhes na seção 4 do [F6.md](F6.md)).
 
 O app instalado no Mac só se atualiza sozinho quando assinado com um Developer ID.
 
@@ -134,12 +140,27 @@ Uma compilação local sem `HEXT_UPDATE_KEY` não se atualiza sozinha.
 
 ### Teste rápido, sem compilar
 
+Com o app oficial, pela linha de comando (`hext-remote` é o nome no Linux; veja
+[o nome do programa](#o-nome-do-programa) nos outros sistemas):
+
 ```sh
-HextRemote host --server wss://signal.<domínio> --relay https://relay.<domínio>
-HextRemote view <ID> --server wss://signal.<domínio> --relay https://relay.<domínio>
+hext-remote host --server wss://signal.<domínio> --relay https://relay.<domínio>
+hext-remote view <ID> --server wss://signal.<domínio> --relay https://relay.<domínio>
 ```
 
 Computadores em servidores diferentes não se enxergam.
+
+### O nome do programa
+
+O mesmo programa tem um nome diferente em cada sistema:
+
+| Sistema | Comando |
+|---|---|
+| Windows | `HextRemote.exe` (em `C:\Program Files\Hext Remote` depois de instalado) |
+| macOS | `"/Applications/Hext Remote.app/Contents/MacOS/HextRemote"` |
+| Linux (.deb, .rpm) | `hext-remote` |
+| Linux (AppImage) | `./HextRemote-<versão>-x86_64.AppImage` |
+| Compilação própria | `target/release/hext` |
 
 ## 5. Operar
 
@@ -153,7 +174,7 @@ contas. Se ele se perder, todos os computadores recebem um ID novo e as contas s
 
 - **systemd:** `cd hext-remote && git pull && ./deploy/install.sh` (o domínio fica guardado em
   `/etc/hext/hosts.env`);
-- **Docker:** `git pull && docker compose up -d --build`.
+- **Docker:** `cd hext-remote/deploy/docker && git pull && docker compose up -d --build`.
 
 Os computadores se reconectam sozinhos depois do reinício. Atualize o servidor antes de publicar um app que
 dependa dele.
@@ -165,7 +186,9 @@ conectados. O que custa é o relay:
 - cada dispositivo envia no máximo 5 Mbit/s por ele (`[limits.client.rx]` em `deploy/iroh-relay.toml`), e o app
   reduz a qualidade do vídeo para caber.
 
-O `./deploy/uso.sh` mostra o tráfego do mês em relação ao limite do provedor e o quanto o relay já repassou.
+O `./deploy/uso.sh` (na pasta `hext-remote`) mostra o tráfego do mês em relação ao limite mensal do provedor e o
+quanto o relay já repassou. O limite padrão é 10 TB (o da Oracle); informe o seu com
+`HEXT_LIMITE_GB=1000 ./deploy/uso.sh`.
 
 **Logs:**
 
@@ -179,8 +202,9 @@ para as contas que você listar. Veja "Relay sem limite" no [deploy.md](deploy.m
 
 ## 6. Segurança
 
-- Apenas as portas 80/443 TCP e 7842 UDP abertas. O relay só aceita computadores registrados no seu
-  `hext-server`, que ele consulta com o segredo do `secrets.env` (ou `HEXT_RELAY_TOKEN`).
+- Apenas as portas 80/443 TCP e 7842 UDP abertas (e a 7843 UDP, se você montar o relay sem limite). O relay só
+  aceita computadores registrados no seu `hext-server`, que ele consulta com o segredo do
+  `secrets.env` (ou `HEXT_RELAY_TOKEN`).
 - Mantenha `/etc/hext/secrets.env`, `/etc/hext/mail.env` e o `.env` privados (modo 600) e fora do git.
 - Proteja também a VM:
   - SSH só com chave (`PasswordAuthentication no`) e `fail2ban`;

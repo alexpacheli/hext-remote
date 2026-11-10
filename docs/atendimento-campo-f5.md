@@ -13,7 +13,7 @@ e anote o que estranhar (tempo, mensagem confusa, clique a mais).
 
 ## Antes de começar
 
-- [ ] O servidor está na versão da `main` (na VM: `cd remote-control && git pull && ./deploy/install.sh`).
+- [ ] O servidor está na versão da `main` (na VM: `cd hext-remote && git pull && ./deploy/install.sh`; num clone de antes da troca de nome, `cd remote-control`).
 - [ ] O servidor manda e-mail de verdade: `/etc/hext/mail.env` com o SMTP da Brevo e o log dizendo "SMTP:
       conexão e login ok" ([hext-server.md](hext-server.md), "E-mail"). Sem isso, o código de confirmação
       está no log do servidor (`journalctl -u hext-server | grep código`).

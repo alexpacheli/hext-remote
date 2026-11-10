@@ -86,85 +86,12 @@ computers, wants the data on their own infrastructure or distributes a modified 
 builds the app pointing to it. The server and the relay come from this repository and the
 [iroh](https://github.com/n0-computer/iroh) project, with no paid service.
 
-**Step-by-step guide: [docs/self-hosting.md](docs/self-hosting.md)** (server, your own app build, update key,
-backups and security). The summary follows.
+In short: a Linux server with a public IP (1 to 2 vCPUs and 1 to 2 GB of RAM to start), two DNS names
+(`signal.<domain>` and `relay.<domain>`), ports 80/443 TCP and 7842 UDP, then `docker compose up` or
+`./deploy/install.sh`, and an app built from your fork with your server's address.
 
-**What it takes:**
-
-- A Linux server with a public IP. To start, 1 to 2 vCPUs and 1 to 2 GB of RAM are enough (Oracle Cloud has a
-  free tier with plenty of traffic). Prefer a server close to the users, because of the relay.
-- A domain with two names pointing to the server's IP: `signal.<domain>` and `relay.<domain>`. On Cloudflare,
-  leave both as **DNS only** (grey cloud).
-- Ports **80 and 443 TCP** and **7842 UDP** open in the provider's firewall.
-
-**What it uses.** Signaling is light: it only keeps IDs and presence and passes connection requests on, and a
-small server handles thousands of connected computers. What costs is the **relay**: a session through it uses
-0.5 to 3 Mbps (about 0.2 to 1.3 GB per hour). Most sessions are direct and do not go through it. Each device
-sends at most 5 Mbit/s through the relay, and the app adjusts the quality to that. To follow the month's
-traffic and the relay's use: `./deploy/uso.sh`, on the server.
-
-### Option 1: Docker
-
-With [Docker](https://docs.docker.com/engine/install/) 26 or newer on the server (the relay mounts only its own
-certificate's folder, with `subpath`):
-
-```sh
-git clone https://github.com/alexpacheli/hext-remote.git
-cd hext-remote/deploy/docker
-cp .env.example .env
-nano .env        # HEXT_DOMAIN and HEXT_RELAY_TOKEN (generate with: openssl rand -hex 32)
-docker compose up -d --build
-```
-
-This starts three containers: `hext-server`, `iroh-relay` and Caddy, which gets the Let's Encrypt certificates
-by itself. The first time, the build takes a few minutes, and the relay restarts a few times until Caddy gets
-the certificate (under a minute). To check:
-
-```sh
-curl https://signal.<domain>/health        # ok
-docker compose logs -f
-```
-
-To update: `git pull && docker compose up -d --build`. The database lives in the `hext_server` volume: back it
-up. Without it, the computers get new IDs.
-
-### Option 2: directly on the system (systemd)
-
-On Debian or Ubuntu, with [Rust](https://rustup.rs) installed:
-
-```sh
-git clone https://github.com/alexpacheli/hext-remote.git
-cd hext-remote
-HEXT_DOMAIN=<domain> ./deploy/install.sh
-```
-
-The script installs Caddy, builds `hext-server` and `iroh-relay`, generates the relay's secret, creates the
-systemd services, opens the ports in iptables and tests both addresses. To update: `git pull && ./deploy/install.sh`
-(the domain is kept). Details, logs and backups in [docs/deploy.md](docs/deploy.md) (in Portuguese).
-
-### Account e-mails (optional)
-
-For accounts to get their verification codes, set an SMTP server: on Docker, the `HEXT_SMTP_*` lines of `.env`;
-on systemd, the file `/etc/hext/mail.env` ([docs/hext-server.md](docs/hext-server.md)). Without it, no e-mail is
-sent (for development, `--dev-mail-log` writes the codes to the server's log).
-
-### The app for your server
-
-The server and relay addresses go into the app at build time, through the `HEXT_SERVER` and `HEXT_RELAY`
-variables:
-
-- **On GitHub (recommended):** fork this repository and, in **Settings → Secrets and variables → Actions →
-  Variables**, create `HEXT_SERVER` = `wss://signal.<domain>` and `HEXT_RELAY` = `https://relay.<domain>`. Each
-  `v*` tag builds the installers in your fork's Releases, and the app looks for updates there. To sign the
-  updates and the installers, see section 4 of [docs/F6.md](docs/F6.md).
-- **On your machine:**
-
-  ```sh
-  HEXT_SERVER=wss://signal.<domain> HEXT_RELAY=https://relay.<domain> cargo build --release -p hext
-  ```
-
-For a quick test, without building: `HextRemote host --server wss://signal.<domain> --relay https://relay.<domain>`
-and the same for `view`. The computers of one server do not see those of another.
+**Step-by-step guide: [docs/self-hosting.md](docs/self-hosting.md)**: server (Docker or systemd), account
+e-mails, your own app build, update key, backups, traffic and security.
 
 ## Building
 
