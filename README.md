@@ -86,6 +86,9 @@ computers, wants the data on their own infrastructure or distributes a modified 
 builds the app pointing to it. The server and the relay come from this repository and the
 [iroh](https://github.com/n0-computer/iroh) project, with no paid service.
 
+**Step-by-step guide: [docs/self-hosting.md](docs/self-hosting.md)** (server, your own app build, update key,
+backups and security). The summary follows.
+
 **What it takes:**
 
 - A Linux server with a public IP. To start, 1 to 2 vCPUs and 1 to 2 GB of RAM are enough (Oracle Cloud has a
