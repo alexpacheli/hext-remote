@@ -49,6 +49,13 @@ pub fn available() -> bool {
     imp::can_change() && imp::installed()
 }
 
+/// Whether the computer has no monitor connected: nothing to show without
+/// the virtual one. A monitor asleep counts (on a Mac, it is not in the list
+/// to capture until it wakes, which it does for the session).
+pub fn no_monitor() -> bool {
+    imp::no_monitor()
+}
+
 /// Whether the virtual monitor that is on was turned on by the Hext (this
 /// process, or one before it that left the mark), and not by the computer's
 /// owner.
@@ -141,7 +148,11 @@ mod imp {
         SetupDiSetClassInstallParamsW, SetupDiSetDeviceRegistryPropertyW,
     };
     use windows::Win32::Devices::Properties::{DEVPKEY_Device_DriverInfPath, DEVPROPTYPE};
-    use windows::Win32::Graphics::Gdi::{DISPLAY_DEVICEW, EnumDisplayDevicesW};
+    use windows::Win32::Graphics::Gdi::{
+        CDS_UPDATEREGISTRY, ChangeDisplaySettingsExW, DEVMODEW, DISP_CHANGE_SUCCESSFUL,
+        DISPLAY_DEVICEW, DM_DISPLAYFREQUENCY, DM_PELSHEIGHT, DM_PELSWIDTH, ENUM_CURRENT_SETTINGS,
+        EnumDisplayDevicesW, EnumDisplaySettingsW,
+    };
     use windows::Win32::UI::Shell::IsUserAnAdmin;
     use windows::core::{HSTRING, PCWSTR, w};
 
@@ -454,6 +465,43 @@ mod imp {
         Some((PathBuf::from(SETTINGS), SETTINGS_XML))
     }
 
+    /// Windows lists a monitor that is asleep (its image is black).
+    pub fn no_monitor() -> bool {
+        crate::displays(false).is_ok_and(|displays| displays.is_empty())
+    }
+
+    /// The sizes of [`SETTINGS_XML`], smallest first.
+    pub const SIZES: &[(u32, u32)] = &[(1280, 720), (1600, 900), (1920, 1080), (2560, 1440)];
+
+    /// Kept (`CDS_UPDATEREGISTRY`): the next time it is turned on, it comes in
+    /// the size chosen last.
+    pub fn set_size(id: &str, (width, height): (u32, u32)) -> Result<(), CaptureError> {
+        let device = HSTRING::from(id);
+        let mut mode = DEVMODEW {
+            dmSize: size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        if !unsafe { EnumDisplaySettingsW(&device, ENUM_CURRENT_SETTINGS, &mut mode) }.as_bool() {
+            return Err(CaptureError::Platform(format!(
+                "{id}: sem a configuração atual"
+            )));
+        }
+        mode.dmPelsWidth = width;
+        mode.dmPelsHeight = height;
+        mode.dmDisplayFrequency = 60;
+        mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+        let result = unsafe {
+            ChangeDisplaySettingsExW(&device, Some(&mode), None, CDS_UPDATEREGISTRY, None)
+        };
+        if result != DISP_CHANGE_SUCCESSFUL {
+            return Err(CaptureError::Platform(format!(
+                "{id}: o Windows recusou {width}x{height} (DISP_CHANGE {})",
+                result.0
+            )));
+        }
+        Ok(())
+    }
+
     /// The mark that the Hext turned it on, in the service's folder
     /// (`%ProgramData%\HextRemote`; without a service, there is none).
     fn mark_path() -> Option<PathBuf> {
@@ -500,7 +548,10 @@ mod imp {
     use objc2::msg_send;
     use objc2::rc::{Allocated, Retained};
     use objc2::runtime::{AnyClass, AnyObject};
-    use objc2_core_graphics::CGDisplayVendorNumber;
+    use objc2_core_graphics::{
+        CGDisplayCopyAllDisplayModes, CGDisplayMode, CGDisplaySetDisplayMode,
+        CGDisplayVendorNumber, CGError, CGGetOnlineDisplayList,
+    };
     use objc2_foundation::{NSArray, NSSize, NSString};
 
     use super::State;
@@ -633,6 +684,41 @@ mod imp {
         }
     }
 
+    /// [`MODES`], smallest first.
+    pub const SIZES: &[(u32, u32)] = &[(1280, 720), (1600, 900), (1920, 1080)];
+
+    pub fn set_size(id: &str, (width, height): (u32, u32)) -> Result<(), CaptureError> {
+        let failed = |what: &str| CaptureError::Platform(format!("monitor virtual: {what}"));
+        let id: u32 = id.parse().map_err(|_| failed("sem o monitor"))?;
+        let modes = unsafe { CGDisplayCopyAllDisplayModes(id, None) }
+            .ok_or_else(|| failed("sem as resoluções"))?;
+        let mode = (0..modes.count())
+            .map(|i| unsafe { &*modes.value_at_index(i).cast::<CGDisplayMode>() })
+            .find(|&mode| {
+                CGDisplayMode::width(Some(mode)) == width as usize
+                    && CGDisplayMode::height(Some(mode)) == height as usize
+            })
+            .ok_or_else(|| failed(&format!("sem {width}x{height}")))?;
+        let error = unsafe { CGDisplaySetDisplayMode(id, Some(mode), None) };
+        if error != CGError::Success {
+            return Err(failed(&format!(
+                "o macOS recusou {width}x{height} ({})",
+                error.0
+            )));
+        }
+        Ok(())
+    }
+
+    /// Online: connected, awake or asleep (not only the active ones).
+    pub fn no_monitor() -> bool {
+        let mut ids = [0u32; 32];
+        let mut count = 0u32;
+        let error =
+            unsafe { CGGetOnlineDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+        let ids = &ids[..(count as usize).min(ids.len())];
+        error == CGError::Success && ids.iter().all(|&id| CGDisplayVendorNumber(id) == VENDOR)
+    }
+
     pub fn is_virtual(id: &str) -> bool {
         id.parse()
             .is_ok_and(|id| CGDisplayVendorNumber(id) == VENDOR)
@@ -662,6 +748,16 @@ mod imp {
 
     pub fn can_change() -> bool {
         false
+    }
+
+    pub fn no_monitor() -> bool {
+        false
+    }
+
+    pub const SIZES: &[(u32, u32)] = &[];
+
+    pub fn set_size(_id: &str, _size: (u32, u32)) -> Result<(), CaptureError> {
+        Err(CaptureError::Unsupported)
     }
 
     pub fn state() -> Result<State, CaptureError> {
@@ -709,8 +805,46 @@ pub mod device {
     }
 }
 
+/// The size after `current` among the ones the virtual monitor offers
+/// (smallest first; after the largest, the smallest again): the technician
+/// goes through them.
+pub fn next_size(current: (u32, u32)) -> (u32, u32) {
+    next_in(imp::SIZES, current)
+}
+
+fn next_in(sizes: &[(u32, u32)], current: (u32, u32)) -> (u32, u32) {
+    sizes
+        .iter()
+        .copied()
+        .find(|size| size.0 > current.0)
+        .or_else(|| sizes.first().copied())
+        .unwrap_or(current)
+}
+
+/// Changes the virtual monitor (display `id`, [`crate::Display::id`]) to
+/// `size`.
+pub fn set_size(id: &str, size: (u32, u32)) -> Result<(), CaptureError> {
+    imp::set_size(id, size)
+}
+
 /// Whether display `id` ([`crate::Display::id`]) is the virtual monitor.
 #[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn is_virtual(id: &str) -> bool {
     imp::is_virtual(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_go_round_from_the_smallest() {
+        let sizes = [(1280, 720), (1600, 900), (1920, 1080)];
+        assert_eq!(next_in(&sizes, (1280, 720)), (1600, 900));
+        assert_eq!(next_in(&sizes, (1920, 1080)), (1280, 720));
+        // A size of its own (chosen in the computer's settings): the next
+        // one up.
+        assert_eq!(next_in(&sizes, (1366, 768)), (1600, 900));
+        assert_eq!(next_in(&[], (1366, 768)), (1366, 768));
+    }
 }

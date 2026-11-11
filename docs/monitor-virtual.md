@@ -245,6 +245,21 @@ em vez de "capture unavailable".
 4. Queda no meio: com o virtual ligado, feche o Hext pelo Monitor de Atividade: o monitor some junto.
 5. Sem permissão de controle: o **+** não aparece.
 
+## Marco 4: resolução pelo visualizador
+
+O visualizador não tem menu: com o monitor virtual na tela, **Ctrl+Alt+0** (ou um clique no número dele na barra)
+passa para a próxima resolução, da menor para a maior e de volta à menor. O título mostra a atual: "monitor 3 de 3
+(virtual, 1920×1080; Ctrl+Alt+0 muda a resolução)".
+
+- Windows: 1280×720, 1600×900, 1920×1080 e 2560×1440 (as do `vdd_settings.xml`), pelo `ChangeDisplaySettingsEx`
+  no agent. O Windows guarda a escolha: na próxima vez, o virtual liga na última resolução.
+- Mac: 1280×720, 1600×900 e 1920×1080, pelo `CGDisplaySetDisplayMode`. Cada sessão começa em 1920×1080.
+- Só muda o virtual que a sessão ligou: o do dono do computador fica como está (e o título não oferece).
+- Precisa de permissão de controle, como ligar e desligar.
+
+**Roteiro** (Windows e Mac): com o virtual na tela, Ctrl+Alt+0 três vezes. A imagem passa por cada resolução, o
+mouse continua acertando onde aponta, e o título acompanha. No log: "monitor virtual: 1600x900".
+
 ## Testes automáticos
 
 - Em qual monitor a sessão começa (o pedido, o virtual ligado, o principal), o que o visualizador fica sabendo

@@ -227,6 +227,20 @@ impl ClientHandle {
         }
     }
 
+    /// Asks the host for its virtual monitor's next size, if it can change
+    /// it ([`VirtualDisplay::On`]).
+    pub fn next_virtual_size(&self) {
+        if matches!(
+            self.displays().virtual_display,
+            VirtualDisplay::On {
+                resizable: true,
+                ..
+            }
+        ) {
+            let _ = self.select_display.send(Control::NextVirtualSize);
+        }
+    }
+
     /// Asks the host to restart the computer. It refuses without
     /// [`Permissions::restart`].
     pub fn request_restart(&self) {
