@@ -29,13 +29,11 @@ use hext_crypto::machine_dir;
 use tracing::warn;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Security::Cryptography::{
-    CERT_CONTEXT, CERT_FIND_SHA1_HASH, CERT_OPEN_STORE_FLAGS, CERT_QUERY_CONTENT_FLAG_CTL,
-    CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED, CERT_QUERY_CONTENT_TYPE_FLAGS, CERT_QUERY_ENCODING_TYPE,
-    CERT_QUERY_FORMAT_FLAG_BINARY, CERT_QUERY_OBJECT_FILE, CERT_SHA1_HASH_PROP_ID,
-    CERT_STORE_ADD_NEW, CERT_STORE_PROV_SYSTEM_W, CERT_SYSTEM_STORE_LOCAL_MACHINE,
-    CRYPT_INTEGER_BLOB, CertAddCertificateContextToStore, CertCloseStore,
-    CertDeleteCertificateFromStore, CertFindCertificateInStore, CertFreeCertificateContext,
-    CertGetCertificateContextProperty, CertOpenStore, CryptQueryObject, HCERTSTORE,
+    CERT_CONTEXT, CERT_FIND_SHA1_HASH, CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE,
+    CERT_SHA1_HASH_PROP_ID, CERT_STORE_ADD_NEW, CERT_STORE_PROV_PKCS7, CERT_STORE_PROV_SYSTEM_W,
+    CERT_SYSTEM_STORE_LOCAL_MACHINE, CRYPT_INTEGER_BLOB, CertAddCertificateContextToStore,
+    CertCloseStore, CertDeleteCertificateFromStore, CertFindCertificateInStore,
+    CertFreeCertificateContext, CertGetCertificateContextProperty, CertOpenStore, HCERTSTORE,
     PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
 };
 use windows::Win32::System::LibraryLoader::{
@@ -469,23 +467,20 @@ fn find(store: &Store, thumbprint: &[u8]) -> Option<Certificate> {
 /// The certificate that signs the catalog at `path`: the SignPath
 /// Foundation's ([`SIGNER`]), or an error.
 fn catalog_signer(path: &Path) -> Result<Certificate> {
-    let file = wide(path);
-    let mut store = HCERTSTORE(std::ptr::null_mut());
-    unsafe {
-        CryptQueryObject(
-            CERT_QUERY_OBJECT_FILE,
-            file.as_ptr().cast(),
-            CERT_QUERY_CONTENT_TYPE_FLAGS(
-                CERT_QUERY_CONTENT_FLAG_CTL.0 | CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED.0,
-            ),
-            CERT_QUERY_FORMAT_FLAG_BINARY,
-            0,
+    // A catalog is a signed PKCS #7 message: its certificates, as a store.
+    // (`CryptQueryObject` takes it for a CTL, and its store comes empty.)
+    let bytes = std::fs::read(path).with_context(|| path.display().to_string())?;
+    let blob = CRYPT_INTEGER_BLOB {
+        cbData: bytes.len() as u32,
+        pbData: bytes.as_ptr().cast_mut(),
+    };
+    let store = unsafe {
+        CertOpenStore(
+            CERT_STORE_PROV_PKCS7,
+            X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
             None,
-            None,
-            None,
-            Some(&mut store),
-            None,
-            None,
+            CERT_OPEN_STORE_FLAGS(0),
+            Some((&raw const blob).cast()),
         )
     }
     .with_context(|| format!("{}: não é um catálogo assinado", path.display()))?;
@@ -516,7 +511,9 @@ fn remove_certificate(store: &Store, thumbprint: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Record, SIGNER, hex, is_oem_inf, is_thumbprint, thumbprint_bytes};
+    use std::path::Path;
+
+    use super::{Record, SIGNER, catalog_signer, hex, is_oem_inf, is_thumbprint, thumbprint_bytes};
 
     #[test]
     fn the_record_reads_back_what_it_wrote() {
@@ -559,6 +556,16 @@ mod tests {
         assert!(!is_oem_inf("oem1.inf /force"));
         assert!(!is_oem_inf("oem-1.inf"));
         assert!(!is_oem_inf("c:\\windows\\inf\\oem1.inf"));
+    }
+
+    /// With the driver's catalog (the release pinned in release.yml):
+    /// `HEXT_TEST_CAT=...\mttvdd.cat cargo test -p hext catalog -- --ignored`.
+    #[test]
+    #[ignore = "needs the driver's catalog (HEXT_TEST_CAT)"]
+    fn the_catalog_names_its_signer() {
+        let path = std::env::var("HEXT_TEST_CAT").expect("HEXT_TEST_CAT");
+        let signer = catalog_signer(Path::new(&path)).expect("signer");
+        assert_eq!(hex(&signer.thumbprint().unwrap()), SIGNER);
     }
 
     #[test]
