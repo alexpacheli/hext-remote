@@ -34,6 +34,7 @@ impl Default for Counting {
             displays: watch::Sender::new(Displays {
                 count: 2,
                 current: 0,
+                ..Default::default()
             }),
         }
     }
@@ -384,12 +385,14 @@ async fn the_viewer_learns_the_displays_and_chooses_one() {
     let first = Displays {
         count: 2,
         current: 0,
+        ..Default::default()
     };
     told(&running, first).await;
     running.session.select_display(1);
     let second = Displays {
         count: 2,
         current: 1,
+        ..Default::default()
     };
     told(&running, second).await;
 }
@@ -401,6 +404,7 @@ async fn seeing_covers_every_display_but_the_mouse_stays_out() {
     let second = Displays {
         count: 2,
         current: 1,
+        ..Default::default()
     };
     told(&running, second).await;
     assert_eq!(
@@ -418,6 +422,7 @@ async fn a_display_that_does_not_exist_changes_nothing() {
     let second = Displays {
         count: 2,
         current: 1,
+        ..Default::default()
     };
     told(&running, second).await;
     assert!(!running.session.is_finished(), "the session goes on");
@@ -429,12 +434,14 @@ async fn a_display_past_the_list_is_not_believed() {
     let first = Displays {
         count: 2,
         current: 0,
+        ..Default::default()
     };
     told(&running, first).await;
 
     running.displays.send_replace(Displays {
         count: 2,
         current: 7,
+        ..Default::default()
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(running.session.displays(), first);
@@ -442,6 +449,7 @@ async fn a_display_past_the_list_is_not_believed() {
     let second = Displays {
         count: 2,
         current: 1,
+        ..Default::default()
     };
     running.displays.send_replace(second);
     told(&running, second).await;

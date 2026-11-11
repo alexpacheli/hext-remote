@@ -132,6 +132,7 @@ pub async fn run(args: HostArgs) -> Result<()> {
         access_code: Some(code),
         session_codes: session_codes.clone(),
         desktop: Arc::new(LocalDesktop {
+            virtual_display: false,
             display: args.display,
             test_pattern: args.test_pattern,
             encoder,
@@ -237,6 +238,7 @@ pub async fn portable(hub: UiHub) -> Result<()> {
         access_code: None,
         session_codes: session_codes.clone(),
         desktop: Arc::new(LocalDesktop {
+            virtual_display: false,
             display: 0,
             test_pattern: false,
             encoder: EncoderSettings::default(),

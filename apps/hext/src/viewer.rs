@@ -20,6 +20,7 @@ use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::Os;
 use hext_proto::{
     ChatText, Displays, Hello, HelloAsks, InputEvent, MouseButton, PeerInfo, RejectReason,
+    VirtualDisplay,
 };
 use hext_render::{
     ButtonAction, DisplayBar, Renderer, VideoRect, button_rect, chat_button_rect, handle_rect,
@@ -717,6 +718,38 @@ impl Viewer {
         }
     }
 
+    /// Ctrl+Alt+0 and the "+" button: the host's virtual monitor, turned on
+    /// if it is off (that takes control: it changes the host's monitors).
+    fn show_virtual(&mut self) {
+        match self.displays.virtual_display {
+            VirtualDisplay::On { index } => self.select_display(index),
+            VirtualDisplay::Off if self.virtual_offered() => {
+                if let Some(session) = &self.session {
+                    session.virtual_display(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether the virtual monitor can be turned on from here.
+    fn virtual_offered(&self) -> bool {
+        self.displays.virtual_display == VirtualDisplay::Off
+            && self.session.as_ref().is_some_and(|s| s.permissions.control)
+    }
+
+    /// A button of the display bar pressed.
+    fn press_display(&mut self, index: u8) {
+        if self
+            .display_bar
+            .is_some_and(|bar| bar.plus && u32::from(index) + 1 == bar.count)
+        {
+            self.show_virtual();
+        } else {
+            self.select_display(index);
+        }
+    }
+
     /// The display coming, while the picture on screen is still of another.
     fn switching(&self) -> Option<u8> {
         let (index, asked) = self.switching?;
@@ -743,7 +776,8 @@ impl Viewer {
         if told == self.displays || told.count == 0 {
             return;
         }
-        let first_time = told.count > 1 && self.displays.count <= 1;
+        let more = |d: &Displays| d.count > 1 || d.virtual_display != VirtualDisplay::None;
+        let first_time = more(&told) && !more(&self.displays);
         self.displays = told;
         // There is more to see: let it be known once.
         if first_time {
@@ -793,10 +827,12 @@ impl Viewer {
         // then moved beside the handle.
         let mut rect = button_rect((size.width, size.height), scale);
         rect.x = size.width as f32 - rect.width;
-        let Displays { count, current } = self.displays;
+        let Displays { count, current, .. } = self.displays;
+        let plus = self.virtual_offered();
         // (As many as the shortcut reaches, whatever the host says.)
-        let buttons = count.min(9).into();
-        let mut bar = DisplayBar::new(rect, buttons, current.into(), scale).filter(|_| count > 1);
+        let buttons = u32::from(count.min(9)) + u32::from(plus);
+        let mut bar = DisplayBar::new(rect, buttons, current.into(), plus, scale)
+            .filter(|_| count > 1 || plus);
         let left = bar.map_or(rect.x, |bar| bar.rect.x);
         let mut chat = chat_button_rect(left, rect, scale).filter(|_| self.chat_link);
         let mut left = chat.map_or(left, |chat| chat.x);
@@ -931,9 +967,19 @@ impl Viewer {
             "Hext Remote — {}{view_only}{path}",
             session.host.device_name
         );
-        let Displays { count, current } = self.displays;
+        let Displays {
+            count,
+            current,
+            virtual_display,
+        } = self.displays;
+        let on_virtual = virtual_display == VirtualDisplay::On { index: current };
         if count > 1 {
             title += &format!(" — monitor {} de {count}", u16::from(current) + 1);
+            if on_virtual {
+                title += " (virtual)";
+            }
+        } else if on_virtual {
+            title += " — monitor virtual";
         }
         if let Some(snapshot) = stats.snapshot() {
             title += &format!(
@@ -1109,7 +1155,7 @@ impl Viewer {
                     let was_ours = std::mem::replace(&mut self.button_pressed, false);
                     if let Some(index) = self.on_display_bar().filter(|_| pressed) {
                         self.button_pressed = true;
-                        self.select_display(index);
+                        self.press_display(index);
                         return;
                     }
                     if pressed && self.on_chat_button() {
@@ -1189,6 +1235,17 @@ impl Viewer {
                 {
                     self.local_key = Some(code);
                     self.ask_restart();
+                    return;
+                }
+                // Ctrl+Alt+0: the host's virtual monitor.
+                if event.state == ElementState::Pressed
+                    && code == KeyCode::Digit0
+                    && self.ctrl_alt()
+                    && (self.virtual_offered()
+                        || matches!(self.displays.virtual_display, VirtualDisplay::On { .. }))
+                {
+                    self.local_key = Some(code);
+                    self.show_virtual();
                     return;
                 }
                 // Ctrl+Alt+1..9: another display of the host. (With no such

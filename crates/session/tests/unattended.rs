@@ -120,6 +120,7 @@ impl Host {
             access_code: None,
             session_codes: codes.clone(),
             desktop: Arc::new(LocalDesktop {
+                virtual_display: false,
                 display: 0,
                 test_pattern: true,
                 encoder: EncoderSettings::default(),

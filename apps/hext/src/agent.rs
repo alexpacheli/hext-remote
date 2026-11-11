@@ -45,6 +45,8 @@ pub enum ToAgent {
     /// The indicator for where the interface cannot be seen (the sign-in
     /// screen, a locked computer); `None`: no session.
     Indicator(Option<Indicator>),
+    /// Turn the virtual monitor on (and stream it) or off.
+    VirtualDisplay(bool),
 }
 
 /// The session, as the agent shows it.
@@ -77,6 +79,9 @@ pub struct Stream {
     pub display: usize,
     pub test_pattern: bool,
     pub encoder: EncoderSettings,
+    /// The session asked for the virtual monitor (the next agent turns it
+    /// on too).
+    pub virtual_display: bool,
 }
 
 impl Stream {
@@ -85,6 +90,7 @@ impl Stream {
             display: self.display,
             test_pattern: self.test_pattern,
             encoder: self.encoder,
+            virtual_display: self.virtual_display,
         }
     }
 }
@@ -421,6 +427,14 @@ impl Screen for AgentScreen {
         self.hub.send(ToAgent::SelectDisplay(index));
     }
 
+    fn set_virtual_display(&self, on: bool) {
+        // Kept for an agent that is yet to come, as the display is.
+        if let Some(session) = &mut self.hub.state.lock().expect("lock").session {
+            session.stream.virtual_display = on;
+        }
+        self.hub.send(ToAgent::VirtualDisplay(on));
+    }
+
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         Some(self.displays.clone())
     }
@@ -528,6 +542,11 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
                     screen.select_display(index);
                 }
             }
+            ToAgent::VirtualDisplay(on) => {
+                if let Some((screen, _)) = &screen {
+                    screen.set_virtual_display(on);
+                }
+            }
             ToAgent::Stop => stop(&mut screen).await,
             ToAgent::Indicator(shown) => {
                 // (Not here: it waits for its window, and input does not.)
@@ -578,6 +597,7 @@ mod tests {
             display: 0,
             test_pattern: true,
             encoder: EncoderSettings::default(),
+            virtual_display: false,
         }
     }
 
@@ -834,6 +854,7 @@ mod tests {
             displays: Displays {
                 count: 2,
                 current: 1,
+                ..Default::default()
             },
         };
         write_msg(&mut writer, &displays_news).await.unwrap();

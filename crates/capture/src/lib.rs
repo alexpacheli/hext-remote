@@ -14,6 +14,7 @@ mod gpu_nv12;
 #[cfg(target_os = "macos")]
 mod macos;
 mod test_pattern;
+pub mod virtual_display;
 #[cfg(windows)]
 mod windows;
 
@@ -64,6 +65,8 @@ pub struct Display {
     /// the list puts it.
     pub id: String,
     pub rect: Rect,
+    /// The monitor that exists only for the session ([`virtual_display`]).
+    pub virtual_display: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -217,6 +220,7 @@ mod tests {
     fn at(x: i32, y: i32) -> Display {
         Display {
             id: format!("{x},{y}"),
+            virtual_display: false,
             rect: Rect {
                 x,
                 y,

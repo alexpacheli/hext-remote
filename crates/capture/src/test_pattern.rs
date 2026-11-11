@@ -8,6 +8,7 @@ use crate::{CaptureError, Capturer, Display, Frame, PixelFormat, Rect, even};
 pub(crate) fn displays() -> Vec<Display> {
     let display = |id: &str, x, width, height| Display {
         id: id.into(),
+        virtual_display: false,
         rect: Rect {
             x,
             y: 0,

@@ -10,7 +10,7 @@ use hext_net::video::{Counters, Event, LOG_TARGET, MAX_WAITING, Reassembler, Res
 use hext_net::{Connection, ConnectionError, ControlStream, FramedSend, NetError, PasswordLogin};
 use hext_proto::{
     ChatText, Control, Datagram, Displays, ENDED_ON_HOST, FileOutcome, Hello, InputEvent, PeerInfo,
-    Permissions, StreamKind, VideoFrame,
+    Permissions, StreamKind, VideoFrame, VirtualDisplay,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -118,7 +118,8 @@ pub struct ClientHandle {
     /// Taken by [`Self::files`].
     file_link: Option<FileLink>,
     displays: watch::Receiver<Displays>,
-    select_display: mpsc::UnboundedSender<u8>,
+    /// [`Control::SelectDisplay`] and [`Control::VirtualDisplay`].
+    select_display: mpsc::UnboundedSender<Control>,
     chat_out: mpsc::UnboundedSender<ChatText>,
     /// Taken by [`Self::chat`].
     chat_in: Option<mpsc::Receiver<ChatNews>>,
@@ -214,7 +215,16 @@ impl ClientHandle {
     /// Asks the host to show display `index`; [`DecodedFrame::display`] says
     /// when the picture got there.
     pub fn select_display(&self, index: u8) {
-        let _ = self.select_display.send(index);
+        let _ = self.select_display.send(Control::SelectDisplay { index });
+    }
+
+    /// Asks the host to turn its virtual monitor on (and show it) or off.
+    /// Only to a host that offers one ([`Displays::virtual_display`]): an
+    /// older host would not know the message.
+    pub fn virtual_display(&self, on: bool) {
+        if self.displays().virtual_display != VirtualDisplay::None {
+            let _ = self.select_display.send(Control::VirtualDisplay { on });
+        }
     }
 
     /// Asks the host to restart the computer. It refuses without
@@ -381,7 +391,7 @@ async fn run(
     file_answers: mpsc::UnboundedSender<(u64, FileOutcome)>,
     mut file_outcomes: mpsc::UnboundedReceiver<(u64, FileOutcome)>,
     displays: watch::Sender<Displays>,
-    mut select_display: mpsc::UnboundedReceiver<u8>,
+    mut select_display: mpsc::UnboundedReceiver<Control>,
     mut chat_out: mpsc::UnboundedReceiver<ChatText>,
     chat_in: mpsc::Sender<ChatNews>,
     resume: Arc<Mutex<Resume>>,
@@ -456,8 +466,8 @@ async fn run(
                     break peer_closed_is_ok(&conn, e);
                 }
             }
-            Some(index) = select_display.recv() => {
-                if let Err(e) = control.send(&Control::SelectDisplay { index }).await {
+            Some(msg) = select_display.recv() => {
+                if let Err(e) = control.send(&msg).await {
                     break peer_closed_is_ok(&conn, e);
                 }
             }

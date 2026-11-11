@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use hext_capture::virtual_display::{self, Lease};
 use hext_capture::{CaptureError, Capturer, Display};
 use hext_clipboard::Clipboard;
 use hext_codec::EncoderSettings;
@@ -17,7 +18,7 @@ use hext_net::video::{LOG_TARGET, ResendRequest, VideoSender};
 use hext_net::{Admission, Connection, ConnectionError, NetError};
 use hext_proto::{
     ChatText, Control, Displays, ENDED_ON_HOST, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo,
-    Permissions, RejectReason, StreamKind, VideoFrame,
+    Permissions, RejectReason, StreamKind, VideoFrame, VirtualDisplay,
 };
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
@@ -230,6 +231,9 @@ pub trait Screen: Send {
     /// Streams display `index` from now on, with a keyframe, and the mouse
     /// goes to it. A number with no display changes nothing.
     fn select_display(&self, _index: usize) {}
+    /// Turns the virtual monitor on and streams it, or turns it off (only
+    /// one this session turned on). Where there is none, nothing changes.
+    fn set_virtual_display(&self, _on: bool) {}
     /// The displays there are and the one streamed; `None`: one, and no news.
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         None
@@ -266,6 +270,9 @@ pub struct LocalDesktop {
     /// Stream a synthetic pattern instead of the real screen.
     pub test_pattern: bool,
     pub encoder: EncoderSettings,
+    /// Turn the virtual monitor on from the start (the session had asked for
+    /// it before this process took over).
+    pub virtual_display: bool,
 }
 
 impl Desktop for LocalDesktop {
@@ -278,6 +285,7 @@ impl Desktop for LocalDesktop {
             display: self.display,
             test_pattern: self.test_pattern,
             encoder: self.encoder,
+            virtual_display: self.virtual_display,
         };
         Box::pin(async move {
             let shared = Arc::new(Shared {
@@ -286,6 +294,7 @@ impl Desktop for LocalDesktop {
                 bitrate: AtomicU32::new(settings.encoder.bitrate_bps),
                 area: Mutex::new(Area::default()),
                 wanted: Mutex::new(None),
+                virtual_wanted: Mutex::new(None),
                 listed: Mutex::new(None),
                 displays: watch::Sender::default(),
             });
@@ -337,6 +346,7 @@ struct CaptureSettings {
     display: usize,
     test_pattern: bool,
     encoder: EncoderSettings,
+    virtual_display: bool,
 }
 
 struct LocalScreen {
@@ -450,6 +460,10 @@ impl Screen for LocalScreen {
         *self.shared.wanted.lock().expect("lock") = Some(index);
     }
 
+    fn set_virtual_display(&self, on: bool) {
+        *self.shared.virtual_wanted.lock().expect("lock") = Some(on);
+    }
+
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         Some(self.shared.displays.subscribe())
     }
@@ -485,6 +499,8 @@ struct Shared {
     area: Mutex<Area>,
     /// The display the viewer asked for last, until the capture takes it.
     wanted: Mutex<Option<usize>>,
+    /// The viewer asked for the virtual monitor on, or off.
+    virtual_wanted: Mutex<Option<bool>>,
     /// The monitors as last checked, until the capture takes them.
     listed: Mutex<Option<Vec<Display>>>,
     /// What the viewer is told.
@@ -496,6 +512,8 @@ struct Layout {
     displays: Vec<Display>,
     /// `None`: that one is gone.
     current: Option<usize>,
+    /// This computer can turn on a virtual monitor.
+    virtual_offered: bool,
 }
 
 impl Layout {
@@ -504,7 +522,19 @@ impl Layout {
         Displays {
             count: self.displays.len().min(u8::MAX.into()) as u8,
             current: self.current.unwrap_or(0).min(u8::MAX.into()) as u8,
+            virtual_display: match self.virtual_index() {
+                _ if !self.virtual_offered => VirtualDisplay::None,
+                Some(index) => VirtualDisplay::On {
+                    index: index.min(u8::MAX.into()) as u8,
+                },
+                None => VirtualDisplay::Off,
+            },
         }
+    }
+
+    /// Where the virtual monitor is, if it is on.
+    fn virtual_index(&self) -> Option<usize> {
+        self.displays.iter().position(|d| d.virtual_display)
     }
 
     /// The monitors changed: the one captured may have another number now,
@@ -926,6 +956,14 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                         screen.select_display(index.into());
                     }
                 }
+                // It changes the computer's monitors: it takes control.
+                Ok(Control::VirtualDisplay { on }) => {
+                    if session.permissions.control
+                        && let Some(screen) = screen.lock().expect("lock").as_ref()
+                    {
+                        screen.set_virtual_display(on);
+                    }
+                }
                 // It takes no permission either: the host's user is who reads
                 // it, and who can end the session.
                 Ok(Control::Chat { text }) => {
@@ -1125,21 +1163,163 @@ fn open_first(
     config: &CaptureSettings,
 ) -> std::result::Result<(Box<dyn Capturer>, Layout), CaptureError> {
     let displays = hext_capture::displays(config.test_pattern)?;
-    let current = if config.display < displays.len() {
-        config.display
-    } else {
-        warn!(
-            "o monitor {} não existe: mostrando o principal",
-            config.display + 1
-        );
-        0
-    };
+    let current = first_display(
+        &displays,
+        config.display,
+        virtual_display::turned_on_by_hext(),
+    );
     let display = displays
         .get(current)
         .ok_or(CaptureError::NoSuchDisplay(current))?;
     let capturer = hext_capture::open_display(display, config.test_pattern, fps(config))?;
     let current = Some(current);
-    Ok((capturer, Layout { displays, current }))
+    let layout = Layout {
+        displays,
+        current,
+        virtual_offered: false,
+    };
+    Ok((capturer, layout))
+}
+
+/// Which display a session starts on: the one asked for (a session going on
+/// with a new agent), else the virtual monitor, if the Hext turned it on
+/// (`ours`: it is there for the session, and whatever else is listed may be
+/// a monitor without a cable, which the system keeps listing for a while),
+/// else the main one. A virtual monitor the computer's owner keeps on is
+/// one more monitor.
+fn first_display(displays: &[Display], asked: usize, ours: bool) -> usize {
+    if asked != 0 {
+        if asked < displays.len() {
+            return asked;
+        }
+        warn!("o monitor {} não existe", asked + 1);
+    }
+    displays
+        .iter()
+        .position(|d| ours && d.virtual_display)
+        .unwrap_or(0)
+}
+
+/// Whether turning the virtual monitor off leaves something to show.
+fn can_turn_off(displays: &[Display]) -> bool {
+    displays.iter().any(|d| !d.virtual_display)
+}
+
+/// The virtual monitor, as the capture keeps it.
+#[derive(Default)]
+struct VirtualSwitch {
+    /// Held while this session wants it on.
+    lease: Option<Lease>,
+    /// Turned on (`true`) or off, until the list of monitors shows it.
+    awaiting: Option<Awaiting>,
+}
+
+struct Awaiting {
+    on: bool,
+    since: Instant,
+    looked: Instant,
+}
+
+/// How often the list is looked at while a monitor comes or goes.
+const AWAIT_LOOK: Duration = Duration::from_millis(100);
+
+impl VirtualSwitch {
+    /// The viewer asked for it on or off: the virtual monitor's number, if
+    /// it is there already. Otherwise it is turned on or off, and
+    /// [`Self::arrived`] says when the list shows it: the video goes on
+    /// meanwhile.
+    fn switch(&mut self, on: bool, layout: &Layout) -> Option<usize> {
+        if !layout.virtual_offered {
+            return None;
+        }
+        if on {
+            if self.lease.is_none() {
+                match virtual_display::turn_on() {
+                    Ok(lease) => self.lease = Some(lease),
+                    Err(e) => {
+                        warn!("{e}");
+                        return None;
+                    }
+                }
+            }
+            let index = layout.virtual_index();
+            if index.is_none() {
+                self.wait(true);
+            }
+            index
+        } else {
+            if !can_turn_off(&layout.displays) {
+                info!("monitor virtual: fica ligado, é o único monitor");
+                return None;
+            }
+            // Only one the Hext turned on goes off (and only then is there
+            // anything to wait for).
+            let owned = self.lease.take().is_some_and(|lease| lease.owns());
+            if owned {
+                self.wait(false);
+            }
+            None
+        }
+    }
+
+    fn wait(&mut self, on: bool) {
+        let now = Instant::now();
+        self.awaiting = Some(Awaiting {
+            on,
+            since: now,
+            looked: now,
+        });
+    }
+
+    /// What was turned on or off shows in the list now: the monitors are
+    /// updated, and the virtual one's number given (`Some(None)`: it went).
+    fn arrived(
+        &mut self,
+        layout: &mut Layout,
+        listed: &Mutex<Option<Vec<Display>>>,
+    ) -> Option<Option<usize>> {
+        let awaiting = self.awaiting.as_mut()?;
+        if awaiting.looked.elapsed() < AWAIT_LOOK {
+            return None;
+        }
+        awaiting.looked = Instant::now();
+        let on = awaiting.on;
+        let shown = |displays: &[Display]| displays.iter().any(|d| d.virtual_display) == on;
+        match hext_capture::displays(false) {
+            Ok(displays) if shown(&displays) => {
+                self.awaiting = None;
+                layout.update(displays);
+                // A list from before is no news.
+                listed.lock().expect("lock").take();
+                return Some(layout.virtual_index());
+            }
+            Ok(_) => {}
+            Err(e) => debug!("monitores: {e}"),
+        }
+        if awaiting.since.elapsed() > WAKE_WAIT {
+            warn!("monitor virtual: a lista de monitores não mudou");
+            self.awaiting = None;
+        }
+        None
+    }
+}
+
+/// The displays, once `ready` takes them (a monitor turned on or off takes a
+/// moment to come or go); `None` after [`WAKE_WAIT`].
+fn wait_displays(ready: impl Fn(&[Display]) -> bool) -> Option<Vec<Display>> {
+    let start = Instant::now();
+    loop {
+        match hext_capture::displays(false) {
+            Ok(displays) if ready(&displays) => return Some(displays),
+            Ok(_) => {}
+            Err(e) => debug!("monitores: {e}"),
+        }
+        if start.elapsed() > WAKE_WAIT {
+            warn!("monitor virtual: a lista de monitores não mudou");
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// How long opening the capture is retried while a display wakes up.
@@ -1210,13 +1390,22 @@ fn follow_displays(
     shared: &Shared,
     layout: &mut Layout,
     capturer: &mut Box<dyn Capturer>,
+    virtual_switch: &mut VirtualSwitch,
 ) -> bool {
     let listed = shared.listed.lock().expect("lock").take();
-    let news = listed.is_some();
+    let mut news = listed.is_some();
     if let Some(displays) = listed {
         layout.update(displays);
     }
-    let asked = shared.wanted.lock().expect("lock").take();
+    let mut asked = shared.wanted.lock().expect("lock").take();
+    let switch = shared.virtual_wanted.lock().expect("lock").take();
+    if let Some(on) = switch {
+        asked = virtual_switch.switch(on, layout).or(asked);
+    }
+    if let Some(arrived) = virtual_switch.arrived(layout, &shared.listed) {
+        news = true;
+        asked = arrived.or(asked);
+    }
     let gone = layout.current.is_none().then_some(0);
     // The same display, somewhere else on the desktop: not every capture
     // notices, and the mouse must go there.
@@ -1248,7 +1437,7 @@ fn follow_displays(
     shared.displays.send_if_modified(|shown| {
         let changed = *shown != view;
         *shown = view;
-        changed || asked.is_some()
+        changed || asked.is_some() || switch.is_some()
     });
     moved
 }
@@ -1264,13 +1453,33 @@ fn capture_loop(
     // macOS: no display to open, and the session ended at once). Here, on
     // the capture thread, which follows the desktop getting input.
     let _awake = (!config.test_pattern).then(hext_capture::KeepAwake::new);
+    // Before the capturer, so it goes after it: the monitor stays on while
+    // it is captured.
+    let virtual_offered = !config.test_pattern && virtual_display::available();
+    let mut virtual_switch = VirtualSwitch::default();
+    if virtual_offered {
+        // Asked for in this session (an agent that took over), or nothing
+        // else to show.
+        let none = hext_capture::displays(false).is_ok_and(|d| d.is_empty());
+        if config.virtual_display || none {
+            info!("ligando o monitor virtual");
+            virtual_switch.lease = virtual_display::turn_on()
+                .inspect_err(|e| warn!("{e}"))
+                .ok();
+            // Before the capture opens, so it opens there (no video yet).
+            if virtual_switch.lease.is_some() {
+                wait_displays(|displays| displays.iter().any(|d| d.virtual_display));
+            }
+        }
+    }
     let opened = open_waking(config)
         .map_err(SessionError::from)
         .and_then(|(capturer, layout)| {
             Ok((capturer, layout, hext_codec::open_encoder(config.encoder)?))
         });
     let (mut capturer, mut layout, mut encoder) = match opened {
-        Ok(opened) => {
+        Ok(mut opened) => {
+            opened.1.virtual_offered = virtual_offered;
             shared.displays.send_replace(opened.1.view());
             let _ = started.send(Ok(()));
             opened
@@ -1292,7 +1501,13 @@ fn capture_loop(
 
     while !shared.stop.load(Ordering::Relaxed) {
         report.roll();
-        if follow_displays(config, shared, &mut layout, &mut capturer) {
+        if follow_displays(
+            config,
+            shared,
+            &mut layout,
+            &mut capturer,
+            &mut virtual_switch,
+        ) {
             // What the encoder held back is of the other display.
             skipped = false;
             shared.keyframe.store(true, Ordering::Relaxed);
@@ -1535,6 +1750,7 @@ mod tests {
         Display {
             id: id.into(),
             rect: Rect::default(),
+            virtual_display: false,
         }
     }
 
@@ -1587,7 +1803,87 @@ mod tests {
         Layout {
             displays: ids.iter().map(|id| monitor(id)).collect(),
             current: Some(current),
+            virtual_offered: false,
         }
+    }
+
+    fn virtual_monitor(id: &str) -> Display {
+        Display {
+            virtual_display: true,
+            ..monitor(id)
+        }
+    }
+
+    #[test]
+    fn a_session_starts_on_the_virtual_monitor_the_hext_turned_on() {
+        // Monitors without a cable stay listed for a while: the virtual one
+        // is the one that shows something.
+        let listed = [monitor("dell 1"), monitor("dell 2"), virtual_monitor("vdd")];
+        assert_eq!(first_display(&listed, 0, true), 2);
+        assert_eq!(
+            first_display(&listed[..2], 0, true),
+            0,
+            "without it, the main one"
+        );
+        // A session going on with a new agent stays where it was.
+        assert_eq!(first_display(&listed, 1, true), 1);
+        assert_eq!(
+            first_display(&listed, 7, true),
+            2,
+            "gone: as if none was asked"
+        );
+    }
+
+    #[test]
+    fn the_owners_virtual_monitor_is_one_more_monitor() {
+        // On by the computer's owner (for something else): the main one.
+        let listed = [monitor("dell 1"), monitor("dell 2"), virtual_monitor("vdd")];
+        assert_eq!(first_display(&listed, 0, false), 0);
+        assert_eq!(first_display(&listed, 2, false), 2, "unless asked for");
+    }
+
+    #[test]
+    fn the_viewer_hears_whether_there_is_a_virtual_monitor() {
+        let mut layout = layout(&["principal"], 0);
+        assert_eq!(layout.view().virtual_display, VirtualDisplay::None);
+        layout.virtual_offered = true;
+        assert_eq!(layout.view().virtual_display, VirtualDisplay::Off);
+        layout.update(vec![monitor("principal"), virtual_monitor("vdd")]);
+        assert_eq!(
+            layout.view(),
+            Displays {
+                count: 2,
+                current: 0,
+                virtual_display: VirtualDisplay::On { index: 1 },
+            }
+        );
+    }
+
+    #[test]
+    fn nothing_turns_on_where_there_is_no_virtual_monitor() {
+        let layout = layout(&["principal"], 0);
+        let mut switch = VirtualSwitch::default();
+        assert_eq!(switch.switch(true, &layout), None);
+        assert!(switch.lease.is_none() && switch.awaiting.is_none());
+    }
+
+    #[test]
+    fn the_only_monitor_stays_on() {
+        assert!(!can_turn_off(&[virtual_monitor("vdd")]));
+        assert!(can_turn_off(&[virtual_monitor("vdd"), monitor("dell")]));
+        assert!(!can_turn_off(&[]), "nothing to show either way");
+    }
+
+    #[test]
+    fn off_waits_only_for_what_the_hext_turned_on() {
+        // No lease (the owner's monitor, or never turned on here): nothing
+        // goes off, and the video does not wait for it.
+        let mut layout = layout(&["principal"], 0);
+        layout.displays.push(virtual_monitor("vdd"));
+        layout.virtual_offered = true;
+        let mut switch = VirtualSwitch::default();
+        assert_eq!(switch.switch(false, &layout), None);
+        assert!(switch.awaiting.is_none());
     }
 
     #[test]
@@ -1601,6 +1897,7 @@ mod tests {
         let view = Displays {
             count: 3,
             current: 2,
+            ..Default::default()
         };
         assert_eq!(layout.view(), view);
         assert_eq!(layout.other(2), None, "already there");
@@ -1615,6 +1912,7 @@ mod tests {
         let view = Displays {
             count: 1,
             current: 0,
+            ..Default::default()
         };
         assert_eq!(layout.view(), view);
     }
@@ -1632,6 +1930,7 @@ mod tests {
             display: 0,
             test_pattern: true,
             encoder: EncoderSettings::default(),
+            virtual_display: false,
         }
     }
 
@@ -1644,6 +1943,7 @@ mod tests {
             bitrate: AtomicU32::new(settings().encoder.bitrate_bps),
             area: Mutex::new(Area::default()),
             wanted: Mutex::new(None),
+            virtual_wanted: Mutex::new(None),
             listed: Mutex::new(None),
             displays: watch::Sender::default(),
         });
@@ -1673,6 +1973,7 @@ mod tests {
         let view = Displays {
             count: 2,
             current: 1,
+            ..Default::default()
         };
         assert_eq!(*shared.displays.borrow(), view);
         // Left of the main monitor: nowhere near where the mouse was going.
@@ -1729,6 +2030,7 @@ mod tests {
         let view = Displays {
             count: 1,
             current: 0,
+            ..Default::default()
         };
         assert_eq!(*shared.displays.borrow(), view);
         shared.stop.store(true, Ordering::Relaxed);
