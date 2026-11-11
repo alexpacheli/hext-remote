@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 license = "AGPL-3.0-only"
 repository = "https://github.com/alexpacheli/hext-remote"
 edition = "2024"
