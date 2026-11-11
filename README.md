@@ -48,8 +48,8 @@ Remote access and support for Windows, macOS and Linux, focused on smoothness. F
 4. The session is end-to-end encrypted between the two computers: neither the server nor the relay sees the
    screen, the keyboard or the files. The access password never travels (SPAKE2).
 
-Details in [ARCHITECTURE.md](ARCHITECTURE.md) and in each phase's plan ([F3](docs/F3.md) to [F6](docs/F6.md)),
-in Portuguese.
+Details in [ARCHITECTURE.md](ARCHITECTURE.md). Why it is built this way: [docs/DECISIONS.md](docs/DECISIONS.md);
+where it stands: [docs/STATUS.md](docs/STATUS.md); every document: [docs/](docs/README.md).
 
 ## Download and use
 
@@ -73,8 +73,8 @@ macOS app is signed with an Apple Developer ID and notarized. See the [privacy p
 
 To get in without anyone accepting, install the service (the `.msi` does) and set the access password in the
 **Segurança** (Security) tab. The full walkthrough of each feature, including the command line, is in
-[docs/testes.md](docs/testes.md), and the field support checklists in
-[docs/atendimento-campo.md](docs/atendimento-campo.md) (in Portuguese). The interface is in Portuguese for now.
+[docs/roteiros/testes.md](docs/roteiros/testes.md), and the field support checklists in
+[docs/roteiros/](docs/roteiros/) (in Portuguese). The interface is in Portuguese for now.
 
 **Updates.** Installed on Windows (the service) or on a Mac (in Applications), Hext Remote updates itself
 between sessions. Otherwise, the home screen says when there is a new version (on Linux:

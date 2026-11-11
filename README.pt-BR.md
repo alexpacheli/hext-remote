@@ -50,7 +50,8 @@ escrito em Rust.
 4. A sessão é cifrada de ponta a ponta entre os dois computadores: nem o servidor nem o relay veem a tela, o
    teclado ou os arquivos. A senha de acesso nunca trafega (SPAKE2).
 
-Detalhes em [ARCHITECTURE.md](ARCHITECTURE.md) e no plano de cada fase ([F3](docs/F3.md) a [F6](docs/F6.md)).
+Detalhes na [arquitetura](ARCHITECTURE.pt-BR.md). Por que é feito assim: [docs/DECISIONS.pt-BR.md](docs/DECISIONS.pt-BR.md);
+em que pé está: [docs/STATUS.pt-BR.md](docs/STATUS.pt-BR.md); todos os documentos: [docs/](docs/README.pt-BR.md).
 
 ## Baixar e usar
 
@@ -75,8 +76,8 @@ informações → Executar assim mesmo). O app do macOS é assinado com um Apple
 
 Para entrar sem ninguém aceitar, instale o serviço (o `.msi` já instala) e defina a senha de acesso na aba
 **Segurança**. O roteiro completo de cada recurso, inclusive pela linha de comando, está em
-[docs/testes.md](docs/testes.md), e os roteiros de atendimento em campo, em
-[docs/atendimento-campo.md](docs/atendimento-campo.md).
+[docs/roteiros/testes.md](docs/roteiros/testes.md), e os roteiros de atendimento em campo, em
+[docs/roteiros/](docs/roteiros/).
 
 **Atualização.** Instalado no Windows (o serviço) ou no Mac (em Aplicativos), o Hext Remote se atualiza
 sozinho, entre uma sessão e outra. Nos outros casos, a tela inicial avisa quando há uma versão nova (no Linux:

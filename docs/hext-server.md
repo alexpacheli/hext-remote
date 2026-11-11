@@ -85,7 +85,7 @@ Técnico                  Servidor                   Host
 
 ## Contas
 
-A conta é opcional (F5, [plano](F5.md)). As chamadas vão no mesmo WebSocket, já autenticado pela chave do
+A conta é opcional (F5, [plano](planos/F5.md)). As chamadas vão no mesmo WebSocket, já autenticado pela chave do
 computador: `account {request, call}` e a resposta `account {request, reply}`. Os tipos ficam em
 `crates/signal/src/account.rs` (`AccountCall`, `AccountReply`), e o servidor em
 `apps/hext-server/src/accounts.rs`. Um servidor antigo não diz `aceita account`, e o app não pergunta.

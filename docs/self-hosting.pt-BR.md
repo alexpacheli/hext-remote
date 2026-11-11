@@ -125,7 +125,7 @@ Windows e o Gatekeeper do macOS avisam na primeira abertura.
   caminho possível hoje é um serviço de assinatura na nuvem, como o Azure Trusted Signing, que exige mudar a
   etapa de assinatura em `.github/workflows/release.yml`. A versão oficial também não é assinada no Windows.
 - **macOS:** `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
-  `APPLE_APP_PASSWORD` e `APPLE_TEAM_ID` (Apple Developer Program; detalhes na seção 4 do [F6.md](F6.md)).
+  `APPLE_APP_PASSWORD` e `APPLE_TEAM_ID` (Apple Developer Program; detalhes na seção 4 do [F6.md](planos/F6.md)).
 
 O app instalado no Mac só se atualiza sozinho quando assinado com um Developer ID.
 

@@ -8,7 +8,7 @@ final faria. Serve para fechar a F6. Marque cada passo e anote avisos do sistema
 - [ ] Uma release publicada no GitHub (o rascunho que o pipeline abre precisa ser publicado). Os exemplos
       usam 0.7.0 e 0.7.1: troque pelas versões do teste.
 - [ ] Os instaladores do Windows não têm assinatura de código: o SmartScreen avisa na primeira abertura. O Mac
-      precisa dos segredos da Apple (seção 4 do [plano](F6.md)).
+      precisa dos segredos da Apple (seção 4 do [plano](../planos/F6.md)).
 - [ ] Para testar a atualização: uma segunda release (`v0.7.1`), publicada depois de instalar a primeira.
 
 ## 1. Windows (.msi)

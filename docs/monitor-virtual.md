@@ -126,7 +126,7 @@ depende do compositor).
 | 3 | **macOS** ✅ | Sessão num Mac mini sem monitor abre com imagem; sem a API, mensagem clara em vez de sessão fechando |
 | 4 | **Resolução pelo visualizador** ✅ | O técnico troca a resolução do monitor virtual (Ctrl+Alt+0) |
 
-Ordem: 0 → 1 → 2 e 3 em paralelo → 4. Os roteiros manuais ficam em cada marco, abaixo; o [testes.md](testes.md)
+Ordem: 0 → 1 → 2 e 3 em paralelo → 4. Os roteiros manuais ficam em cada marco, abaixo; o [testes.md](roteiros/testes.md)
 aponta para eles.
 
 Fica para depois do marco 1: o visualizador lembrar o último monitor escolhido para cada computador (com o

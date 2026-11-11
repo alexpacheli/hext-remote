@@ -1,0 +1,426 @@
+# Hext Remote — Plano original
+
+> **Registro.** O primeiro plano do projeto, escrito antes do código e atualizado só até a F6. Os planos das
+> fases ([F3](F3.md) a [F6](F6.md)) apontam para as seções dele. Como o Hext funciona hoje está na
+> [arquitetura](../../ARCHITECTURE.pt-BR.md), e em que pé está, na [situação](../STATUS.pt-BR.md).
+
+## 0. Visão
+
+Software de **acesso e suporte remoto** no estilo AnyDesk / Splashtop, com a fluidez do Parsec.
+
+**Objetivos**
+
+- Suporte remoto **Windows e macOS** desde o início. **Linux** primeiro como cliente e depois como host.
+- Conectar em alguém por um **ID numérico** e um pedido de aceite, ou **sem aceite** nas máquinas da própria conta.
+- Ser **mais fluido** que as alternativas: cursor sem atraso, sem engasgo em rede ruim e consumo de banda quase zero com a tela parada.
+- **Multi-monitor de primeira classe**: troca instantânea entre telas, todas ao mesmo tempo ou uma janela por monitor.
+- **Criptografia de ponta a ponta**: o servidor apresenta os peers, mas nunca vê a tela.
+
+**Fora do escopo inicial:** streaming de jogos com gamepad, clientes mobile e cliente web. Ficam para fases futuras.
+
+---
+
+## 1. Matriz de plataformas
+
+| Plataforma | Cliente (quem acessa) | Host (quem é acessado) | Fase |
+|---|---|---|---|
+| Windows 10/11 (x64, ARM64) | ✅ | ✅ (com serviço e tela de login/UAC) | F1 |
+| macOS 13+ (Intel e Apple Silicon) | ✅ | ✅ (com permissões TCC) | F2 |
+| Linux (X11 e Wayland) | ✅ | X11 em F7, Wayland em seguida | F7 |
+
+O Linux como host é viável, mas no Wayland cada sessão abre um pedido de permissão (portal), o que atrapalha o acesso não assistido. Por isso ele vem depois.
+
+---
+
+## 2. Visão geral
+
+```
+                 ┌──────────────────── VPS ─────────────────────┐
+                 │  API / Contas   Sinalização   STUN   Relay   │
+                 │  (HTTPS)        (WSS :443)    (UDP)  (UDP +  │
+                 │                                       TCP443)│
+                 └────────┬──────────────┬────────────────┬─────┘
+                          │ apresenta    │                │ fallback
+                          │ os peers     │                │ (~10–15%)
+   ┌──────────────┐       ▼              ▼                ▼       ┌──────────────┐
+   │ Hext Remote  │ ◄════════ P2P direto (QUIC sobre UDP) ══════► │ Hext Remote  │
+   │  (cliente)   │           criptografado ponta a ponta         │  (host)      │
+   └──────────────┘                                               └──────────────┘
+```
+
+- **Um único app faz os dois papéis.** Como no AnyDesk, quem instala pode acessar e ser acessado.
+- O **VPS** cuida de identidade, presença, apresentação dos peers e relay. O conteúdo da sessão nunca passa decifrado por ele.
+
+---
+
+## 3. O aplicativo
+
+### 3.1 Executáveis gerados
+
+O Rust compila para **executável nativo**, sem runtime, sem .NET e sem Java:
+
+| SO | Saída | Distribuição |
+|---|---|---|
+| Windows | `HextRemote.exe` (~10–20 MB) | `.exe` portátil e instalador `.msi` |
+| macOS | `Hext Remote.app` (binário universal x86_64 + arm64) | `.dmg` assinado e notarizado |
+| Linux | binário ELF | `.AppImage`, `.deb` e `.rpm` |
+
+### 3.2 Modos de execução
+
+1. **Suporte rápido (portátil):** a pessoa baixa e abre o `.exe`, sem instalar e sem precisar de admin. Ela mostra o ID e aceita a conexão. É o caso mais comum no suporte.
+2. **Instalado:**
+   - Roda como serviço.
+   - Inicia junto com o sistema e funciona na tela de login e nos prompts de UAC.
+   - Permite **acesso não assistido** com senha fixa ou pela conta.
+   - Reconecta sozinho depois de um reboot (seção [3.3](#33-inicialização-automática-e-reconexão)).
+
+### 3.3 Inicialização automática e reconexão
+
+**Configurações do app** (aba "Segurança / Inicialização"):
+
+| Opção | Padrão quando instalado | Efeito |
+|---|---|---|
+| **Iniciar com o sistema** | ligado | O serviço sobe junto com o SO, **antes do login**, e a máquina fica online com o seu ID |
+| **Reconectar após reinício** | ligado | Depois de um reboot pedido na sessão, o técnico volta sozinho, sem novo pedido de aceite |
+| **Acesso não assistido** | desligado | Libera a entrada com senha fixa ou pela conta, sem ninguém do outro lado |
+
+No **modo portátil** não há inicialização automática. A tela mostra um botão "Instalar Hext Remote" que liga essas opções.
+
+**Como cada SO inicia o Hext Remote**
+
+| SO | Mecanismo |
+|---|---|
+| Windows | Serviço `hext-service` com inicialização **Automática** (não atrasada, para estar pronto já na tela de login) e reinício automático em caso de falha. Registrado também em `SafeBoot\Network`, para funcionar em **Modo Seguro com rede**. O ícone na bandeja inicia por usuário via `HKCU\...\Run`. |
+| macOS | **LaunchDaemon** (`RunAtLoad` + `KeepAlive`) e **LaunchAgent** para as sessões `Aqua` e `LoginWindow`, registrados via `SMAppService` (macOS 13+). Aparecem em Ajustes → Itens de Início. |
+| Linux | Unidade **systemd** de sistema e autostart XDG para a interface. |
+
+**Fluxo de reinício com reconexão**
+
+1. O técnico clica em **Reiniciar** (ou "Reiniciar em Modo Seguro"). É preciso ter a permissão "reiniciar" concedida na sessão.
+2. O host recebe um **token de reconexão**: uso único, válido por cerca de 10 minutos, amarrado àquele técnico e àquela sessão. O token fica guardado protegido pelo SO.
+3. O cliente do técnico mostra *"Aguardando a máquina voltar…"*.
+4. No boot, o serviço sobe, conecta na sinalização e fica online.
+5. O cliente reconecta sozinho apresentando o token, sem novo pedido de aceite, e o token é descartado.
+
+Quedas de rede no meio da sessão também reconectam sozinhas, com backoff exponencial, sem perder o estado da sessão.
+
+### 3.4 Processos
+
+**Windows**
+
+```
+hext-service (SYSTEM, sessão 0)
+   ├─ fala com a sinalização, mantém a presença e aceita conexões
+   └─ lança ──► hext-agent (na sessão do usuário ativo, ou na tela Winlogon/UAC)
+                   └─ captura, encode e injeção de input
+hext (UI)    ──► interface: ID, aceite, barra de sessão. Roda sempre como o usuário
+                 (no modo instalado, lançada pelo serviço; fala com ele por um pipe)
+hext view    ──► janela(s) da sessão remota (render nativo)
+```
+
+- Um serviço na sessão 0 **não consegue capturar a tela**. Por isso ele lança um *agent* na sessão ativa usando `WTSGetActiveConsoleSessionId` e `CreateProcessAsUser`.
+- Quando a tela muda para Winlogon/UAC (*secure desktop*), o agent é relançado naquele desktop.
+- `Ctrl+Alt+Del` remoto é feito com `SendSAS` (sas.dll), o que exige rodar como serviço.
+
+**macOS**
+
+- Um **LaunchDaemon** (root) mantém presença e conexões.
+- Um **LaunchAgent** na sessão do usuário faz captura e input.
+- A captura da tela de login exige um agent no contexto `LoginWindow`. Fica para a fase F4.
+
+### 3.5 Interface
+
+- **Casca da UI** (ID, lista de máquinas, login, configurações, chat): **Tauri 2**, que é rápido de desenvolver e tem visual moderno. As páginas são HTML, CSS e JavaScript simples (`apps/hext/ui`), embutidos no executável, sem Node no build. Por enquanto só no Windows e no macOS; o Linux continua na linha de comando até a F7.
+- **Visualizador da sessão:** janela **nativa** (`winit` + `wgpu`) num processo separado, iniciado com `hext view`. O vídeo nunca passa por um webview.
+  - Se o visualizador travar, a UI principal continua de pé.
+  - Cada monitor remoto pode virar uma janela separada.
+
+---
+
+## 4. Pipeline de vídeo
+
+```
+Captura (GPU) ─► [mudou?] ─► Encode HW ─► Empacota + FEC ─► Rede ─► Decode HW ─► Render
+   │                 │
+   │                 └─ tela parada: não codifica nada (banda ≈ 0)
+   └─ textura fica na GPU (zero-copy até o encoder)
+```
+
+### 4.1 Captura
+
+| SO | API | Observações |
+|---|---|---|
+| Windows | **DXGI Desktop Duplication** | Informa dirty rects e funciona no secure desktop rodando como SYSTEM. Windows.Graphics.Capture fica como alternativa. |
+| macOS | **ScreenCaptureKit** | Exige a permissão "Gravação de Tela". Entrega `IOSurface`, que é zero-copy para o VideoToolbox. |
+| Linux X11 | XShm / XDamage | — |
+| Linux Wayland | xdg-desktop-portal ScreenCast + PipeWire | Abre um prompt de permissão |
+
+Sem monitor ligado, a captura usa um **monitor virtual** (MttVDD no Windows, `CGVirtualDisplay` no macOS), desde a 0.7.0: veja [docs/monitor-virtual.md](../monitor-virtual.md).
+
+### 4.2 Codificação
+
+- **Codec inicial: H.264.** É universal e todo hardware decodifica. HEVC e AV1 entram depois, negociados conforme o que os dois lados suportam.
+- **Encoders**
+  - Windows: Media Foundation (MFT de hardware), que cobre NVIDIA, AMD e Intel. Depois, SDKs diretos (NVENC/AMF/QSV) para cortar mais latência.
+  - macOS: VideoToolbox.
+  - Fallback em software: **openh264**. Importante no suporte, porque muitas máquinas atendidas têm GPU fraca ou estão em VM.
+- **Configuração de baixa latência**
+  - Sem B-frames.
+  - **Intra-refresh** no lugar de keyframes periódicos, o que evita picos de banda. *(Pendente: nenhum dos três encoders oferece de forma portável. Os keyframes periódicos já são raros, um por minuto ou mais; os que sobram são o do início e os pedidos depois de uma perda, que o pacing e a paridade maior protegem.)*
+  - CBR/VBR com buffer pequeno, de cerca de 1 frame.
+  - Keyframe sob demanda quando houver perda grave ou troca de monitor.
+- **Específico de suporte, onde o texto precisa estar nítido**
+  - **Refinamento de tela parada:** quando a tela para de mudar, o host manda um quadro de alta qualidade, porque texto borrado é a maior reclamação em ferramentas de suporte.
+  - Modo 4:4:4 opcional quando o decoder do cliente suportar.
+  - Com a tela parada, nada é codificado. Os dirty rects da captura disparam o encode só quando algo muda.
+
+### 4.3 Cursor no cliente
+
+- O host envia **forma e posição do cursor** em mensagens separadas. O cursor **não** vai no vídeo.
+- O cliente desenha o cursor localmente, então o mouse responde sem nenhum atraso de rede. É o maior ganho de sensação de fluidez.
+
+### 4.4 Decodificação e render
+
+- Decode por hardware: Media Foundation com Direct3D 11 (DXVA) no Windows e VideoToolbox no macOS (implementados), VAAPI no Linux, e OpenH264 como fallback. Por enquanto o quadro decodificado volta para a memória e é enviado ao `wgpu` como I420; mostrar a textura decodificada direto (sem essa volta) fica para depois.
+- Render com `wgpu` (D3D12/D3D11, Metal ou Vulkan).
+- O quadro é apresentado **assim que é decodificado**, sem fila. Modo de baixa latência com tearing é opcional.
+- Escalas disponíveis: ajustar à janela, 1:1 e resolução adaptativa.
+
+### 4.5 Multi-monitor
+
+Cada monitor remoto é um **stream independente**:
+
+- **Troca instantânea:** todos os encoders ficam inicializados.
+  - Monitores fora de foco mandam 1–5 fps em baixa resolução, o que alimenta as miniaturas.
+  - Ao trocar (`Ctrl+Alt+1..9` ou clique na barra de miniaturas), o stream é promovido a taxa cheia mais keyframe. A troca leva cerca de 1 frame, sem tela preta.
+- **Layouts**
+  1. Um monitor por vez, com troca instantânea.
+  2. Todos lado a lado na mesma janela.
+  3. **Uma janela por monitor remoto.** O técnico arrasta cada janela para um dos seus próprios monitores.
+- **Banda adaptativa:** o monitor com foco recebe fps e bitrate cheios, e os outros recebem menos.
+
+### 4.6 Metas de desempenho
+
+| Cenário | Meta glass-to-glass | Banda |
+|---|---|---|
+| LAN, 1080p60 | < 30 ms | 5–15 Mbps |
+| Internet, mesma região | < 50 ms + RTT | 1–5 Mbps |
+| Conexão ruim (4G/ADSL) | utilizável | funciona com **1 Mbps** |
+| Tela parada | — | **≈ 0** (só keepalive) |
+
+A latência é **medida desde a F1**: um overlay de estatísticas mostra captura, encode, rede, decode e render por quadro.
+
+---
+
+## 5. Input e demais canais
+
+| Canal | Detalhes |
+|---|---|
+| **Mouse e teclado** | Windows: `SendInput` (o agent precisa estar no mesmo desktop do alvo). macOS: `CGEvent`, que exige a permissão "Acessibilidade". O input viaja com prioridade máxima e de forma redundante, para que uma perda não trave nada. Os teclados são mapeados por scancode, para funcionar com layouts diferentes (ABNT2 ↔ US). |
+| **Atalhos especiais** | `Ctrl+Alt+Del`, `Win`, `Alt+Tab` e `Cmd+Tab` vão para a máquina remota quando a janela está em foco. |
+| **Clipboard** | Texto, imagens e (depois) arquivos, nos dois sentidos, com opção de desativar. |
+| **Arquivos** | Arrastar e soltar, mais um gerenciador de arquivos com dois painéis. Retoma transferências interrompidas. |
+| **Chat** | Texto entre técnico e cliente durante a sessão. |
+| **Áudio** (F7) | Windows: WASAPI loopback. macOS: ScreenCaptureKit. Codec Opus a 10 ms. |
+| **Reiniciar e reconectar** | Reinicia o PC remoto (inclusive em Modo Seguro com rede) e o cliente reconecta sozinho. |
+| **Privacidade** (F7) | Tela remota em preto enquanto o técnico trabalha e bloqueio do input local. |
+
+---
+
+## 6. Rede
+
+### 6.1 Transporte: QUIC (`iroh`)
+
+- **Datagramas QUIC** (não confiáveis) para vídeo, cursor e input. Um pacote perdido não bloqueia os seguintes.
+- **Streams QUIC** (confiáveis) para controle, clipboard, arquivos e chat.
+- O TLS 1.3 é embutido. Cada endpoint é a própria chave do dispositivo (seção 7): os dois lados provam que têm suas chaves no handshake.
+- *(F3, marco 4)* O transporte é o [`iroh`](https://iroh.computer): ele abre o caminho direto quando as redes permitem (hole punching) e senão passa pelo nosso relay (`iroh-relay`, HTTPS/443). Os endereços (relay e IPs diretos) viajam pela sinalização; nenhum serviço de terceiros é usado para achar os computadores. A decisão e as medições estão no relatório do spike (branch `spike/iroh`).
+- Serialização: `serde` + `postcard`, com versão de protocolo negociada no handshake.
+
+### 6.2 Resiliência
+
+- **FEC** (Reed-Solomon) nos quadros de vídeo: um pacote perdido é recuperado sem retransmissão. *(Implementado: cada quadro vira pacotes do tamanho de um datagrama, em blocos de até 64 com 20% de paridade (40% nos keyframes, que são grandes e caros de perder); os pacotes saem intercalados entre blocos, para que uma rajada de perdas se espalhe. O título do visualizador mostra quantos blocos o FEC recuperou e quantos quadros se perderam.)*
+- **Pacing:** os pacotes de um quadro saem a no máximo 4× o bitrate do vídeo. Um quadro típico sai em poucos milissegundos, e um keyframe (~10× maior) se espalha por alguns intervalos de quadro em vez de sair numa rajada. No spike do `iroh` (escritório ↔ casa, UDP direto), essa rajada estourava o buffer de algum roteador no caminho e perdia mais pacotes do que o FEC recupera: ~1 quadro perdido por keyframe, e nenhum sem keyframes. O custo é que os quadros logo depois de um keyframe esperam ele terminar de sair. Se o envio trava por congestionamento, o tempo perdido não é compensado com uma rajada. No Windows, o host pede timers de 1 ms enquanto há quadros saindo, porque o padrão de 15,6 ms transformaria o pacing em rajadas. *(Implementado.)*
+- **Controle de congestionamento próprio para vídeo**, baseado em atraso no estilo GCC. Ele baixa o bitrate *antes* de a fila encher, para não acumular atraso.
+- **Perda grave:** o cliente pede um keyframe ou uma atualização de intra-refresh.
+
+### 6.3 Como os peers se conectam
+
+1. Os dois apps mantêm uma conexão **WSS na porta 443** com a sinalização. É leve e passa por proxies corporativos.
+2. O cliente pede para conectar no ID `482 913 557`. A sinalização avisa o host.
+3. Os dois trocam candidatos: IPs locais, IP público descoberto via STUN e o relay.
+4. **Tentativas em paralelo, a primeira que responder vence:**
+   - **LAN direta:** mesma rede, com descoberta por mDNS/broadcast.
+   - **P2P com UDP hole punching:** funciona em cerca de 85–90% das redes.
+   - **Relay UDP:** para NAT simétrica.
+   - **Relay TCP/TLS na porta 443:** para firewalls corporativos que bloqueiam UDP. É essencial em suporte a empresas.
+5. O QUIC é estabelecido de ponta a ponta. O relay só repassa bytes cifrados.
+
+---
+
+## 7. Identidade, contas e segurança
+
+### 7.1 Dispositivo e ID
+
+- Na primeira execução, o app gera um **par de chaves Ed25519**. A chave privada fica protegida pelo SO: DPAPI no Windows, Keychain no macOS (este quando o app for assinado com Developer ID; até lá, arquivo só do usuário).
+- O servidor registra a chave pública e devolve um **ID de 9 dígitos**, aleatório e nunca sequencial.
+- A autenticação na sinalização é feita assinando um desafio com a chave do dispositivo.
+
+### 7.2 Formas de acesso
+
+| Modo | Como funciona |
+|---|---|
+| **Atendido** (padrão) | O técnico digita o ID. O host mostra o pedido *"Técnico X quer conectar"* com Aceitar/Recusar e caixas de permissão: ver, controlar, clipboard, arquivos e reiniciar. |
+| **Senha não assistida** | Senha fixa definida no host. Ela é verificada por **PAKE (SPAKE2)**, então nem o servidor nem um relay conseguem descobri-la. |
+| **Conta** | Os dispositivos ficam vinculados à conta (e-mail + 2FA/passkey). O dono acessa sem pedido de aceite. Dá para compartilhar máquinas com outros técnicos, com permissões. |
+
+### 7.3 Garantias
+
+- **Ponta a ponta:** o QUIC/TLS entre os peers usa certificados amarrados às chaves dos dispositivos. A sinalização transmite as impressões digitais, e o cliente fixa a chave do host (TOFU) e avisa se ela mudar.
+- **Contra força bruta:** limite de tentativas por ID e por IP, e bloqueio temporário do ID.
+- **Lista de permitidos:** opcionalmente, só IDs ou contas autorizados podem conectar.
+- **Auditoria:** registro de quem conectou, quando, por quanto tempo e com quais permissões.
+- **Indicador visível no host:** uma barra mostra que há uma sessão ativa e tem um botão para encerrá-la.
+
+### 7.4 Consentimento e transparência (princípio do produto)
+
+O Hext Remote é uma ferramenta de **acesso e suporte com consentimento**, não de vigilância secreta.
+Esta é uma decisão de projeto, não só uma configuração:
+
+- **O dono do computador sempre pode saber que o acesso existe.** O acesso não assistido (F5) é
+  configurado uma vez, com consentimento, e mantém o **indicador visível de sessão ativa** e o
+  **registro de auditoria**. Não haverá um modo "oculto" que esconda do usuário que há alguém
+  conectado, nem instalação ou captura sem autorização.
+- **Uso corporativo** é suportado de forma transparente: ícone visível, política que o funcionário
+  conhece e logs de auditoria.
+- Recursos que sirvam para **espionar alguém sem o seu conhecimento** (ocultar a presença, dispensar
+  o consentimento, instalar escondido) estão **fora do escopo** e não serão implementados — é
+  stalkerware, ilegal em muitos casos e removido por lojas de apps e antivírus.
+
+---
+
+## 8. Servidor (VPS)
+
+**Sim, é preciso uma VPS a partir da F3.** Nas fases F1–F2 (LAN), nenhum servidor é necessário.
+
+### 8.1 Componentes
+
+| Serviço | Função | Tecnologia |
+|---|---|---|
+| `hext-server` | Sinalização WSS (IDs, presença, contas) e o porteiro do relay | Rust (`axum` + `tokio`) |
+| Descoberta do IP público | O endereço que o relay vê (sem STUN separado) | `iroh-relay` |
+| Relay | Repasse UDP e TCP/443 de bytes cifrados; só entra quem o `hext-server` libera | `iroh-relay` (projeto iroh), serviço separado para escalar por região |
+| Banco | Contas, dispositivos, auditoria | SQLite (`rusqlite`) |
+| Presença | Quem está online | em memória no início, Redis ao escalar |
+| TLS | Certificados | Let's Encrypt (Caddy na frente ou `rustls-acme`) |
+
+### 8.2 Dimensionamento
+
+- **Começo:** uma VPS com 2 vCPU e 2–4 GB de RAM roda tudo (sinalização, contas, relay e o banco SQLite).
+- **Local:** em **São Paulo**, se os usuários estiverem no Brasil, porque o relay precisa estar perto. Opções:
+  - Oracle Cloud (free tier em SP, com bastante tráfego incluso)
+  - Vultr SP
+  - Magalu Cloud
+- **O custo real é o tráfego do relay.**
+  - Uma sessão de suporte consome em média 0,5–3 Mbps, ou cerca de 0,2–1,3 GB por hora.
+  - Só cerca de 10–15% das sessões precisam de relay; o resto é P2P.
+  - Escolha um provedor com muito tráfego incluso.
+- **Escala:** relays adicionais por região (SP, EUA, Europa). A sinalização indica o relay mais próximo.
+
+### 8.3 Outros custos
+
+| Item | Por quê |
+|---|---|
+| Domínio | Endereços da API e do relay |
+| **Apple Developer Program** (US$ 99/ano) | Obrigatório para assinar e notarizar no macOS. Sem isso, o Gatekeeper bloqueia o app. |
+| **Certificado de assinatura de código Windows** | Sem ele, o SmartScreen avisa na primeira abertura. Por enquanto os instaladores do Windows saem sem assinatura: um certificado novo (OV/EV) só vem num token físico ou num HSM na nuvem, ou pelo Azure Trusted Signing, e o custo fica para quando o projeto pedir. |
+
+---
+
+## 9. Estrutura do repositório
+
+```
+Cargo.toml                 # workspace
+crates/
+  proto/                   # mensagens, versões, serialização
+  net/                     # QUIC (iroh), FEC, pacing, conexão direta ou pelo relay
+  capture/                 # captura por SO (DXGI, ScreenCaptureKit) e monitor virtual
+  codec/                   # Encoder/Decoder (Media Foundation, VideoToolbox, openh264)
+  input/                   # injeção de input por SO + mapeamento de teclado
+  render/                  # wgpu: vídeo e cursor local
+  session/                 # pipelines do host e do cliente, canais, permissões
+  crypto/                  # chaves de dispositivo, PAKE, fingerprints
+  signal/                  # sinalização: IDs, mensagens app ↔ servidor, cliente WSS
+  clipboard/               # área de transferência
+  metrics/                 # estatísticas de latência
+apps/
+  hext/                    # app desktop (Tauri) → HextRemote.exe / Hext Remote.app; serviço, agent e visualizador
+  hext-server/             # sinalização, contas e porteiro do relay
+  vdd-spike/               # programa de teste do monitor virtual
+deploy/                    # servidor: systemd, Caddy, iroh-relay e Docker
+installer/                 # WiX (Windows), .dmg (macOS), pacotes do Linux
+docs/
+.github/workflows/         # CI nos 3 SOs; release.yml gera os instaladores
+```
+
+- O **CI no GitHub Actions** compila e testa nos três SOs a cada push. Os executáveis de Windows e macOS saem prontos para testar nas suas máquinas.
+- O código específico de cada SO fica isolado com `#[cfg(target_os = "...")]` atrás de traits comuns (`Capturer`, `Encoder`, `InputInjector`…).
+
+---
+
+## 10. Distribuição
+
+- **Windows:** `.exe` portátil para suporte rápido e `.msi` para instalação com serviço. Por enquanto sem assinatura de código (seção [8.3](#83-outros-custos)): o SmartScreen avisa na primeira abertura.
+- **macOS:** `.dmg` assinado e **notarizado**.
+  - No primeiro uso como host, o app guia o usuário para liberar "Gravação de Tela" e "Acessibilidade" nos Ajustes.
+  - Em empresas, as permissões podem ser liberadas antes via MDM (perfil PPPC).
+- **Linux:** `.AppImage`, `.deb` e `.rpm`. Os pacotes entram na F6, junto com os outros instaladores. O app Linux completo (interface e host) entra na F7.
+- **Atualização automática:** pela lista de versões assinada com uma chave Ed25519 nossa ([F6](F6.md), marco 2). Um canal beta fica para depois.
+
+---
+
+## 11. Roadmap
+
+| Fase | Entrega | Pronto quando |
+|---|---|---|
+| **F0 — Fundação** ✅ | Workspace, CI nos 3 SOs, esqueleto do protocolo (handshake QUIC, pinagem por impressão digital, ping por datagrama) e estatísticas de latência. O app é uma linha de comando; a UI Tauri e o overlay visual entram com o visualizador na F1. | CI verde gerando binários de Windows e macOS |
+| **F1 — MVP LAN Windows** ✅ | Captura DXGI → H.264 (OpenH264 em software, igual nos 3 SOs) → QUIC por IP direto → decode → render wgpu. Mouse, teclado (scancodes) e cursor local. Código de acesso de 9 dígitos. Codificação por hardware via Media Foundation, com zero-copy: a GPU converte a tela para NV12 (processador de vídeo D3D11, BT.601) e o encoder lê a textura direto. Vídeo por datagramas QUIC com FEC Reed-Solomon (20% por bloco de até 64 pacotes, intercalados), entrega em ordem e pedido de keyframe quando um quadro se perde mesmo assim. | Controlar um PC Windows na LAN com **< 30 ms** e fluidez visível |
+| **F2 — macOS** ✅ | Host e cliente macOS: ScreenCaptureKit (no tamanho lógico da tela), CGEvent (arrastar, duplo clique, modificadores), mapa scancode → tecla do Mac, Ctrl↔Cmd conforme o sistema do host, checagem de Gravação de Tela e Acessibilidade. Codificação na GPU do Mac via VideoToolbox (controle de taxa de baixa latência, Constrained Baseline), com a captura já em NV12/BT.601 feita pela GPU no ScreenCaptureKit — sem conversão de cor na CPU nem no encoder. `hext bench` mede as configurações. | Windows ↔ macOS nos dois sentidos, na LAN |
+| **F3 — Internet** ([plano](F3.md)) | VPS, ID numérico, sinalização, STUN, hole punching, relay UDP + TCP/443, pedido de aceite, ponta a ponta | Conectar pela internet só com o ID, inclusive atrás de NAT/firewall |
+| **F4 — Essenciais de suporte** ([plano](F4.md)) | Serviço Windows (login/UAC/Ctrl+Alt+Del), inicialização automática nos 3 SOs, senha não assistida (PAKE), clipboard, arquivos, chat, multi-monitor completo, reiniciar e reconectar, tela de login no macOS | Um técnico consegue fazer um atendimento real de ponta a ponta |
+| **F5 — Contas** ([plano](F5.md)) | Login, 2FA, catálogo de endereços, vínculo de dispositivos, compartilhamento, auditoria. **Acesso não assistido sempre com consentimento prévio, indicador visível de sessão ativa e log de auditoria** (ver [7.4](#74-consentimento-e-transparência-princípio-do-produto)); sem modo oculto. | Acessar as próprias máquinas sem aceite e gerenciar técnicos |
+| **F6 — Distribuição** ([plano](F6.md)) | Instaladores, assinatura, notarização, auto-update, `.exe` portátil. **Linux:** `.deb`, `.rpm` e `.AppImage` no pipeline de release e testados numa máquina Linux real (hoje o CI só compila a linha de comando, sem nenhum teste fora do CI). O app Linux completo (interface e host) vem na F7, usando esses pacotes | Usuário final instala e o app se atualiza sozinho (no Mac, sem avisos; no Windows, o SmartScreen avisa enquanto não houver assinatura); no Linux, o pacote instala, atualiza e roda |
+| **F7 — Extras** | Cliente e host Linux, vários técnicos no mesmo computador (se precisar), áudio, privacidade (tela preta), gravação de sessão, HEVC/AV1, Wake-on-LAN, mobile e web | — |
+
+**Situação (novembro de 2026, versão 0.7.1):** F3 a F6 implementadas e publicadas. Faltam os roteiros de campo que fecham cada fase (F4 marco 13, F5 marco 8, F6 marco 4) e a tela de login do Mac ([F6](F6.md), seção 3.1). Fora das fases, o monitor virtual ([docs/monitor-virtual.md](../monitor-virtual.md)) entrou na 0.7.0.
+
+---
+
+## 12. Bibliotecas principais (Rust)
+
+| Área | Crate |
+|---|---|
+| Async e rede | `tokio`, `iroh` (QUIC), `rustls` |
+| Windows | `windows` (windows-rs) |
+| macOS | `objc2` + `objc2-screen-capture-kit`, `objc2-video-toolbox`, `core-graphics` |
+| Render e janela | `wgpu`, `winit` |
+| UI | `tauri` 2 |
+| Codec em software | `openh264` |
+| FEC | `reed-solomon-erasure` (ou similar) |
+| Cripto | `ed25519-dalek`, `spake2`, `rcgen` |
+| Servidor | `axum`, `rusqlite` (SQLite) |
+| Serialização | `serde`, `postcard` |
+
+Referências para estudo, **sem copiar código** por causa das licenças: RustDesk (AGPL), Sunshine/Moonlight (GPL).
+
+---
+
+## 13. Riscos e decisões em aberto
+
+| Item | Risco ou decisão |
+|---|---|
+| Captura no secure desktop (Windows) | Complexo, mas bem documentado. Validar cedo, no começo da F4. |
+| Tela de login no macOS | A Apple restringe bastante. Pode ficar limitada a "reconectar após o login". |
+| Wayland como host | Os prompts do portal impedem o acesso não assistido puro. Por isso ele vem depois do X11. |
+| Licença do projeto | Decidido: código aberto, AGPL-3.0-only, desde a 0.6.1. |
+

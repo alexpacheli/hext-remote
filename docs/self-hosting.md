@@ -122,7 +122,7 @@ and macOS Gatekeeper warn on first open.
   cloud signing service such as Azure Trusted Signing, which needs a change to the signing step in
   `.github/workflows/release.yml`. The official build is not signed on Windows either.
 - **macOS:** `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
-  `APPLE_APP_PASSWORD` and `APPLE_TEAM_ID` (Apple Developer Program; details in section 4 of [F6.md](F6.md)).
+  `APPLE_APP_PASSWORD` and `APPLE_TEAM_ID` (Apple Developer Program; details in section 4 of [F6.md](planos/F6.md)).
 
 The installed Mac app updates itself only when signed with a Developer ID.
 

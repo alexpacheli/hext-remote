@@ -57,12 +57,12 @@ intervalo. Isso fica para outro PR.
 
 ## Roteiro de campo
 
-No notebook (Guarulhos), com o executável do PR. Feche a interface e rode o visualizador direto, para ver o
+No notebook, com o executável do PR. Feche a interface e rode o visualizador direto, para ver o
 log:
 
 ```powershell
 $env:HEXT_LOOP_TRACE='1'
-.\hext.exe view <ID do Windows de Sumaré> 2>&1 | Tee-Object janela.log
+.\hext.exe view <ID do Windows> 2>&1 | Tee-Object janela.log
 ```
 
 1. Com a sessão aberta, deixe um vídeo rodando em tela cheia no computador remoto, para chegar quadro o tempo
@@ -72,7 +72,7 @@ $env:HEXT_LOOP_TRACE='1'
 3. Maximize e restaure pelo botão da barra de título, cinco vezes seguidas. Cada clique deve responder na hora.
 4. Faça a rede oscilar: troque o Wi-Fi para o roteador do celular, ou afaste o notebook do roteador até o título
    mostrar perda (fps caindo), e repita os passos 2 e 3.
-5. Repita com o Mac de Valinhos, e depois com os dois abertos ao mesmo tempo (marco 11), mexendo numa janela
+5. Repita com o Mac, e depois com os dois abertos ao mesmo tempo (marco 11), mexendo numa janela
    enquanto a outra recebe vídeo.
 6. Depois, pela interface (sem o PowerShell), repita os passos 2 a 4 uma vez: é o uso de verdade.
 

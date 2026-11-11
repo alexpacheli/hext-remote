@@ -63,7 +63,7 @@ Para achar a causa de uma queda de fps num segundo:
 
 ## O que a primeira medição mostrou
 
-Em 5/11, com o host DESKTOP-U6JQMAA (Intel Quick Sync) e o visualizador ALEX-LIN-DESKTO, em 85 s:
+Em 5/11, com o host de teste (Intel Quick Sync) e o visualizador (AMD), em 85 s:
 
 - **A perda era real, não declarada cedo demais:** nenhum pacote tardio, e `MAX_WAITING` nunca foi acionado. O
   maior intervalo entre pacotes de um quadro foi 34 ms.
@@ -126,7 +126,7 @@ Primeira com o build novo nos dois lados, em 57 s, com rede tão ruim quanto a d
 - **O reenvio aguenta perda real:** rajadas de 320 e 417 pacotes perdidos por segundo não viraram keyframe em cascata.
 - **Os 2 quadros perdidos foram cedo demais:** os pacotes vieram 184 e 173 ms depois, de 530 a 560 ms após o último.
   Daí veio o piso de 600 ms sem pacote antes de desistir.
-- **O caminho é o Tailscale:** `Ip(100.107.63.111)` do início ao fim, com RTT de 18 a 472 ms (mediana 76). O host está
+- **O caminho é o Tailscale:** um IP do Tailscale do início ao fim, com RTT de 18 a 472 ms (mediana 76). O host está
   em Wi-Fi em `192.168.1.x` e o visualizador em cabo em `192.168.0.x`, sem rota entre as sub-redes.
 - **Falta separar as causas:** o RTT que oscila pode vir do Wi-Fi, do túnel ou da internet entre os dois. Só outra
   rodada, com o Tailscale desligado em um dos lados, mostra qual.
@@ -151,7 +151,7 @@ sessão real. Para saber o que um computador faz, use `hext encoder-rates`.
 
 ## A oitava medição
 
-Duas rodadas no `DESKTOP-U6JQMAA`, pelo mesmo caminho, depois do ajuste abaixo. A rede estava ruim nas duas, e H começou
+Duas rodadas no host de teste, pelo mesmo caminho, depois do ajuste abaixo. A rede estava ruim nas duas, e H começou
 com uma trava de quase 4 s por segundo de relatório (RTT de até 3690 ms), sem imagem nos primeiros 9 s.
 
 | | H: adaptativa | H desde 15:19:30 | I: fixa |
@@ -183,7 +183,7 @@ com uma trava de quase 4 s por segundo de relatório (RTT de até 3690 ms), sem 
 
 ## A sétima medição
 
-Três rodadas seguidas no `DESKTOP-U6JQMAA`, pelo mesmo caminho, com o host reabrindo o Intel quando ele ignora a taxa.
+Três rodadas seguidas no host de teste, pelo mesmo caminho, com o host reabrindo o Intel quando ele ignora a taxa.
 
 | | 14:23 adaptativa | 14:24 fixa | 14:25 adaptativa |
 | --- | --- | --- | --- |
@@ -214,7 +214,7 @@ A amostra é pequena e as redes não foram iguais, mas nesta rodada reabrir não
 
 ## A sexta medição
 
-Três rodadas seguidas no `DESKTOP-U6JQMAA`, com a mesma ação. E e G com taxa adaptativa, F com taxa fixa.
+Três rodadas seguidas no host de teste, com a mesma ação. E e G com taxa adaptativa, F com taxa fixa.
 
 | | E: adaptativa | F: fixa | G: adaptativa |
 | --- | --- | --- | --- |
@@ -241,7 +241,7 @@ Três rodadas seguidas no `DESKTOP-U6JQMAA`, com a mesma ação. E e G com taxa 
 mudar a taxa em cada codificador e mostra o que realmente saiu, quanto demorou o primeiro quadro depois da mudança e o
 maior quadro.
 
-| Com alvo de 1 Mbps | AMD (visualizador) | Intel Quick Sync (`DESKTOP-U6JQMAA`) |
+| Com alvo de 1 Mbps | AMD (visualizador) | Intel Quick Sync (host de teste) |
 | --- | --- | --- |
 | Taxa média e máxima | 8,8 para 1,1 Mbps | 8,1 para 8,1 Mbps |
 | Também o buffer | 8,8 para 1,1 Mbps | 8,1 para 8,1 Mbps |
@@ -258,7 +258,7 @@ reabrir, com o Intel ainda em 8 Mbps, tem 54 kB nesse mesmo teste.
 ## A quinta medição
 
 Quatro rodadas no mesmo dia, todas com `HEXT_VBV_MS=100`. A e B no LD-NB-01, que está na mesma rede do visualizador
-(`192.168.0.x`) e com Wi-Fi muito ruim. C e D no `DESKTOP-U6JQMAA`, pelo Tailscale. Nessa rede, o Parsec também ficou
+(`192.168.0.x`) e com Wi-Fi muito ruim. C e D no host de teste, pelo Tailscale. Nessa rede, o Parsec também ficou
 lento, segundo o usuário.
 
 | | A: LD-NB-01, Cubic | B: LD-NB-01, BBR | C: DESKTOP, Cubic | D: DESKTOP, BBR |

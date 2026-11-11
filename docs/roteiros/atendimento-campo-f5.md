@@ -15,7 +15,7 @@ e anote o que estranhar (tempo, mensagem confusa, clique a mais).
 
 - [ ] O servidor está na versão da `main` (na VM: `cd hext-remote && git pull && ./deploy/install.sh`; num clone de antes da troca de nome, `cd remote-control`).
 - [ ] O servidor manda e-mail de verdade: `/etc/hext/mail.env` com o SMTP da Brevo e o log dizendo "SMTP:
-      conexão e login ok" ([hext-server.md](hext-server.md), "E-mail"). Sem isso, o código de confirmação
+      conexão e login ok" ([hext-server.md](../hext-server.md), "E-mail"). Sem isso, o código de confirmação
       está no log do servidor (`journalctl -u hext-server | grep código`).
 - [ ] Os quatro computadores têm o mesmo build do app.
 - [ ] Um app autenticador no celular (Google Authenticator, 1Password, Authy...).

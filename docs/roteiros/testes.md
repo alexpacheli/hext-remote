@@ -1,7 +1,7 @@
 # Testes e uso pela linha de comando
 
 Roteiros para testar cada parte do Hext Remote e o uso de cada recurso pela linha de comando. A visão geral, os
-instaladores e o servidor próprio ficam no [README](../README.md).
+instaladores e o servidor próprio ficam no [README](../../README.md).
 
 ## Baixar os executáveis do CI
 
@@ -57,7 +57,7 @@ Os binários ainda não são assinados (isso entra na F6):
 
 Em vez de IP, código e chave, o técnico digita o **ID de 9 dígitos** do host, e quem está no
 host aceita ou recusa o pedido. O app usa o servidor definido na compilação (o nosso, `wss://signal.hext.com.br`, na versão oficial; veja
-[deploy.md](deploy.md)) por padrão:
+[deploy.md](../deploy.md)) por padrão:
 
 1. **No Windows** (host): `.\HextRemote.exe host`. Ele mostra `Seu ID: 482 913 557`.
 2. **No Mac** (técnico): `./HextRemote view 482913557`.
@@ -80,7 +80,7 @@ quando não dá (firewall corporativo, por exemplo), a conexão passa pelo **rel
 ## Testar: Hext Remote instalado como serviço (Windows)
 
 Instalado, o computador fica online com o **ID da máquina** desde o boot, sem ninguém abrir o app
-(F4, marco 1; veja [F4.md](F4.md)).
+(F4, marco 1; veja [F4.md](../planos/F4.md)).
 
 1. **No Windows**, num terminal **como administrador**: `.\HextRemote.exe service install`. Ele copia o
    app para `C:\Program Files\Hext Remote`, inicia o serviço e mostra o ID deste computador.
@@ -186,7 +186,7 @@ No Windows, o monitor virtual precisa do driver: marque a opção "Monitor virtu
 `.msi` ou, num terminal como administrador, rode `HextRemote.exe service virtual-display install` (`remove`
 desfaz). No Mac não há nada para instalar. Sem monitor ligado, a sessão abre direto no virtual; com monitores, o
 **+** na barra do visualizador (ou **Ctrl+Alt+0**) liga o virtual, e Ctrl+Alt+0 com ele na tela troca a
-resolução. Os roteiros de cada parte ficam em [monitor-virtual.md](monitor-virtual.md).
+resolução. Os roteiros de cada parte ficam em [monitor-virtual.md](../monitor-virtual.md).
 
 ## Testar: Hext Remote instalado no Mac
 
