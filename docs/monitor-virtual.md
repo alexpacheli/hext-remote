@@ -4,7 +4,13 @@
 sem o adaptador HDMI emulador. Quando não houver nenhum monitor para capturar, o Hext cria um monitor virtual
 durante a sessão e o remove ao final.
 
-## Situação hoje
+## Situação
+
+Os marcos 0 a 4 (abaixo) estão prontos e publicados desde a 0.7.0. O monitor virtual já funcionou num Windows e
+num Mac reais sem monitor; faltam os roteiros de resolução, de monitor fantasma e de desinstalação em máquinas
+reais.
+
+Antes dele, até a 0.6.x:
 
 - **Windows:** sem monitor, o DXGI não lista nenhuma saída e `open_first` falha com `NoSuchDisplay`. A sessão
   termina na hora.
@@ -31,8 +37,7 @@ O Parsec resolve isso com o próprio driver de monitor virtual (fechado, não po
 [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) (MttVDD), licença MIT:
 
 - driver IddCx (modo usuário, UMDF), Windows 10 e 11, x64 e ARM64;
-- assinado pela SignPath Foundation (o mesmo programa que pedimos para o Hext), **não** pela Microsoft (sem
-  WHQL/attestation);
+- assinado pela SignPath Foundation, **não** pela Microsoft (sem WHQL/attestation);
 - resoluções e frequências configuráveis (até 240 Hz), HDR no Windows 11 23H2+;
 - última release: 25.7.23 (julho de 2025); o repositório segue ativo.
 
@@ -72,10 +77,10 @@ Sem o pipe: o agent (SYSTEM, na sessão do usuário) **habilita e desabilita o d
 - O Windows dá um nome novo ao monitor a cada habilitação (`\\.\DISPLAY46`, 47…): o Hext o reconhece pelo
   dispositivo (`MTT1337` no ID do monitor), nunca pelo nome.
 - A resolução: a captura já acompanha a troca de resolução; o técnico escolhe pela própria configuração de vídeo
-  do Windows na sessão (primeira versão), e depois por um menu no visualizador (`ChangeDisplaySettingsEx` no
+  do Windows na sessão (primeira versão), e, desde o marco 4, pelo visualizador com Ctrl+Alt+0 (`ChangeDisplaySettingsEx` no
   agent).
 - Tela de login e UAC: o monitor virtual é um monitor de verdade para o Windows, então aparece também no secure
-  desktop (confirmar no spike).
+  desktop (falta confirmar num computador real).
 
 ### Instalação
 
@@ -115,13 +120,14 @@ depende do compositor).
 
 | # | Marco | Pronto quando |
 |---|---|---|
-| 0 | **Spike** | Num Windows 11 24H2 limpo, com Secure Boot e Integridade de Memória: o MttVDD instala em silêncio, o serviço habilita e desabilita o dispositivo, o DXGI captura o monitor virtual, inclusive na tela de login. No Mac: um monitor `CGVirtualDisplay` criado por um programa de teste aparece no ScreenCaptureKit, num Mac sem monitor. Relatório em `docs/` |
-| 1 | **Windows: liga e desliga na sessão** | Sessão num PC sem monitor (com o driver instalado à mão) abre com imagem em 1920×1080 (pelo `vdd_settings.xml` do Hext, com cursor por hardware); "Monitor virtual" na lista do visualizador liga o virtual num PC com monitores desligados no botão; ao fim, o dispositivo fica desabilitado; o serviço reiniciado no meio desabilita |
-| 2 | **Windows: instalação** | Opção no MSI e `service virtual-display install/remove`; desinstalar remove driver e certificados; release confere o hash do driver |
-| 3 | **macOS** | Sessão num Mac mini sem monitor abre com imagem; sem a API, mensagem clara em vez de sessão fechando |
-| 4 | **Resolução pelo visualizador** | O técnico escolhe a resolução do monitor virtual num menu |
+| 0 | **Spike** ✅ | Num Windows 11 24H2 limpo, com Secure Boot e Integridade de Memória: o MttVDD instala em silêncio, o serviço habilita e desabilita o dispositivo, o DXGI captura o monitor virtual, inclusive na tela de login. No Mac: um monitor `CGVirtualDisplay` criado por um programa de teste aparece no ScreenCaptureKit, num Mac sem monitor. Relatório em `docs/` |
+| 1 | **Windows: liga e desliga na sessão** ✅ | Sessão num PC sem monitor (com o driver instalado à mão) abre com imagem em 1920×1080 (pelo `vdd_settings.xml` do Hext, com cursor por hardware); "Monitor virtual" na lista do visualizador liga o virtual num PC com monitores desligados no botão; ao fim, o dispositivo fica desabilitado; o serviço reiniciado no meio desabilita |
+| 2 | **Windows: instalação** ✅ | Opção no MSI e `service virtual-display install/remove`; desinstalar remove driver e certificados; release confere o hash do driver |
+| 3 | **macOS** ✅ | Sessão num Mac mini sem monitor abre com imagem; sem a API, mensagem clara em vez de sessão fechando |
+| 4 | **Resolução pelo visualizador** ✅ | O técnico troca a resolução do monitor virtual (Ctrl+Alt+0) |
 
-Ordem: 0 → 1 → 2 e 3 em paralelo → 4. Testes manuais entram no roteiro de `docs/testes.md`.
+Ordem: 0 → 1 → 2 e 3 em paralelo → 4. Os roteiros manuais ficam em cada marco, abaixo; o [testes.md](testes.md)
+aponta para eles.
 
 Fica para depois do marco 1: o visualizador lembrar o último monitor escolhido para cada computador (com o
 virtual ligado, a sessão já começa nele, o que resolve o caso dos monitores fantasmas).

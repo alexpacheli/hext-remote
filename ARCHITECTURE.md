@@ -154,6 +154,8 @@ Captura (GPU) ─► [mudou?] ─► Encode HW ─► Empacota + FEC ─► Rede
 | Linux X11 | XShm / XDamage | — |
 | Linux Wayland | xdg-desktop-portal ScreenCast + PipeWire | Abre um prompt de permissão |
 
+Sem monitor ligado, a captura usa um **monitor virtual** (MttVDD no Windows, `CGVirtualDisplay` no macOS), desde a 0.7.0: veja [docs/monitor-virtual.md](docs/monitor-virtual.md).
+
 ### 4.2 Codificação
 
 - **Codec inicial: H.264.** É universal e todo hardware decodifica. HEVC e AV1 entram depois, negociados conforme o que os dois lados suportam.
@@ -305,15 +307,15 @@ Esta é uma decisão de projeto, não só uma configuração:
 | Serviço | Função | Tecnologia |
 |---|---|---|
 | `hext-server` | Sinalização WSS (IDs, presença, contas) e o porteiro do relay | Rust (`axum` + `tokio`) |
-| STUN | Descoberta do IP público | embutido no `hext-server` |
-| `hext-relay` | Repasse UDP e TCP/443 de bytes cifrados, pareados por token de sessão | Rust, binário separado para escalar por região |
-| Banco | Contas, dispositivos, auditoria | PostgreSQL |
+| Descoberta do IP público | O endereço que o relay vê (sem STUN separado) | `iroh-relay` |
+| Relay | Repasse UDP e TCP/443 de bytes cifrados; só entra quem o `hext-server` libera | `iroh-relay` (projeto iroh), serviço separado para escalar por região |
+| Banco | Contas, dispositivos, auditoria | SQLite (`rusqlite`) |
 | Presença | Quem está online | em memória no início, Redis ao escalar |
 | TLS | Certificados | Let's Encrypt (Caddy na frente ou `rustls-acme`) |
 
 ### 8.2 Dimensionamento
 
-- **Começo:** uma VPS com 2 vCPU e 2–4 GB de RAM roda tudo (API, sinalização, STUN, relay e Postgres).
+- **Começo:** uma VPS com 2 vCPU e 2–4 GB de RAM roda tudo (sinalização, contas, relay e o banco SQLite).
 - **Local:** em **São Paulo**, se os usuários estiverem no Brasil, porque o relay precisa estar perto. Opções:
   - Oracle Cloud (free tier em SP, com bastante tráfego incluso)
   - Vultr SP
@@ -330,7 +332,7 @@ Esta é uma decisão de projeto, não só uma configuração:
 |---|---|
 | Domínio | Endereços da API e do relay |
 | **Apple Developer Program** (US$ 99/ano) | Obrigatório para assinar e notarizar no macOS. Sem isso, o Gatekeeper bloqueia o app. |
-| **Certificado de assinatura de código Windows** | Sem ele, o SmartScreen mostra um aviso assustador, o que é ruim para um app de suporte. Opções: certificado OV/EV ou Azure Trusted Signing (verificar disponibilidade). |
+| **Certificado de assinatura de código Windows** | Sem ele, o SmartScreen avisa na primeira abertura. Por enquanto os instaladores do Windows saem sem assinatura: um certificado novo (OV/EV) só vem num token físico ou num HSM na nuvem, ou pelo Azure Trusted Signing, e o custo fica para quando o projeto pedir. |
 
 ---
 
@@ -340,22 +342,24 @@ Esta é uma decisão de projeto, não só uma configuração:
 Cargo.toml                 # workspace
 crates/
   proto/                   # mensagens, versões, serialização
-  net/                     # QUIC, FEC, congestionamento, NAT traversal, relay client
-  capture/                 # trait Capturer + impls windows / macos / linux
-  codec/                   # trait Encoder/Decoder + impls (MF, VideoToolbox, openh264…)
+  net/                     # QUIC (iroh), FEC, pacing, conexão direta ou pelo relay
+  capture/                 # captura por SO (DXGI, ScreenCaptureKit) e monitor virtual
+  codec/                   # Encoder/Decoder (Media Foundation, VideoToolbox, openh264)
   input/                   # injeção de input por SO + mapeamento de teclado
-  render/                  # wgpu: vídeo, cursor local, overlay de estatísticas
-  session/                 # orquestração host/cliente, canais, permissões
+  render/                  # wgpu: vídeo e cursor local
+  session/                 # pipelines do host e do cliente, canais, permissões
   crypto/                  # chaves de dispositivo, PAKE, fingerprints
   signal/                  # sinalização: IDs, mensagens app ↔ servidor, cliente WSS
-  platform-windows/        # serviço, agent, secure desktop, SendSAS
-  platform-macos/          # LaunchDaemon/Agent, TCC
+  clipboard/               # área de transferência
+  metrics/                 # estatísticas de latência
 apps/
-  hext/                    # app desktop (Tauri) → HextRemote.exe / Hext Remote.app
-  hext-server/             # API + sinalização + STUN
-  hext-relay/              # relay UDP/TCP
+  hext/                    # app desktop (Tauri) → HextRemote.exe / Hext Remote.app; serviço, agent e visualizador
+  hext-server/             # sinalização, contas e porteiro do relay
+  vdd-spike/               # programa de teste do monitor virtual
+deploy/                    # servidor: systemd, Caddy, iroh-relay e Docker
+installer/                 # WiX (Windows), .dmg (macOS), pacotes do Linux
 docs/
-.github/workflows/         # CI: build e testes em windows-latest, macos-latest, ubuntu-latest
+.github/workflows/         # CI nos 3 SOs; release.yml gera os instaladores
 ```
 
 - O **CI no GitHub Actions** compila e testa nos três SOs a cada push. Os executáveis de Windows e macOS saem prontos para testar nas suas máquinas.
@@ -365,12 +369,12 @@ docs/
 
 ## 10. Distribuição
 
-- **Windows:** `.exe` portátil para suporte rápido e `.msi` para instalação com serviço. Ambos assinados.
+- **Windows:** `.exe` portátil para suporte rápido e `.msi` para instalação com serviço. Por enquanto sem assinatura de código (seção [8.3](#83-outros-custos)): o SmartScreen avisa na primeira abertura.
 - **macOS:** `.dmg` assinado e **notarizado**.
   - No primeiro uso como host, o app guia o usuário para liberar "Gravação de Tela" e "Acessibilidade" nos Ajustes.
   - Em empresas, as permissões podem ser liberadas antes via MDM (perfil PPPC).
 - **Linux:** `.AppImage`, `.deb` e `.rpm`. Os pacotes entram na F6, junto com os outros instaladores. O app Linux completo (interface e host) entra na F7.
-- **Atualização automática:** canal estável e beta, com pacotes assinados (por exemplo, o updater do Tauri com assinatura própria).
+- **Atualização automática:** pela lista de versões assinada com uma chave Ed25519 nossa ([F6](docs/F6.md), marco 2). Um canal beta fica para depois.
 
 ---
 
@@ -384,8 +388,10 @@ docs/
 | **F3 — Internet** ([plano](docs/F3.md)) | VPS, ID numérico, sinalização, STUN, hole punching, relay UDP + TCP/443, pedido de aceite, ponta a ponta | Conectar pela internet só com o ID, inclusive atrás de NAT/firewall |
 | **F4 — Essenciais de suporte** ([plano](docs/F4.md)) | Serviço Windows (login/UAC/Ctrl+Alt+Del), inicialização automática nos 3 SOs, senha não assistida (PAKE), clipboard, arquivos, chat, multi-monitor completo, reiniciar e reconectar, tela de login no macOS | Um técnico consegue fazer um atendimento real de ponta a ponta |
 | **F5 — Contas** ([plano](docs/F5.md)) | Login, 2FA, catálogo de endereços, vínculo de dispositivos, compartilhamento, auditoria. **Acesso não assistido sempre com consentimento prévio, indicador visível de sessão ativa e log de auditoria** (ver [7.4](#74-consentimento-e-transparência-princípio-do-produto)); sem modo oculto. | Acessar as próprias máquinas sem aceite e gerenciar técnicos |
-| **F6 — Distribuição** ([plano](docs/F6.md)) | Instaladores, assinatura, notarização, auto-update, `.exe` portátil. **Linux:** `.deb`, `.rpm` e `.AppImage` no pipeline de release e testados numa máquina Linux real (hoje o CI só compila a linha de comando, sem nenhum teste fora do CI). O app Linux completo (interface e host) vem na F7, usando esses pacotes | Usuário final instala sem avisos de segurança; no Linux, o pacote instala, atualiza e roda |
+| **F6 — Distribuição** ([plano](docs/F6.md)) | Instaladores, assinatura, notarização, auto-update, `.exe` portátil. **Linux:** `.deb`, `.rpm` e `.AppImage` no pipeline de release e testados numa máquina Linux real (hoje o CI só compila a linha de comando, sem nenhum teste fora do CI). O app Linux completo (interface e host) vem na F7, usando esses pacotes | Usuário final instala e o app se atualiza sozinho (no Mac, sem avisos; no Windows, o SmartScreen avisa enquanto não houver assinatura); no Linux, o pacote instala, atualiza e roda |
 | **F7 — Extras** | Cliente e host Linux, vários técnicos no mesmo computador (se precisar), áudio, privacidade (tela preta), gravação de sessão, HEVC/AV1, Wake-on-LAN, mobile e web | — |
+
+**Situação (novembro de 2026, versão 0.7.1):** F3 a F6 implementadas e publicadas. Faltam os roteiros de campo que fecham cada fase (F4 marco 13, F5 marco 8, F6 marco 4) e a tela de login do Mac ([F6](docs/F6.md), seção 3.1). Fora das fases, o monitor virtual ([docs/monitor-virtual.md](docs/monitor-virtual.md)) entrou na 0.7.0.
 
 ---
 
@@ -401,7 +407,7 @@ docs/
 | Codec em software | `openh264` |
 | FEC | `reed-solomon-erasure` (ou similar) |
 | Cripto | `ed25519-dalek`, `spake2`, `rcgen` |
-| Servidor | `axum`, `sqlx` (Postgres) |
+| Servidor | `axum`, `rusqlite` (SQLite) |
 | Serialização | `serde`, `postcard` |
 
 Referências para estudo, **sem copiar código** por causa das licenças: RustDesk (AGPL), Sunshine/Moonlight (GPL).
@@ -415,7 +421,7 @@ Referências para estudo, **sem copiar código** por causa das licenças: RustDe
 | Captura no secure desktop (Windows) | Complexo, mas bem documentado. Validar cedo, no começo da F4. |
 | Tela de login no macOS | A Apple restringe bastante. Pode ficar limitada a "reconectar após o login". |
 | Wayland como host | Os prompts do portal impedem o acesso não assistido puro. Por isso ele vem depois do X11. |
-| Licença do projeto | Proprietária ou open source? Afeta quais bibliotecas e referências podem ser usadas. |
+| Licença do projeto | Decidido: código aberto, AGPL-3.0-only, desde a 0.6.1. |
 | Modelo de negócio | Grátis para uso pessoal com plano pago para técnicos e empresas? Afeta limites de relay e contas. |
 
 ---
@@ -433,7 +439,7 @@ Referências para estudo, **sem copiar código** por causa das licenças: RustDe
 **Antes de lançar, verificar:**
 
 - Marca no **INPI** (classes 9 e 42) e no USPTO.
-- Domínio, por exemplo `hextremote.com`, `hext.app` ou `hext.com.br`.
+- Domínio: `hext.com.br`, já em uso pelo servidor oficial.
 - Nomes de usuário iguais no GitHub e nas redes sociais.
 
 **Nomes reserva**, caso "Hext" esteja ocupado (também precisam de verificação):

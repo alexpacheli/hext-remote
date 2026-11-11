@@ -118,9 +118,9 @@ and macOS Gatekeeper warn on first open.
 
 - **Windows:** the workflow signs with a `.pfx` file (secrets `WINDOWS_CERTIFICATE`, the file in base64, and
   `WINDOWS_CERTIFICATE_PASSWORD`). Since June 2023, certificate authorities only issue code-signing keys on a
-  hardware token or a cloud HSM, so a new certificate does not come as a `.pfx`. The realistic routes today are
-  [SignPath Foundation](https://signpath.org) (free for open-source projects) or Azure Trusted Signing, both of
-  which need a change to the signing step in `.github/workflows/release.yml`.
+  hardware token or a cloud HSM, so a new certificate does not come as a `.pfx`. The realistic route today is a
+  cloud signing service such as Azure Trusted Signing, which needs a change to the signing step in
+  `.github/workflows/release.yml`. The official build is not signed on Windows either.
 - **macOS:** `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
   `APPLE_APP_PASSWORD` and `APPLE_TEAM_ID` (Apple Developer Program; details in section 4 of [F6.md](F6.md)).
 
