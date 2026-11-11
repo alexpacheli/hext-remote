@@ -55,11 +55,19 @@
             KeyPath="yes" />
         </Component>
         <Directory Id="DRIVERFOLDER" Name="driver">
-          <Component Id="Driver">
+          <!-- One file each: the DLL has no version resource, and WiX
+               generates a component's GUID only from a single file. -->
+          <Component Id="DriverInf">
             <File Id="MttVDDInf" Source="$(var.Driver)\MttVDD.inf" Name="MttVDD.inf" KeyPath="yes" />
-            <File Id="MttVDDDll" Source="$(var.Driver)\MttVDD.dll" Name="MttVDD.dll" />
-            <File Id="MttVDDCat" Source="$(var.Driver)\mttvdd.cat" Name="mttvdd.cat" />
-            <File Id="MttVDDLicense" Source="$(var.Driver)\LICENSE.txt" Name="LICENSE.txt" />
+          </Component>
+          <Component Id="DriverDll">
+            <File Id="MttVDDDll" Source="$(var.Driver)\MttVDD.dll" Name="MttVDD.dll" KeyPath="yes" />
+          </Component>
+          <Component Id="DriverCat">
+            <File Id="MttVDDCat" Source="$(var.Driver)\mttvdd.cat" Name="mttvdd.cat" KeyPath="yes" />
+          </Component>
+          <Component Id="DriverLicense">
+            <File Id="MttVDDLicense" Source="$(var.Driver)\LICENSE.txt" Name="LICENSE.txt" KeyPath="yes" />
           </Component>
         </Directory>
       </Directory>
@@ -89,7 +97,10 @@
       AllowAbsent="no">
       <ComponentRef Id="Program" />
       <ComponentRef Id="StartMenu" />
-      <ComponentRef Id="Driver" />
+      <ComponentRef Id="DriverInf" />
+      <ComponentRef Id="DriverDll" />
+      <ComponentRef Id="DriverCat" />
+      <ComponentRef Id="DriverLicense" />
     </Feature>
     <!-- Level 2: unchecked (INSTALLLEVEL is 1) unless chosen. -->
     <Feature
