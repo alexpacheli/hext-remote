@@ -720,9 +720,15 @@ impl Viewer {
 
     /// Ctrl+Alt+0 and the "+" button: the host's virtual monitor, turned on
     /// if it is off (that takes control: it changes the host's monitors).
+    /// Once shown, its next size.
     fn show_virtual(&mut self) {
         match self.displays.virtual_display {
-            VirtualDisplay::On { index } => self.select_display(index),
+            VirtualDisplay::On { index, .. } if index == self.displays.current => {
+                if let Some(session) = &self.session {
+                    session.next_virtual_size();
+                }
+            }
+            VirtualDisplay::On { index, .. } => self.select_display(index),
             VirtualDisplay::Off if self.virtual_offered() => {
                 if let Some(session) = &self.session {
                     session.virtual_display(true);
@@ -744,6 +750,10 @@ impl Viewer {
             .display_bar
             .is_some_and(|bar| bar.plus && u32::from(index) + 1 == bar.count)
         {
+            self.show_virtual();
+        } else if matches!(self.displays.virtual_display, VirtualDisplay::On { index: on, .. } if on == index)
+        {
+            // Shown already: its next size.
             self.show_virtual();
         } else {
             self.select_display(index);
@@ -972,14 +982,29 @@ impl Viewer {
             current,
             virtual_display,
         } = self.displays;
-        let on_virtual = virtual_display == VirtualDisplay::On { index: current };
+        let on_virtual = match virtual_display {
+            VirtualDisplay::On {
+                index,
+                width,
+                height,
+                resizable,
+            } if index == current => {
+                let hint = if resizable && session.permissions.control {
+                    "; Ctrl+Alt+0 muda a resolução"
+                } else {
+                    ""
+                };
+                Some(format!("virtual, {width}×{height}{hint}"))
+            }
+            _ => None,
+        };
         if count > 1 {
             title += &format!(" — monitor {} de {count}", u16::from(current) + 1);
-            if on_virtual {
-                title += " (virtual)";
+            if let Some(label) = &on_virtual {
+                title += &format!(" ({label})");
             }
-        } else if on_virtual {
-            title += " — monitor virtual";
+        } else if let Some(label) = &on_virtual {
+            title += &format!(" — monitor {label}");
         }
         if let Some(snapshot) = stats.snapshot() {
             title += &format!(
