@@ -442,7 +442,7 @@ impl VideoSender {
             last_frame: None,
             timers: None,
             report: SendReport::new(),
-            // To compare with a fixed rate (see `docs/medicao-video.md`).
+            // To compare with a fixed rate (see `docs/estudos/medicao-video.md`).
             rate: std::env::var_os("HEXT_TAXA_FIXA")
                 .is_none()
                 .then(|| RateControl::new(bitrate_bps)),

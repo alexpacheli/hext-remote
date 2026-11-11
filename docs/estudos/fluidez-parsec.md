@@ -98,7 +98,7 @@ segundo. Cada uma tem causas diferentes. Abaixo, as causas em ordem de probabili
 
 ### 1. O caminho de rede não era o mesmo
 
-Na quarta medição, o Hext passou o tempo todo pelo Tailscale (`100.107.63.111`), com RTT de 18 a 472 ms (mediana de
+Na quarta medição, o Hext passou o tempo todo pelo Tailscale (um IP `100.x`), com RTT de 18 a 472 ms (mediana de
 76 ms): o host estava em Wi-Fi em `192.168.1.x` e o visualizador em cabo em `192.168.0.x`, sem rota entre as sub-redes.
 Na sexta, a rodada pelo IP público teve RTT de 16 a 48 ms, contra 25 a 483 ms de uma rodada pelo Tailscale. "Mesma rede"
 não garante o mesmo caminho: o Parsec abre o próprio caminho e pode ter ido pelo IP público, sem o túnel.
@@ -193,7 +193,7 @@ e devem vir primeiro: sem eles, as demais mudanças não têm como ser comparada
 
 ### 3. Conferir se o codificador entrega um quadro atrasado
 
-- **O quê:** ler `seguradas` na linha `captura:` de uma rodada com movimento contínuo, no Intel do `DESKTOP-U6JQMAA` e no
+- **O quê:** ler `seguradas` na linha `captura:` de uma rodada com movimento contínuo, no Intel do host de teste e no
   AMD. Se o valor for próximo ao de `codificadas`, mudar `Session::encode` para, depois do `ProcessInput`, esperar
   alguns milissegundos pela saída desse quadro mesmo quando o MFT já pediu nova entrada.
 - **Ganho esperado:** até 16,7 ms de latência por quadro, se o atraso existir.

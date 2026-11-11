@@ -1,6 +1,6 @@
 # Spike do monitor virtual: roteiro
 
-Marco 0 de [monitor-virtual.md](monitor-virtual.md). Responde: o driver instala e carrega com a segurança do
+Marco 0 de [monitor-virtual.md](../monitor-virtual.md). Responde: o driver instala e carrega com a segurança do
 Windows ligada? O Hext captura o monitor virtual, inclusive na tela de login? No Mac, o ScreenCaptureKit enxerga
 um `CGVirtualDisplay`?
 
