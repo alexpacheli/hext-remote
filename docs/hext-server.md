@@ -72,6 +72,9 @@ Técnico                  Servidor                   Host
   tabela `computer_trust`, válida por 7 dias desde a última vez). Qualquer outro ID aparece
   sempre offline, como num pedido, para não dar para sondar IDs. Até 6 perguntas por minuto por computador:
   as seguintes ficam sem resposta. Um servidor antigo não diz `aceita presence`, e o app não pergunta.
+  Junto vem o nome com que cada um desses entrou (`names`, o que `service name` definiu): a tela inicial
+  mostra esse nome, e não o que estava na lista da conta quando o computador foi inserido (a lista
+  assinada não muda; o app guarda o nome novo dos recentes). Um servidor antigo não manda nomes.
 - **Inserir o computador numa conta pela senha (F6):** num pedido com senha, o técnico pode mandar
   `account {chain, signature}`: o ID da lista da conta dele, assinado pela chave dele junto com o ID do
   host (`hext-chain-bind-v1`). O servidor só repassa com a senha, como `remember`. O host confere a

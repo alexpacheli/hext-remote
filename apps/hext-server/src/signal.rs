@@ -137,6 +137,8 @@ pub struct State {
 struct HostLogin {
     /// Tells this login apart from a newer one of the same device.
     session: u64,
+    /// The name it logged in with (what `service name` set).
+    name: String,
     /// Dropped when a newer host login of the same device replaces this
     /// one, which ends it.
     _kick: oneshot::Sender<()>,
@@ -445,6 +447,21 @@ impl State {
         })
     }
 
+    /// The names `ids` logged in with, of those still online (only ones
+    /// [`Self::presence`] said this viewer may know about).
+    fn host_names(&self, ids: &[DeviceId]) -> Vec<hext_signal::HostName> {
+        let hosts = self.hosts.lock().expect("lock");
+        ids.iter()
+            .filter_map(|id| {
+                let host = hosts.get(id)?;
+                Some(hext_signal::HostName {
+                    id: *id,
+                    name: host.name.clone(),
+                })
+            })
+            .collect()
+    }
+
     /// Removes and returns the waiting requests that match.
     fn take_pending(&self, matches: impl Fn(&Pending) -> bool) -> Vec<(u64, Pending)> {
         let mut pending = self.pending.lock().expect("lock");
@@ -603,6 +620,7 @@ pub async fn handle(socket: WebSocket, state: &State, ip: IpAddr) {
         // this one: dropping the old entry drops its `_kick`, which ends it.
         let host = HostLogin {
             session,
+            name: name.clone(),
             _kick: kick,
         };
         state.hosts.lock().expect("lock").insert(id, host);
@@ -825,7 +843,8 @@ async fn on_message(state: &State, me: &mut Session, msg: ClientMsg) -> Option<S
                 return None;
             }
             let online = state.presence(me.id, ids).await;
-            Some(ServerMsg::Presence { online })
+            let names = state.host_names(&online);
+            Some(ServerMsg::Presence { online, names })
         }
         ClientMsg::Account { request, call } => {
             let caller = accounts::Caller {

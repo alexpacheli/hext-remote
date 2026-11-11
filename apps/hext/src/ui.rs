@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use hext_proto::{ChatText, Permissions};
-use hext_signal::{AccountCall, AccountReply, AccountView, DeviceId};
+use hext_signal::{AccountCall, AccountReply, AccountView, DeviceId, HostName};
 use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, RunEvent, State, WebviewUrl,
@@ -143,6 +143,11 @@ struct View {
     host_key: Option<String>,
     /// The account's computers (marco 4), as its list says.
     computers: Vec<Computer>,
+    /// The names the computers on the lists go by now, by ID, as the server
+    /// said with who is online: shown instead of the one on the account's
+    /// list (the name a computer had when added).
+    #[serde(skip)]
+    names: HashMap<String, String>,
     /// The account bound to this computer (marco 5), as said.
     owners: Option<String>,
     /// A newer version (F6), where nothing installs it by itself.
@@ -1350,7 +1355,7 @@ async fn account_devices(
                 })
                 .chain(d.shared.iter().map(|c| Computer {
                     id: c.id.clone(),
-                    name: format!("{} (compartilhado)", c.name),
+                    name: format!("{}{SHARED}", c.name),
                     host: None,
                 }))
                 .collect()
@@ -1358,6 +1363,8 @@ async fn account_devices(
         .unwrap_or_default();
     let changed_now = {
         let mut view = shared.view.lock().expect("lock");
+        let mut computers: Vec<Computer> = computers;
+        rename_all(&mut computers, &view.names);
         let before = std::mem::replace(&mut view.computers, computers);
         before != view.computers
     };
@@ -1541,6 +1548,31 @@ fn show_account(app: AppHandle) {
     });
 }
 
+/// What a computer shared by another account is called on the list.
+const SHARED: &str = " (compartilhado)";
+
+/// Shows the names in `names` (by ID) instead of the ones on `list`: a
+/// computer renamed (`service name`) is listed by its name of now. Whether
+/// one changed.
+fn rename_all(list: &mut [Computer], names: &HashMap<String, String>) -> bool {
+    let mut changed = false;
+    for computer in list {
+        let Some(name) = names.get(&computer.id) else {
+            continue;
+        };
+        let shown = if computer.host.is_none() && computer.name.ends_with(SHARED) {
+            format!("{name}{SHARED}")
+        } else {
+            name.clone()
+        };
+        if computer.name != shown {
+            computer.name = shown;
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Keeps [`View::online`] up to date while the home screen is open.
 fn watch_presence(app: AppHandle) {
     let Ok(dir) = hext_crypto::config_dir() else {
@@ -1563,9 +1595,26 @@ fn watch_presence(app: AppHandle) {
             .filter_map(|c| c.id.parse().ok())
             .collect()
     };
-    let show = move |online: Option<Vec<DeviceId>>| {
+    let show = move |answer: Option<(Vec<DeviceId>, Vec<HostName>)>| {
         let shared = app.state::<Shared>();
         let mut view = shared.view.lock().expect("lock");
+        let (online, names) = answer.unzip();
+        let mut renamed = false;
+        if let Some(names) = names.filter(|names| !names.is_empty()) {
+            let mut recent = Recent::load();
+            let mut saved = false;
+            for HostName { id, name } in names {
+                saved |= recent.rename(&id.to_string(), &name);
+                view.names.insert(id.to_string(), name);
+            }
+            if saved {
+                recent.save();
+            }
+            let names = std::mem::take(&mut view.names);
+            renamed |= rename_all(&mut view.recent, &names);
+            renamed |= rename_all(&mut view.computers, &names);
+            view.names = names;
+        }
         let online = online.map(|online| {
             view.recent
                 .iter()
@@ -1574,7 +1623,7 @@ fn watch_presence(app: AppHandle) {
                 .map(|c| c.id.clone())
                 .collect()
         });
-        if view.online != online {
+        if view.online != online || renamed {
             view.online = online;
             drop(view);
             changed(&app);

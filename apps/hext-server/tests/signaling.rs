@@ -1215,6 +1215,23 @@ async fn presence_shows_only_computers_that_let_this_one_in() {
     let mut expected = vec![host.id(), entered.id()];
     expected.sort_unstable_by_key(|id| id.get());
     assert_eq!(viewer.presence(&ids).await.unwrap(), expected);
+    // With the names they logged in with (what `service name` set), and
+    // only theirs.
+    let (online, mut names) = viewer.presence_named(&ids).await.unwrap();
+    assert_eq!(online, expected);
+    names.sort_unstable_by_key(|named| named.id.get());
+    let mut wanted = vec![
+        hext_signal::HostName {
+            id: host.id(),
+            name: "Host".into(),
+        },
+        hext_signal::HostName {
+            id: entered.id(),
+            name: "Senha".into(),
+        },
+    ];
+    wanted.sort_unstable_by_key(|named| named.id.get());
+    assert_eq!(names, wanted);
 
     // Offline once it leaves.
     host.close().await.unwrap();

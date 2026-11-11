@@ -130,11 +130,25 @@ pub enum ServerMsg {
     /// Only computers that accepted this device, or that it got into with
     /// the password, lately: any other ID is never online, so IDs cannot be
     /// probed.
-    Presence { online: Vec<DeviceId> },
+    Presence {
+        online: Vec<DeviceId>,
+        /// The names those computers go by now (what `service name` set),
+        /// for a list to show them, not the name they had when added. Older
+        /// servers send none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        names: Vec<HostName>,
+    },
     /// The answer to [`ClientMsg::Account`] `request`.
     Account { request: u64, reply: AccountReply },
     /// Something went wrong; the server closes the connection.
     Error { message: String },
+}
+
+/// A computer online, and the name it logged in with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostName {
+    pub id: DeviceId,
+    pub name: String,
 }
 
 /// App to server.
@@ -372,11 +386,28 @@ mod tests {
             json,
             r#"{"type":"rejected","request":7,"reason":"too_many_requests"}"#
         );
-        let presence = ServerMsg::Presence { online: vec![id] };
+        let presence = ServerMsg::Presence {
+            online: vec![id],
+            names: Vec::new(),
+        };
         assert_eq!(
             presence.to_json(),
             format!(r#"{{"type":"presence","online":[{}]}}"#, id.get())
         );
+        // With names; and from an older server, without.
+        let named = ServerMsg::Presence {
+            online: vec![id],
+            names: vec![HostName {
+                id,
+                name: "OBJ-SERVER1".into(),
+            }],
+        };
+        assert_eq!(
+            serde_json::from_str::<ServerMsg>(&named.to_json()).unwrap(),
+            named
+        );
+        let old = format!(r#"{{"type":"presence","online":[{}]}}"#, id.get());
+        assert_eq!(serde_json::from_str::<ServerMsg>(&old).unwrap(), presence);
         let challenge = ServerMsg::Challenge {
             protocol: PROTOCOL,
             nonce: [0xab; NONCE_LEN],
