@@ -229,12 +229,21 @@ impl Client {
     /// Which of `ids` are online, of those the server tells this device
     /// about (see [`ServerMsg::Presence`]). Only on servers that take it.
     pub async fn presence(&mut self, ids: &[DeviceId]) -> Result<Vec<DeviceId>> {
+        Ok(self.presence_named(ids).await?.0)
+    }
+
+    /// [`Self::presence`], and the names those computers go by now (none
+    /// from older servers).
+    pub async fn presence_named(
+        &mut self,
+        ids: &[DeviceId],
+    ) -> Result<(Vec<DeviceId>, Vec<crate::HostName>)> {
         let ids = ids.iter().copied().take(crate::MAX_PRESENCE).collect();
         self.send(&ClientMsg::Presence { ids }).await?;
         let answer = async {
             loop {
-                if let ServerMsg::Presence { online } = self.recv().await? {
-                    return Ok(online);
+                if let ServerMsg::Presence { online, names } = self.recv().await? {
+                    return Ok((online, names));
                 }
             }
         };
