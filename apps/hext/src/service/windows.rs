@@ -85,6 +85,8 @@ use crate::signaling::Ask;
 use crate::ui_link::UiHub;
 use crate::{APP_VERSION, DEFAULT_RELAY, DEFAULT_SERVER};
 
+mod virtual_display;
+
 const SERVICE: &str = "HextRemote";
 /// Where the policy that lets services send Ctrl+Alt+Del lives.
 const POLICY_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System";
@@ -522,8 +524,14 @@ fn check_machine_dir() -> Result<()> {
 /// is installed, its settings are the Hext's (docs/monitor-virtual.md),
 /// unless there are some already.
 fn prepare_virtual_display() {
+    hext_capture::virtual_display::turn_off_leftover();
+    write_virtual_display_settings();
+}
+
+/// Writes the Hext's settings for the virtual monitor driver, where it is
+/// installed and nobody keeps settings of their own there.
+fn write_virtual_display_settings() {
     use hext_capture::virtual_display;
-    virtual_display::turn_off_leftover();
     let Some((path, xml)) = virtual_display::settings() else {
         return;
     };
@@ -738,6 +746,10 @@ pub fn uninstall(purge: bool) -> Result<()> {
     } else {
         println!("O serviço não está instalado.");
     }
+    // The virtual monitor goes with the Hext, if the Hext installed it.
+    if let Err(e) = virtual_display::remove_if_ours() {
+        println!("Monitor virtual: {e:#}");
+    }
     // Unattended access does not come back with a later install.
     if let Ok(access) = access() {
         let file = access.password_file();
@@ -788,7 +800,26 @@ pub fn status() -> Result<()> {
         }
         Err(_) => println!("Acesso não assistido: rode como administrador para ver"),
     }
+    if hext_capture::virtual_display::device::present() {
+        println!("Monitor virtual: instalado");
+    } else {
+        println!("Monitor virtual: não instalado (HextRemote service virtual-display install)");
+    }
     Ok(())
+}
+
+/// `service virtual-display install|remove`.
+pub fn virtual_display(action: crate::VirtualDisplayAction) -> Result<()> {
+    require_admin()?;
+    let (done, result) = match action {
+        crate::VirtualDisplayAction::Install => ("instalado", virtual_display::install()),
+        crate::VirtualDisplayAction::Remove => ("removido", virtual_display::remove()),
+    };
+    match &result {
+        Ok(()) => info!("monitor virtual: {done} (service virtual-display)"),
+        Err(e) => warn!("monitor virtual: service virtual-display: {e:#}"),
+    }
+    result
 }
 
 /// Shows or changes the name the service gives this computer. With the

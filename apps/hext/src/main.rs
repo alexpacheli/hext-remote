@@ -234,9 +234,26 @@ enum ServiceAction {
         #[arg(long, conflicts_with = "chain")]
         off: bool,
     },
+    /// Instala ou remove o monitor virtual para computadores sem tela
+    /// (Windows, com o serviço instalado). Precisa de administrador.
+    VirtualDisplay {
+        #[command(subcommand)]
+        action: VirtualDisplayAction,
+    },
     /// (Interno) O próprio serviço, iniciado pelo Windows.
     #[command(hide = true)]
     Run,
+}
+
+#[derive(Subcommand, Clone, Copy)]
+enum VirtualDisplayAction {
+    /// Insere o certificado do driver em Fornecedores Confiáveis, cria o
+    /// dispositivo e instala o driver (desabilitado: o Hext o liga só durante
+    /// as sessões).
+    Install,
+    /// Remove o dispositivo, o driver e o certificado que a instalação
+    /// inseriu.
+    Remove,
 }
 
 #[derive(clap::Args)]
@@ -380,6 +397,11 @@ fn main() -> Result<()> {
     let log_file = match &command {
         Some(Command::Service {
             action: ServiceAction::Run,
+        }) => service::log_file("service"),
+        // Run by the installer, with no one to read the terminal: what
+        // happened goes to the service's log too.
+        Some(Command::Service {
+            action: ServiceAction::VirtualDisplay { .. },
         }) => service::log_file("service"),
         Some(Command::Agent { .. }) => service::log_file("agent"),
         Some(Command::Ui { .. }) | None => service::user_log_file("ui"),

@@ -36,10 +36,12 @@ O Parsec resolve isso com o próprio driver de monitor virtual (fechado, não po
 - resoluções e frequências configuráveis (até 240 Hz), HDR no Windows 11 23H2+;
 - última release: 25.7.23 (julho de 2025); o repositório segue ativo.
 
-O que a instalação faz (script `silent-install.ps1` do próprio projeto):
+O que a instalação faz (script `silent-install.ps1` do próprio projeto, usado no spike):
 
 1. extrai os certificados do `mttvdd.cat` e os importa em `LocalMachine\TrustedPublisher` (não em `Root`);
 2. cria o dispositivo `Root\MttVDD` e instala o `MttVDD.inf` com o `nefconw` (BSD-3, do projeto nefcon).
+
+O Hext faz o mesmo sem o script nem o nefcon (veja o marco 2), e insere só o certificado que assina o catálogo.
 
 **Pontos de atenção (verificar no spike):**
 
@@ -85,6 +87,7 @@ Sem o pipe: o agent (SYSTEM, na sessão do usuário) **habilita e desabilita o d
   e confere o SHA-256). Nada baixado da internet na máquina do cliente.
 - Desinstalar o Hext remove o dispositivo, o driver (`pnputil /delete-driver … /uninstall`) e os certificados
   que ele inseriu.
+- Só x64: o ARM64 fica de fora (veja acima). Como foi feito: marco 2, abaixo.
 
 ## macOS
 
@@ -156,6 +159,72 @@ O **+** só aparece com o Hext instalado como serviço (é o agent, como SYSTEM,
 pasta do serviço guarda a marca); o app avulso não oferece o monitor virtual. Um dispositivo com outro problema
 além de "desabilitado" (código 10, por exemplo) não é ligado: o `agent.log` diz o código.
 
+## Marco 2: instalação no Windows
+
+**O driver no MSI:** o `release.yml` baixa a release fixada (25.7.23,
+`VirtualDisplayDriver-x86.Driver.Only.zip`: o nome diz x86, mas é o build x64, o mesmo que o script do projeto
+instala; o build confere que a DLL é x64), confere o SHA-256
+(`e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a`, o mesmo que o GitHub mostra) e inclui
+`MttVDD.inf`, `MttVDD.dll`, `mttvdd.cat` e a licença MIT do projeto (`installer/windows/driver/LICENSE.txt`)
+dentro do MSI, em `C:\Program Files\Hext Remote\driver\`. Os arquivos vão sempre (são 270 KB, e assim o
+`service virtual-display install` funciona depois, sem reinstalar o MSI); a opção decide se o driver é instalado. Nada é
+baixado na máquina do cliente. Para trocar de versão: a URL e o hash no `release.yml` e, se o certificado mudar,
+o `SIGNER` em `apps/hext/src/service/windows/virtual_display.rs`.
+
+**A opção:** o MSI agora tem telas (boas-vindas e escolha de recursos, sem a página de licença). A opção
+"Monitor virtual para computadores sem tela" vem desmarcada e explica que o certificado da SignPath Foundation
+vai para Fornecedores Confiáveis. Marcada, o MSI roda `HextRemote.exe service virtual-display install` como
+sistema, depois do `service install`. Se o driver falhar, o Hext instala do mesmo jeito, e o motivo fica no
+`service.log`. Sem telas: `msiexec /i HextRemote.msi ADDLOCAL=ALL /qn`.
+
+**`service virtual-display install`** (administrador, com o serviço instalado), em Rust, sem nefcon nem devcon:
+
+1. Confere os arquivos de `C:\Program Files\Hext Remote\driver\` (do sistema ou dos administradores, sem
+   outra conta que possa alterar).
+2. Extrai do `mttvdd.cat` o certificado da SignPath Foundation, conferido pela impressão digital
+   (`3CF8CF26D8BA266C3A483AB7D26D4A818E317D76`, válido até 9/7/2027), e o insere em
+   `LocalMachine\TrustedPublisher`, se ainda não estiver lá. Só esse: os certificados da GlobalSign que
+   vêm junto no catálogo (intermediário e raiz) não entram.
+3. Cria o dispositivo `Root\MttVDD` (SetupAPI, `DIF_REGISTERDEVICE`), grava o `vdd_settings.xml` do Hext e
+   instala o INF nele (`UpdateDriverForPlugAndPlayDevices`, da `newdev.dll` do System32).
+4. Desabilita o dispositivo: o Hext só o liga durante as sessões (marco 1).
+
+O que ele inseriu fica em `%ProgramData%\HextRemote\monitor-virtual-instalado.txt` (o certificado, se não
+estava lá antes, e o `oemNN.inf` do driver). Se um passo falha, ele desfaz os anteriores. Se já existe um
+dispositivo do driver (instalado à mão, como no spike), ele não mexe em nada.
+
+**`service virtual-display remove`:** remove os dispositivos `Root\MttVDD` e os drivers deles do repositório
+(`pnputil /delete-driver oemNN.inf /uninstall`), os certificados que a instalação inseriu (um que já estava
+lá fica) e apaga o `vdd_settings.xml` se for o do Hext. Desmarcar a opção no MSI roda o mesmo; desinstalar o Hext
+também (o `service uninstall` remove o monitor virtual se foi o Hext que o instalou).
+
+O `service status` mostra se o monitor virtual está instalado.
+
+**Roteiro** (num PC sem o driver; o do spike já tem: rode antes `HextRemote.exe service virtual-display remove`
+num terminal de administrador e remova os três certificados que o script do spike inseriu, em `certlm.msc` >
+Fornecedores Confiáveis):
+
+1. Instale o MSI e, na tela de recursos, marque "Monitor virtual para computadores sem tela". Ao fim, o
+   Gerenciador de Dispositivos mostra "Virtual Display Driver" em Adaptadores de vídeo, **desabilitado**;
+   `HextRemote.exe service status` diz "Monitor virtual: instalado"; `certlm.msc` mostra "SignPath Foundation"
+   em Fornecedores Confiáveis; existe `C:\VirtualDisplayDriver\vdd_settings.xml` do Hext.
+2. Conecte e clique no **+** (ou Ctrl+Alt+0): o virtual liga em 1920×1080 com um cursor só. Encerre: ele volta
+   a ficar desabilitado (como no marco 1).
+3. Num terminal de administrador: `& "C:\Program Files\Hext Remote\HextRemote.exe" service virtual-display remove`.
+   O dispositivo some do Gerenciador de Dispositivos, `pnputil /enum-drivers` não lista mais `mttvdd.inf`, o
+   certificado sai de Fornecedores Confiáveis e a pasta `C:\VirtualDisplayDriver` some. O **+** deixa de aparecer.
+4. `& "C:\Program Files\Hext Remote\HextRemote.exe" service virtual-display install`: volta como no passo 1.
+5. Desinstale o Hext (Configurações > Aplicativos): o dispositivo, o driver no repositório (`pnputil
+   /enum-drivers`) e o certificado somem, como no passo 3.
+6. Instale o MSI sem marcar a opção: nada do driver é instalado (só os arquivos em `driver\`), nenhum
+   certificado novo.
+7. Atualização: com a opção instalada, instale um MSI de versão mais nova. O monitor virtual continua instalado
+   (sem duplicar o dispositivo).
+
+O CI (`release.yml`) faz parte disso numa máquina do GitHub: instala o MSI com `ADDLOCAL=ALL`, confere o
+dispositivo desabilitado e o certificado, desinstala e confere que nada ficou. É informativo (uma máquina do CI
+sem o que o driver precisa não segura a release).
+
 ## Marco 3: macOS
 
 Feito junto com o marco 1 (o spike passou no macOS 27.2: o monitor apareceu no ScreenCaptureKit em 0,5 s, e o
@@ -199,3 +268,6 @@ mouse continua acertando onde aponta, e o título acompanha. No log: "monitor vi
   `crates/proto`.
 - O CI não tem GPU nem driver: a parte que liga o dispositivo e a marca do serviço são testadas no spike e no
   roteiro manual.
+- A instalação (marco 2): o registro do que foi inserido (lido de volta, linhas desconhecidas ou inválidas
+  ignoradas, só `oemNN.inf` chega ao `pnputil`) em `service/windows/virtual_display.rs`; a instalação de verdade,
+  no teste de instalação do `release.yml` e no roteiro.

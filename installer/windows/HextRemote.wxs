@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  The Windows installer (F6). Built by the release pipeline with WiX 5:
+  The Windows installer (F6). Built by the release pipeline with WiX 5 and its
+  UI extension (wix extension add -g WixToolset.UI.wixext/5.0.2):
 
-    wix build installer/windows/HextRemote.wxs -arch x64 -d Version=0.6.0 \
-      -d Exe=dist/HextRemote.exe -d Icon=apps/hext/icons/icon.ico -o HextRemote.msi
+    wix build installer/windows/HextRemote.wxs -arch x64 -culture pt-BR \
+      -ext WixToolset.UI.wixext -d Version=0.6.0 -d Exe=dist/HextRemote.exe \
+      -d Icon=apps/hext/icons/icon.ico -d Driver=<driver folder> -o HextRemote.msi
 
   It puts HextRemote.exe in Program Files with a Start menu entry, and runs
   `service install` (which copies the program to the computer's folder and
@@ -12,9 +14,17 @@
   `service uninstall`; the computer's identity (its ID) stays, for a
   reinstall to keep it.
 
+  The virtual monitor (docs/monitor-virtual.md): the driver's files (the
+  folder `Driver`, which release.yml downloads from the pinned release and
+  checks) always go in `driver\`, for `service virtual-display install` to
+  find them later too; the option, unchecked unless chosen, runs it. Taking
+  the option away runs `service virtual-display remove`; removing the Hext
+  does it too (`service uninstall` removes what the install inserted).
+
   Silent install, for many computers: msiexec /i HextRemote.msi /qn
+  With the virtual monitor:            msiexec /i HextRemote.msi ADDLOCAL=ALL /qn
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
     Name="Hext Remote"
     Manufacturer="Hext"
@@ -34,6 +44,32 @@
         <Component Id="Program">
           <File Id="HextRemoteExe" Source="$(var.Exe)" Name="HextRemote.exe" KeyPath="yes" />
         </Component>
+        <!-- Only says that the option was chosen. -->
+        <Component Id="VirtualDisplayOption">
+          <RegistryValue
+            Root="HKLM"
+            Key="Software\Hext\Remote"
+            Name="VirtualDisplay"
+            Type="integer"
+            Value="1"
+            KeyPath="yes" />
+        </Component>
+        <Directory Id="DRIVERFOLDER" Name="driver">
+          <!-- One file each: the DLL has no version resource, and WiX
+               generates a component's GUID only from a single file. -->
+          <Component Id="DriverInf">
+            <File Id="MttVDDInf" Source="$(var.Driver)\MttVDD.inf" Name="MttVDD.inf" KeyPath="yes" />
+          </Component>
+          <Component Id="DriverDll">
+            <File Id="MttVDDDll" Source="$(var.Driver)\MttVDD.dll" Name="MttVDD.dll" KeyPath="yes" />
+          </Component>
+          <Component Id="DriverCat">
+            <File Id="MttVDDCat" Source="$(var.Driver)\mttvdd.cat" Name="mttvdd.cat" KeyPath="yes" />
+          </Component>
+          <Component Id="DriverLicense">
+            <File Id="MttVDDLicense" Source="$(var.Driver)\LICENSE.txt" Name="LICENSE.txt" KeyPath="yes" />
+          </Component>
+        </Directory>
       </Directory>
     </StandardDirectory>
 
@@ -54,10 +90,45 @@
       </Component>
     </StandardDirectory>
 
-    <Feature Id="Main">
+    <Feature
+      Id="Main"
+      Title="Hext Remote"
+      Description="O programa e o serviço que mantém este computador online com o seu ID."
+      AllowAbsent="no">
       <ComponentRef Id="Program" />
       <ComponentRef Id="StartMenu" />
+      <ComponentRef Id="DriverInf" />
+      <ComponentRef Id="DriverDll" />
+      <ComponentRef Id="DriverCat" />
+      <ComponentRef Id="DriverLicense" />
     </Feature>
+    <!-- Level 2: unchecked (INSTALLLEVEL is 1) unless chosen. -->
+    <Feature
+      Id="VirtualDisplay"
+      Level="2"
+      Title="Monitor virtual para computadores sem tela"
+      Description="Para atender um computador sem monitor ligado. Insere o certificado da SignPath Foundation, que assina o driver, em Fornecedores Confiáveis do Windows. Desinstalar o Hext remove o driver e o certificado.">
+      <ComponentRef Id="VirtualDisplayOption" />
+    </Feature>
+
+    <!-- The welcome, then the options (no license page). -->
+    <ui:WixUI Id="WixUI_FeatureTree" />
+    <UI>
+      <Publish
+        Dialog="WelcomeDlg"
+        Control="Next"
+        Event="NewDialog"
+        Value="CustomizeDlg"
+        Order="2"
+        Condition="NOT Installed" />
+      <Publish
+        Dialog="CustomizeDlg"
+        Control="Back"
+        Event="NewDialog"
+        Value="WelcomeDlg"
+        Order="3"
+        Condition="NOT Installed" />
+    </UI>
 
     <!-- As the system (deferred, not impersonated): the service needs it. -->
     <CustomAction
@@ -74,9 +145,37 @@
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
+    <!-- A driver that does not install does not keep the Hext from
+         installing: the reason goes to service.log. -->
+    <CustomAction
+      Id="VirtualDisplayInstall"
+      FileRef="HextRemoteExe"
+      ExeCommand="service virtual-display install"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+    <CustomAction
+      Id="VirtualDisplayRemove"
+      FileRef="HextRemoteExe"
+      ExeCommand="service virtual-display remove"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
 
     <InstallExecuteSequence>
       <Custom Action="ServiceInstall" After="InstallFiles" Condition="NOT REMOVE" />
+      <!-- The option chosen (an update keeps it, and then this finds the
+           monitor there and does nothing). After the service: it needs the
+           service's folder. -->
+      <Custom
+        Action="VirtualDisplayInstall"
+        After="ServiceInstall"
+        Condition="&amp;VirtualDisplay=3" />
+      <!-- The option taken away, or the Hext removed (not by an update). -->
+      <Custom
+        Action="VirtualDisplayRemove"
+        Before="ServiceUninstall"
+        Condition="&amp;VirtualDisplay=2 AND !VirtualDisplay=3 AND NOT UPGRADINGPRODUCTCODE" />
       <!-- Not when a newer version replaces this one: its install updates the service. -->
       <Custom
         Action="ServiceUninstall"
