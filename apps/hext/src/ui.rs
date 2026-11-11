@@ -147,7 +147,7 @@ struct View {
     /// said with who is online: shown instead of the one on the account's
     /// list (the name a computer had when added).
     #[serde(skip)]
-    names: HashMap<String, String>,
+    names: HashMap<DeviceId, String>,
     /// The account bound to this computer (marco 5), as said.
     owners: Option<String>,
     /// A newer version (F6), where nothing installs it by itself.
@@ -1553,11 +1553,17 @@ const SHARED: &str = " (compartilhado)";
 
 /// Shows the names in `names` (by ID) instead of the ones on `list`: a
 /// computer renamed (`service name`) is listed by its name of now. Whether
-/// one changed.
-fn rename_all(list: &mut [Computer], names: &HashMap<String, String>) -> bool {
+/// one changed. (By the number: an ID may be written with or without its
+/// spaces.)
+fn rename_all(list: &mut [Computer], names: &HashMap<DeviceId, String>) -> bool {
     let mut changed = false;
     for computer in list {
-        let Some(name) = names.get(&computer.id) else {
+        let Some(name) = computer
+            .id
+            .parse::<DeviceId>()
+            .ok()
+            .and_then(|id| names.get(&id))
+        else {
             continue;
         };
         let shown = if computer.host.is_none() && computer.name.ends_with(SHARED) {
@@ -1604,8 +1610,8 @@ fn watch_presence(app: AppHandle) {
             let mut recent = Recent::load();
             let mut saved = false;
             for HostName { id, name } in names {
-                saved |= recent.rename(&id.to_string(), &name);
-                view.names.insert(id.to_string(), name);
+                saved |= recent.rename(|listed| listed.parse() == Ok(id), &name);
+                view.names.insert(id, name);
             }
             if saved {
                 recent.save();
@@ -2050,7 +2056,40 @@ pub fn run(link: Link) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::quote_arg;
+    use std::collections::HashMap;
+
+    use super::{Computer, SHARED, quote_arg, rename_all};
+
+    #[test]
+    fn the_lists_show_the_name_of_now() {
+        let computer = |id: &str, name: &str, host: Option<&str>| Computer {
+            id: id.into(),
+            name: name.into(),
+            host: host.map(Into::into),
+        };
+        let mut list = vec![
+            computer("398 011 224", "Servidor antigo", Some("chave")),
+            computer("398011224", "Servidor antigo", None),
+            computer("116 695 679", &format!("Do outro{SHARED}"), None),
+            computer("123 456 789", "Sem notícia", None),
+        ];
+        let names = HashMap::from([
+            ("398 011 224".parse().unwrap(), "OBJ-SERVER1".to_owned()),
+            ("116 695 679".parse().unwrap(), "Recepção".to_owned()),
+        ]);
+        assert!(rename_all(&mut list, &names));
+        let shown: Vec<_> = list.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            shown,
+            [
+                "OBJ-SERVER1",
+                "OBJ-SERVER1",
+                "Recepção (compartilhado)",
+                "Sem notícia"
+            ]
+        );
+        assert!(!rename_all(&mut list, &names));
+    }
 
     #[test]
     fn a_name_goes_as_one_windows_argument() {

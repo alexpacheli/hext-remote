@@ -67,11 +67,11 @@ impl Recent {
         self.0.truncate(MAX);
     }
 
-    /// Computer `id` goes by `name` now (it changed it): the same place on
-    /// the list. Whether it changed.
-    pub fn rename(&mut self, id: &str, name: &str) -> bool {
+    /// The computer whose ID `is` goes by `name` now (it changed it): the
+    /// same place on the list. Whether it changed.
+    pub fn rename(&mut self, is: impl Fn(&str) -> bool, name: &str) -> bool {
         let mut changed = false;
-        for computer in self.0.iter_mut().filter(|c| c.id == id && c.name != name) {
+        for computer in self.0.iter_mut().filter(|c| is(&c.id) && c.name != name) {
             computer.name = name.to_owned();
             changed = true;
         }
@@ -101,9 +101,9 @@ mod tests {
         recent.visited("1", "A");
         recent.visited("2", "B");
         recent.visited("1", "A renomeado");
-        assert!(recent.rename("2", "B novo"));
-        assert!(!recent.rename("2", "B novo"));
-        assert!(!recent.rename("9", "ninguém"));
+        assert!(recent.rename(|id| id == "2", "B novo"));
+        assert!(!recent.rename(|id| id == "2", "B novo"));
+        assert!(!recent.rename(|id| id == "9", "ninguém"));
         assert_eq!(ids(&recent), ["1", "2"]);
         assert_eq!(recent.0[0].name, "A renomeado");
     }
