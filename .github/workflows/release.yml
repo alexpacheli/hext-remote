@@ -316,11 +316,11 @@ jobs:
           target: x86_64-unknown-linux-gnu
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # The interface: WebKitGTK and what Tauri's menus link.
+      # The interface: WebKitGTK, to build with.
       - name: Libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev
 
       - name: Build
         run: |
@@ -357,16 +357,22 @@ jobs:
           sudo chmod +x /usr/local/bin/appimagetool
           installer/linux/appimage.sh target/x86_64-unknown-linux-gnu/release/hext "$VERSION" dist
 
-      # Each package installs, runs and is removed, as on a user's machine: a
-      # clean one, where the package must bring the libraries it needs.
+      # Each package on a clean machine, as a user's: it installs alone, the
+      # interface opens, the viewer shows video, and it is removed.
       - name: Install test (.deb, Ubuntu)
         run: |
-          docker run --rm -v "$PWD/dist:/dist" ubuntu:24.04 \
-            sh -c 'apt-get update && apt-get install -y /dist/*.deb && hext-remote --version && apt-get remove -y hext-remote'
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/dist:/dist:ro" -v "$RUNNER_TEMP/shots:/shots" ubuntu:24.04 \
+            bash /src/installer/linux/package-test.sh "/dist/$(basename dist/*.deb)" /shots/ubuntu
       - name: Install test (.rpm, Fedora)
         run: |
-          docker run --rm -v "$PWD/dist:/dist" fedora:43 \
-            sh -c 'dnf install -y /dist/*.rpm && hext-remote --version && dnf remove -y hext-remote'
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/dist:/dist:ro" -v "$RUNNER_TEMP/shots:/shots" fedora:43 \
+            bash /src/installer/linux/package-test.sh "/dist/$(basename dist/*.rpm)" /shots/fedora
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: interface-linux-packages
+          path: ${{ runner.temp }}/shots/
+          if-no-files-found: ignore
       - name: Install test (AppImage)
         run: |
           chmod +x dist/*.AppImage
@@ -378,12 +384,20 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-      # The program publish signs the list with: the one built above from the
-      # source (not the AppImage, whose runtime is someone else's code).
+      # The program publish signs the list with: hext-release, built above
+      # from the source. Small on purpose: no interface, no network. It must
+      # stay so, since it is what runs next to the key.
+      - name: Signer links nothing of the interface
+        run: |
+          signer=target/x86_64-unknown-linux-gnu/release/hext-release
+          readelf -d "$signer" | grep NEEDED
+          if readelf -d "$signer" | grep NEEDED | grep -Eq 'gtk|gdk|webkit|soup|cairo|xkbcommon'; then
+            echo "::error::hext-release linka bibliotecas da interface"; exit 1
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: signer
-          path: target/x86_64-unknown-linux-gnu/release/hext
+          path: target/x86_64-unknown-linux-gnu/release/hext-release
           if-no-files-found: error
           retention-days: 1
 
@@ -412,13 +426,8 @@ jobs:
         with:
           name: signer
           path: ${{ runner.temp }}/signer
-      # (The same program has the interface: the libraries it links, from
-      # Ubuntu's own packages.)
       - name: Signer
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-0 libxdo3
-          chmod +x "$RUNNER_TEMP/signer/hext" && "$RUNNER_TEMP/signer/hext" --version
+        run: chmod +x "$RUNNER_TEMP/signer/hext-release" && "$RUNNER_TEMP/signer/hext-release" --version
       # The signed list the apps update from (none without the key).
       - name: Update manifest
         env:
@@ -428,7 +437,7 @@ jobs:
             echo "::warning::sem UPDATE_SIGNING_KEY: esta versão não vai para a atualização automática"
             exit 0
           fi
-          "$RUNNER_TEMP/signer/hext" update manifest dist "$VERSION"
+          "$RUNNER_TEMP/signer/hext-release" manifest dist "$VERSION"
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Draft release

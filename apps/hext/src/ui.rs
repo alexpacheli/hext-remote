@@ -555,6 +555,14 @@ fn open_home(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         let home = window(&app, "main", "index.html", |builder| {
+            // Before the page draws: what is about this computer receiving
+            // access never shows where it cannot (the view comes later).
+            let builder = if RECEIVES {
+                builder
+            } else {
+                builder
+                    .initialization_script("document.documentElement.classList.add('viewer-only');")
+            };
             builder
                 .title("Hext Remote")
                 .inner_size(940.0, 620.0)
@@ -850,6 +858,10 @@ async fn talk<P: AsyncRead + AsyncWrite>(
 
 /// The app's connection to the owner of the sessions, on a thread of its own.
 fn connect_to_host(app: AppHandle, link: Link, outgoing: mpsc::UnboundedReceiver<FromUi>) {
+    // No screen to share here yet (Linux): no host, no ID, nothing to ask.
+    if !RECEIVES {
+        return;
+    }
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(runtime) => runtime,
@@ -882,12 +894,6 @@ fn connect_to_host(app: AppHandle, link: Link, outgoing: mpsc::UnboundedReceiver
 /// takes the app with it, for the system to start it again: nobody may be
 /// there to.
 async fn own_host(app: &AppHandle, outgoing: mpsc::UnboundedReceiver<FromUi>, login: bool) {
-    // No screen to share here yet (Linux): no ID, nothing to ask.
-    if !RECEIVES {
-        let mut outgoing = outgoing;
-        while outgoing.recv().await.is_some() {}
-        return;
-    }
     let hub = UiHub::default();
     let (ours, theirs) = tokio::io::duplex(1 << 16);
     let attached = hub.clone();

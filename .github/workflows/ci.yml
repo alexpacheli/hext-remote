@@ -54,12 +54,12 @@ jobs:
         with:
           target: ${{ matrix.targets }}
 
-      # The interface on Linux: WebKitGTK and what Tauri's menus link.
+      # The interface on Linux: WebKitGTK, to build with.
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev
 
       - name: Format
         if: runner.os == 'Linux'
@@ -110,21 +110,22 @@ jobs:
         shell: bash
         run: for bin in dist/*; do "$bin" --version; done
 
-      # The interface opens on Linux: its window on a virtual screen, and a
-      # picture of it kept with the run.
-      - name: Interface (Linux)
+      # The interface and the viewer (with video) on Linux, from the .deb on
+      # a clean Ubuntu: what the package brings is all they run with. The
+      # pictures stay with the run.
+      - name: Interface (Linux, from the .deb)
         if: runner.os == 'Linux'
         run: |
-          # (With what the packages bring for the viewer's window.)
-          sudo apt-get install -y xvfb xdotool imagemagick \
-            libxkbcommon-x11-0 libvulkan1 libegl1 mesa-vulkan-drivers
-          bash installer/linux/ui-smoke.sh dist/hext-remote ui-shots
+          cargo install cargo-deb --locked
+          cargo deb -p hext --target x86_64-unknown-linux-gnu --no-build --output pkg/
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg" ubuntu:24.04 \
+            bash /src/installer/linux/package-test.sh "/pkg/$(basename pkg/*.deb)" /pkg/shots
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: runner.os == 'Linux' && always()
         with:
           name: interface-linux
-          path: ui-shots/
+          path: pkg/shots/
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

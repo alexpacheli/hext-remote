@@ -6,3 +6,4 @@ Exec=hext-remote
 Icon=hext-remote
 Terminal=false
 Categories=Network;RemoteAccess;
+StartupWMClass=hext-remote

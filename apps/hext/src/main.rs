@@ -18,6 +18,7 @@ mod name;
 mod owners;
 mod presence;
 mod recent;
+mod release;
 mod service;
 mod signaling;
 mod technicians;

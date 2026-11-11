@@ -122,7 +122,8 @@ them in SQLite, and an unconfirmed account is deleted in 24 hours.
   SmartScreen warns on first open. macOS: `.dmg`, signed with a Developer ID and notarized. Linux: `.deb`,
   `.rpm`, `.AppImage`.
 - **Updates:** each release carries `latest.json` (versions and SHA-256 of each installer) signed with an
-  Ed25519 key kept as a repository secret; the app accepts only that signature. The Windows service checks every
+  Ed25519 key kept as a repository secret, by `hext-release`, a small program that does only that (no interface,
+  no network); the app accepts only that signature. The Windows service checks every
   hour and installs between sessions; the Mac app swaps itself in Applications (Developer ID builds only);
   elsewhere the home screen offers the download.
 
