@@ -180,6 +180,14 @@ Para conversar durante a sessão, o técnico usa o botão com um balão ou **Ctr
 computador usa o botão **Chat** da barra de sessão. A janela abre sozinha quando chega uma mensagem, sem tirar
 o foco. O chat funciona nas conexões abertas pela tela inicial do app, e as mensagens não ficam salvas.
 
+## Testar: computador sem monitor (monitor virtual)
+
+No Windows, o monitor virtual precisa do driver: marque a opção "Monitor virtual para computadores sem tela" no
+`.msi` ou, num terminal como administrador, rode `HextRemote.exe service virtual-display install` (`remove`
+desfaz). No Mac não há nada para instalar. Sem monitor ligado, a sessão abre direto no virtual; com monitores, o
+**+** na barra do visualizador (ou **Ctrl+Alt+0**) liga o virtual, e Ctrl+Alt+0 com ele na tela troca a
+resolução. Os roteiros de cada parte ficam em [monitor-virtual.md](monitor-virtual.md).
+
 ## Testar: Hext Remote instalado no Mac
 
 Instalado, o Mac abre o Hext Remote sozinho a cada login, sem janela, com o mesmo ID do app (F4, marco 9).

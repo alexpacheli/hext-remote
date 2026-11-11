@@ -121,10 +121,9 @@ Windows e o Gatekeeper do macOS avisam na primeira abertura.
 
 - **Windows:** o workflow assina com um arquivo `.pfx` (secrets `WINDOWS_CERTIFICATE`, o arquivo em base64, e
   `WINDOWS_CERTIFICATE_PASSWORD`). Desde junho de 2023, as autoridades certificadoras só entregam chaves de
-  assinatura de código num token físico ou num HSM na nuvem, então um certificado novo não vem como `.pfx`. Os
-  caminhos possíveis hoje são a [SignPath Foundation](https://signpath.org) (gratuita para projetos de código
-  aberto) ou o Azure Trusted Signing; os dois exigem mudar a etapa de assinatura em
-  `.github/workflows/release.yml`.
+  assinatura de código num token físico ou num HSM na nuvem, então um certificado novo não vem como `.pfx`. O
+  caminho possível hoje é um serviço de assinatura na nuvem, como o Azure Trusted Signing, que exige mudar a
+  etapa de assinatura em `.github/workflows/release.yml`. A versão oficial também não é assinada no Windows.
 - **macOS:** `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
   `APPLE_APP_PASSWORD` e `APPLE_TEAM_ID` (Apple Developer Program; detalhes na seção 4 do [F6.md](F6.md)).
 

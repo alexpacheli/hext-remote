@@ -16,6 +16,8 @@ escrito em Rust.
   também na tela de login e no UAC.
 - **Na sessão:** vários monitores, área de transferência, arquivos, chat, reinício remoto e até 8 sessões ao
   mesmo tempo.
+- **Computador sem monitor:** um monitor virtual opcional (Windows e macOS) dá imagem à sessão num servidor ou
+  num Mac mini sem tela ligada.
 - **Contas (opcionais):** lista de computadores sincronizada, compartilhamento com outras contas e registro dos
   acessos.
 - **Transparente:** toda sessão aparece na tela enquanto dura, e cada acesso fica registrado no computador.
@@ -61,9 +63,9 @@ Os instaladores ficam em [Releases](https://github.com/alexpacheli/hext-remote/r
 | macOS | `HextRemote-<versão>.dmg` | Arraste o Hext Remote para Aplicativos. |
 | Linux | `.deb`, `.rpm` ou `.AppImage` | Por enquanto, linha de comando (`hext-remote`). |
 
-Assinatura de código gratuita no Windows pelo [SignPath.io](https://about.signpath.io/), com certificado da
-[SignPath Foundation](https://signpath.org/). Veja a [política de assinatura](#política-de-assinatura-de-código)
-e a [privacidade](#privacidade).
+Os instaladores do Windows não têm assinatura de código: na primeira abertura, o SmartScreen avisa (Mais
+informações → Executar assim mesmo). O app do macOS é assinado com um Apple Developer ID e notarizado. Veja a
+[privacidade](#privacidade).
 
 **Primeiro atendimento:**
 
@@ -125,7 +127,7 @@ Variáveis da compilação, todas opcionais:
 | `crates/crypto` | Identidade do computador (Ed25519) e senha de acesso (SPAKE2) |
 | `crates/signal` | Sinalização: ID de 9 dígitos, mensagens entre o app e o servidor, cliente WebSocket |
 | `crates/net` | Transporte (`iroh`/QUIC): direto quando possível, relay senão |
-| `crates/capture` | Captura de tela (DXGI no Windows, ScreenCaptureKit no macOS) |
+| `crates/capture` | Captura de tela (DXGI no Windows, ScreenCaptureKit no macOS) e o monitor virtual |
 | `crates/codec` | H.264: placa de vídeo (Media Foundation, VideoToolbox) ou OpenH264 em software |
 | `crates/input` | Mapa de teclas e injeção de mouse e teclado (SendInput, CGEvent) |
 | `crates/render` | Renderização na GPU (wgpu), YUV → RGB no shader |
@@ -152,19 +154,6 @@ Ao contribuir, você concorda em licenciar a sua contribuição sob a mesma lice
 O Hext Remote é software livre, sob a [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
 Quem distribuir o programa modificado, ou oferecer uma versão modificada do servidor pela rede, precisa
 publicar o código-fonte dessa versão sob a mesma licença.
-
-## Política de assinatura de código
-
-As versões do Windows passam a ser assinadas pelo [SignPath.io](https://about.signpath.io/), com um
-certificado da [SignPath Foundation](https://signpath.org/) (assinatura gratuita para projetos de código
-aberto). O app do macOS é assinado com um Apple Developer ID e notarizado.
-
-- **O que é assinado:** só os arquivos gerados pelo workflow de release do GitHub Actions deste repositório
-  (`.github/workflows/release.yml`) a partir de uma tag de versão. Nada compilado na máquina de um
-  desenvolvedor é assinado.
-- **Equipe:** quem escreve e quem aprova: [Alex Pacheli](https://github.com/alexpacheli). Cada versão é
-  aprovada à mão: o pipeline abre um rascunho, e só um mantenedor o publica.
-- **Privacidade:** veja a [política de privacidade](#privacidade) abaixo.
 
 ## Privacidade
 
