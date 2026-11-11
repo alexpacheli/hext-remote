@@ -125,7 +125,8 @@ guarda em SQLite, e uma conta não confirmada é apagada em 24 horas.
   código**: o SmartScreen avisa na primeira abertura. macOS: `.dmg`, assinado com Developer ID e notarizado.
   Linux: `.deb`, `.rpm`, `.AppImage`.
 - **Atualização:** cada release leva o `latest.json` (versões e SHA-256 de cada instalador), assinado com uma
-  chave Ed25519 guardada como segredo do repositório; o app só aceita essa assinatura. O serviço do Windows
+  chave Ed25519 guardada como segredo do repositório, pelo `hext-release`, um programa pequeno que só faz isso (sem
+  interface, sem rede); o app só aceita essa assinatura. O serviço do Windows
   confere a cada hora e instala entre uma sessão e outra; o app do Mac se troca em Aplicativos (só com
   Developer ID); nos outros casos, a tela inicial oferece o download.
 
