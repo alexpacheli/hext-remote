@@ -62,7 +62,7 @@ Os instaladores ficam em [Releases](https://github.com/alexpacheli/hext-remote/r
 | Windows | `HextRemote-<versão>-x64.msi` | Instala o app e o serviço (acesso não assistido, tela de login). Para muitos computadores: `msiexec /i HextRemote-<versão>-x64.msi /qn`. |
 | Windows | `HextRemote-<versão>-portable.exe` | Para um atendimento rápido, sem instalar. |
 | macOS | `HextRemote-<versão>.dmg` | Arraste o Hext Remote para Aplicativos. |
-| Linux | `.deb`, `.rpm` ou `.AppImage` | Por enquanto, linha de comando (`hext-remote`). |
+| Linux | `.deb` (Ubuntu, Debian) ou `.rpm` (Fedora); também `.AppImage` | Por enquanto, só para acessar outros computadores. |
 
 Os instaladores do Windows não têm assinatura de código: na primeira abertura, o SmartScreen avisa (Mais
 informações → Executar assim mesmo). O app do macOS é assinado com um Apple Developer ID e notarizado. Veja a

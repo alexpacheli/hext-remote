@@ -54,6 +54,13 @@ jobs:
         with:
           target: ${{ matrix.targets }}
 
+      # The interface on Linux: WebKitGTK and what Tauri's menus link.
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev
+
       - name: Format
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
@@ -102,6 +109,21 @@ jobs:
       - name: Smoke test
         shell: bash
         run: for bin in dist/*; do "$bin" --version; done
+
+      # The interface opens on Linux: its window on a virtual screen, and a
+      # picture of it kept with the run.
+      - name: Interface (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y xvfb xdotool imagemagick
+          bash installer/linux/ui-smoke.sh dist/hext-remote ui-shots
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: runner.os == 'Linux' && always()
+        with:
+          name: interface-linux
+          path: ui-shots/
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

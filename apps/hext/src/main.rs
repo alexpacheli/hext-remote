@@ -1,48 +1,30 @@
 //! Hext Remote.
 //!
-//! Started without a command, this is the interface (Tauri, Windows and
-//! macOS): the ID, the requests and connecting to another computer. The
-//! commands remain for what has no screen yet, and for testing: `host` shares
-//! this machine's screen; `view` opens a window showing a host's screen and
-//! forwards mouse and keyboard.
+//! Started without a command, this is the interface (Tauri): the ID, the
+//! requests and connecting to another computer. On Linux, for now, only the
+//! last: this computer is not shared. The commands remain for testing:
+//! `host` shares this machine's screen; `view` opens a window showing a
+//! host's screen and forwards mouse and keyboard.
 
-#[cfg(any(windows, target_os = "macos"))]
 mod account;
 #[cfg_attr(not(windows), allow(dead_code))] // the service is Windows-only for now
 mod agent;
 mod bench;
-#[cfg(any(windows, target_os = "macos"))]
 mod chat;
 mod host;
 mod loop_watch;
 mod name;
 #[cfg_attr(not(windows), allow(dead_code))] // the service is where it binds
 mod owners;
-#[cfg(any(windows, target_os = "macos"))]
 mod presence;
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
 mod recent;
 mod service;
 mod signaling;
 mod technicians;
-#[cfg(any(windows, target_os = "macos"))]
 mod ui;
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))] // for the interface
 mod ui_link;
 mod update;
 mod viewer;
-
-/// Linux has no interface until F7.
-#[cfg(not(any(windows, target_os = "macos")))]
-mod ui {
-    pub enum Link {
-        Portable,
-    }
-
-    pub fn run(_link: Link) -> anyhow::Result<()> {
-        anyhow::bail!("sem interface neste sistema por enquanto: veja --help")
-    }
-}
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 

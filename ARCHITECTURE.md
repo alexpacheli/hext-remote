@@ -92,7 +92,8 @@ ui (always as the user)  started by the service, talks to it over a pipe only th
 bound technicians, account), stored in the user's folder. The sign-in screen, before anyone logs in, needs a
 system LaunchDaemon that is not built yet ([STATUS](docs/STATUS.md)).
 
-**Linux:** command line only (`hext-remote view`, a client). The interface and a real host come later.
+**Linux:** the interface, as a technician only: account, My computers, recent ones and opening other computers,
+each in the viewer's window. Being accessed (a host) comes later.
 
 ## 5. Who gets in
 
@@ -129,7 +130,7 @@ them in SQLite, and an unconfirmed account is deleted in 24 hours.
 
 | | Windows | macOS | Linux |
 |---|---|---|---|
-| Technician (viewer) | ✅ | ✅ | command line |
+| Technician (viewer) | ✅ | ✅ | ✅ (interface) |
 | Customer (host) | ✅, including sign-in screen and UAC | ✅, after login | test pattern only |
 | Unattended | ✅ service | ✅ after login | — |
 | Virtual monitor | ✅ (optional driver) | ✅ | — |

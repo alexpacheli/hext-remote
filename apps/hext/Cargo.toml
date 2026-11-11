@@ -33,6 +33,18 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 winit.workspace = true
 zeroize.workspace = true
+# The interface: its pages embedded in the executable, also without the Tauri
+# CLI. (On Linux, in WebKitGTK: libwebkit2gtk-4.1 to build and to run.)
+tauri = { version = "2", features = ["custom-protocol"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+# The question before taking a file, over the session's window.
+rfd = { version = "0.17", default-features = false }
+# The authenticator link as a QR code (2FA of the account).
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
 hext-server = { path = "../hext-server" }
@@ -55,29 +67,20 @@ windows = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
-# The pages embedded in the executable, also without the Tauri CLI.
-tauri = { version = "2", features = ["custom-protocol"] }
-tauri-plugin-dialog = "2"
-# The question before taking a file, over the session's window.
-rfd = { version = "0.17", default-features = false }
-tauri-plugin-single-instance = "2"
-# The authenticator link as a QR code (2FA of the account).
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-
-[target.'cfg(any(windows, target_os = "macos"))'.build-dependencies]
-tauri-build = { version = "2", features = [] }
+[target.'cfg(target_os = "linux")'.dependencies]
+# The question before taking a file: GTK, already there for the interface.
+rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
 
 [lints]
 workspace = true
 
-# The Linux packages (F6): cargo deb / cargo generate-rpm, in the release
-# pipeline. The program is the command line until F7.
+# The Linux packages: cargo deb / cargo generate-rpm, in the release pipeline.
+# The libraries they need (WebKitGTK, GTK) are found in the program itself.
 [package.metadata.deb]
 name = "hext-remote"
 maintainer = "Hext Remote <suporte@hext.com.br>"
 copyright = "Hext"
-extended-description = "Acesso remoto: no Linux, a linha de comando (host e visualizador) até a F7."
+extended-description = "Acesso e suporte remoto. No Linux, por enquanto, para acessar outros computadores."
 section = "net"
 priority = "optional"
 assets = [

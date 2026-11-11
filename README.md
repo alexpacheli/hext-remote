@@ -60,7 +60,7 @@ The installers are in [Releases](https://github.com/alexpacheli/hext-remote/rele
 | Windows | `HextRemote-<version>-x64.msi` | Installs the app and the service (unattended access, sign-in screen). For many computers: `msiexec /i HextRemote-<version>-x64.msi /qn`. |
 | Windows | `HextRemote-<version>-portable.exe` | For a quick support session, without installing. |
 | macOS | `HextRemote-<version>.dmg` | Drag Hext Remote to Applications. |
-| Linux | `.deb`, `.rpm` or `.AppImage` | Command line for now (`hext-remote`). |
+| Linux | `.deb` (Ubuntu, Debian) or `.rpm` (Fedora); also `.AppImage` | For now, to access other computers only. |
 
 The Windows installers are not code-signed: on first open, SmartScreen warns (More info → Run anyway). The
 macOS app is signed with an Apple Developer ID and notarized. See the [privacy policy](#privacy-policy).

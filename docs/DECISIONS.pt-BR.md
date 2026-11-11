@@ -22,7 +22,8 @@ abertura. *Por quê:* desde 2023, um certificado novo de assinatura de código s
 nuvem, e o custo anual ainda não se justifica. O app do macOS é assinado e notarizado (Apple Developer ID),
 porque o Gatekeeper bloqueia apps sem assinatura.
 
-**Linux como app completo depois (F7).** Hoje o Linux é um cliente de linha de comando. *Por quê:* no Wayland cada
+**Linux primeiro como técnico; ser acessado depois (F7).** O app do Linux acessa outros computadores, com a mesma
+interface; ainda não é host. *Por quê:* no Wayland cada
 captura de tela abre um pedido de permissão, o que impede o acesso não assistido; Windows e macOS cobrem
 primeiro os casos de suporte.
 

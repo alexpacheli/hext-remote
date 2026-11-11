@@ -95,7 +95,8 @@ ui (sempre como o usuário)  aberta pelo serviço, fala com ele por um pipe que 
 técnicos vinculados, conta), guardado na pasta do usuário. A tela de login, antes de alguém entrar, precisa de
 um LaunchDaemon do sistema que ainda não foi feito ([STATUS](docs/STATUS.pt-BR.md)).
 
-**Linux:** só linha de comando (`hext-remote view`, como técnico). A interface e um host de verdade vêm depois.
+**Linux:** a interface, só como técnico: conta, Meus computadores, recentes e acessar outros computadores, cada
+um na janela do visualizador. Ser acessado (host) vem depois.
 
 ## 5. Quem entra
 
@@ -132,7 +133,7 @@ guarda em SQLite, e uma conta não confirmada é apagada em 24 horas.
 
 | | Windows | macOS | Linux |
 |---|---|---|---|
-| Técnico (visualizador) | ✅ | ✅ | linha de comando |
+| Técnico (visualizador) | ✅ | ✅ | ✅ (interface) |
 | Cliente (host) | ✅, inclusive tela de login e UAC | ✅, depois do login | só imagem de teste |
 | Não assistido | ✅ serviço | ✅ depois do login | — |
 | Monitor virtual | ✅ (driver opcional) | ✅ | — |

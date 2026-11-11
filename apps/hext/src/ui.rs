@@ -154,9 +154,15 @@ struct View {
     update: Option<UpdateView>,
     /// The portable app on Windows: it can install itself here.
     installable: bool,
+    /// Others can access this computer. Not on Linux yet: there the app only
+    /// opens other computers.
+    receives: bool,
     /// This app's version, shown in the sidebar.
     version: &'static str,
 }
+
+/// Whether this system's computer can be accessed (Windows and macOS).
+const RECEIVES: bool = cfg!(any(windows, target_os = "macos"));
 
 #[derive(Debug, Clone, Serialize)]
 struct UpdateView {
@@ -458,9 +464,15 @@ fn open_url(url: &str) -> std::io::Result<()> {
         command.creation_flags(0x0800_0000); // no console window
         command
     };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = std::process::Command::new("/usr/bin/open");
+        command.arg(url);
+        command
+    };
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
         command.arg(url);
         command
     };
@@ -870,6 +882,12 @@ fn connect_to_host(app: AppHandle, link: Link, outgoing: mpsc::UnboundedReceiver
 /// takes the app with it, for the system to start it again: nobody may be
 /// there to.
 async fn own_host(app: &AppHandle, outgoing: mpsc::UnboundedReceiver<FromUi>, login: bool) {
+    // No screen to share here yet (Linux): no ID, nothing to ask.
+    if !RECEIVES {
+        let mut outgoing = outgoing;
+        while outgoing.recv().await.is_some() {}
+        return;
+    }
     let hub = UiHub::default();
     let (ours, theirs) = tokio::io::duplex(1 << 16);
     let attached = hub.clone();
@@ -1909,6 +1927,9 @@ pub fn run(link: Link) -> Result<()> {
         let login = matches!(link, Link::Login);
         (login, login || installed, installed)
     };
+    // Linux: the window that opens other computers, and nothing more.
+    #[cfg(target_os = "linux")]
+    let (hidden, stays, can_restart) = (false, false, false);
     let (to_host, outgoing) = mpsc::unbounded_channel();
 
     let app = tauri::Builder::default()
@@ -1928,7 +1949,8 @@ pub fn run(link: Link) -> Result<()> {
         .manage(Shared {
             view: Mutex::new(View {
                 recent: Recent::load().into_list(),
-                installable: cfg!(any(windows, target_os = "macos"))
+                receives: RECEIVES,
+                installable: RECEIVES
                     && matches!(link, Link::Portable)
                     && !crate::service::installed(),
                 version: crate::APP_VERSION,

@@ -20,7 +20,8 @@ it, and whoever offers a modified server over a network must publish that versio
 new code-signing certificate only comes on a hardware token or a cloud HSM, and its yearly cost is not justified
 yet. The macOS app is signed and notarized (Apple Developer ID), because Gatekeeper blocks unsigned apps.
 
-**Linux as a full app later (F7).** Today the Linux build is a command-line client. *Why:* on Wayland each
+**Linux as a technician first; being accessed later (F7).** The Linux app opens other computers, with the same
+interface; it is not a host yet. *Why:* on Wayland each
 screen capture opens a permission prompt, which defeats unattended access; Windows and macOS cover the support
 cases first.
 

@@ -30,12 +30,12 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7" /></svg>
           <span>Conta</span>
         </button>
-        <button type="button" class="nav" data-tab="security">
+        <button type="button" class="nav host-only" data-tab="security">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4.6 3.4 8.3 8 9 4.6-.7 8-4.4 8-9V6Z" /><path d="m9 12 2 2 4-4" /></svg>
           <span>Segurança</span>
         </button>
       </nav>
-      <p class="me-status" id="me-status"><span class="dot" id="me-dot"></span><span id="me-state">Conectando…</span></p>
+      <p class="me-status host-only" id="me-status"><span class="dot" id="me-dot"></span><span id="me-state">Conectando…</span></p>
       <p class="app-version" id="app-version"></p>
     </aside>
 
@@ -43,7 +43,7 @@
       <div class="tab" id="tab-home">
         <div class="notices">
           <p class="notice" id="notice" hidden></p>
-          <p class="notice info" id="install" hidden>
+          <p class="notice info host-only" id="install" hidden>
             <span>Para acessar este computador a qualquer hora, também sem ninguém na frente dele.</span>
             <button type="button" class="link" id="install-here">Instalar neste computador</button>
           </p>
@@ -54,7 +54,7 @@
         </div>
 
         <div class="hero">
-          <section class="card me">
+          <section class="card me host-only">
             <h2>Este computador</h2>
             <div class="id-row">
               <p class="id" id="own-id">Conectando…</p>
@@ -195,8 +195,8 @@
               <button type="button" class="primary" id="devices-open-join" hidden>Inserir este computador na conta</button>
               <h3 id="computers-title" hidden>Computadores da conta</h3>
               <ul class="rows" id="computers-list"></ul>
-              <button type="button" id="computer-add" hidden>Inserir este computador em Meus computadores</button>
-              <button type="button" id="computer-bind" hidden>Deixar os dispositivos da conta entrarem sem aceite</button>
+              <button type="button" class="host-only" id="computer-add" hidden>Inserir este computador em Meus computadores</button>
+              <button type="button" class="host-only" id="computer-bind" hidden>Deixar os dispositivos da conta entrarem sem aceite</button>
               <p class="hint" id="chain-id" hidden></p>
               <h3 id="shared-title" hidden>Compartilhados com esta conta</h3>
               <ul class="rows" id="shared-list"></ul>

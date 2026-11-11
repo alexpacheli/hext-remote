@@ -1738,7 +1738,6 @@ fn share_clipboard(
 }
 
 /// Asks over the session's window; a question left unanswered is a no.
-#[cfg(any(windows, target_os = "macos"))]
 fn ask_file(
     window: &Window,
     text: String,
@@ -1764,17 +1763,6 @@ fn ask_file(
         };
         let _ = answer.send(yes);
     }
-}
-
-/// Nothing to ask with: no file is taken.
-#[cfg(not(any(windows, target_os = "macos")))]
-fn ask_file(
-    _window: &Window,
-    _text: String,
-    answer: oneshot::Sender<bool>,
-) -> std::future::Ready<()> {
-    let _ = answer.send(false);
-    std::future::ready(())
 }
 
 /// Trades files with the host, for as long as the session lasts: what it

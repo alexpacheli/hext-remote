@@ -316,6 +316,12 @@ jobs:
           target: x86_64-unknown-linux-gnu
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # The interface: WebKitGTK and what Tauri's menus link.
+      - name: Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev
+
       - name: Build
         run: |
           cargo build --release --locked -p hext --target x86_64-unknown-linux-gnu
@@ -351,15 +357,15 @@ jobs:
           sudo chmod +x /usr/local/bin/appimagetool
           installer/linux/appimage.sh target/x86_64-unknown-linux-gnu/release/hext "$VERSION" dist
 
-      # Each package installs, runs and is removed, as on a user's machine.
+      # Each package installs, runs and is removed, as on a user's machine: a
+      # clean one, where the package must bring the libraries it needs.
       - name: Install test (.deb, Ubuntu)
         run: |
-          sudo apt-get install -y ./dist/*.deb
-          hext-remote --version
-          sudo apt-get remove -y hext-remote
+          docker run --rm -v "$PWD/dist:/dist" ubuntu:24.04 \
+            sh -c 'apt-get update && apt-get install -y /dist/*.deb && hext-remote --version && apt-get remove -y hext-remote'
       - name: Install test (.rpm, Fedora)
         run: |
-          docker run --rm -v "$PWD/dist:/dist" fedora:41 \
+          docker run --rm -v "$PWD/dist:/dist" fedora:43 \
             sh -c 'dnf install -y /dist/*.rpm && hext-remote --version && dnf remove -y hext-remote'
       - name: Install test (AppImage)
         run: |
@@ -406,8 +412,13 @@ jobs:
         with:
           name: signer
           path: ${{ runner.temp }}/signer
+      # (The same program has the interface: the libraries it links, from
+      # Ubuntu's own packages.)
       - name: Signer
-        run: chmod +x "$RUNNER_TEMP/signer/hext" && "$RUNNER_TEMP/signer/hext" --version
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-0 libxdo3
+          chmod +x "$RUNNER_TEMP/signer/hext" && "$RUNNER_TEMP/signer/hext" --version
       # The signed list the apps update from (none without the key).
       - name: Update manifest
         env:
