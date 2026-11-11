@@ -810,7 +810,14 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
             (Arc::new(Mutex::new(Some(screen))), displays)
         }
         Err(e) => {
-            conn.close(1u32.into(), b"capture unavailable");
+            // What failed, for the technician to read (short: the reason
+            // goes in one packet).
+            let mut reason = format!("captura indisponível: {e}");
+            if reason.len() > 400 {
+                let end = (0..=400).rev().find(|&i| reason.is_char_boundary(i));
+                reason.truncate(end.unwrap_or(0));
+            }
+            conn.close(1u32.into(), reason.as_bytes());
             return Err(e);
         }
     };
@@ -1457,14 +1464,27 @@ fn capture_loop(
     // it is captured.
     let virtual_offered = !config.test_pattern && virtual_display::available();
     let mut virtual_switch = VirtualSwitch::default();
+    // Why there is nothing to show, if there is not: said instead of
+    // "display not found".
+    let mut no_display = None;
+    let none = !config.test_pattern && virtual_display::no_monitor();
+    if none && !virtual_offered {
+        no_display = Some(CaptureError::Platform(
+            "nenhum monitor ligado, e este computador não tem monitor virtual".into(),
+        ));
+    }
     if virtual_offered {
         // Asked for in this session (an agent that took over), or nothing
         // else to show.
-        let none = hext_capture::displays(false).is_ok_and(|d| d.is_empty());
         if config.virtual_display || none {
             info!("ligando o monitor virtual");
             virtual_switch.lease = virtual_display::turn_on()
-                .inspect_err(|e| warn!("{e}"))
+                .inspect_err(|e| {
+                    warn!("{e}");
+                    if none {
+                        no_display = Some(CaptureError::Platform(e.to_string()));
+                    }
+                })
                 .ok();
             // Before the capture opens, so it opens there (no video yet).
             if virtual_switch.lease.is_some() {
@@ -1473,6 +1493,10 @@ fn capture_loop(
         }
     }
     let opened = open_waking(config)
+        .map_err(|e| match (e, no_display) {
+            (CaptureError::NoSuchDisplay(_), Some(why)) => why,
+            (e, _) => e,
+        })
         .map_err(SessionError::from)
         .and_then(|(capturer, layout)| {
             Ok((capturer, layout, hext_codec::open_encoder(config.encoder)?))

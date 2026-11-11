@@ -5,7 +5,11 @@
 //! device is enabled while a session needs it and disabled after, through the
 //! SetupAPI (as Device Manager does): the driver's own control pipe takes
 //! orders from any local user, so it is not used. Needs an administrator (the
-//! agent runs as SYSTEM). Elsewhere: not available yet.
+//! agent runs as SYSTEM).
+//!
+//! macOS: `CGVirtualDisplay`, which Apple does not document: the process
+//! that captures creates the monitor, and it exists while that process keeps
+//! it (nothing to install, nothing left behind). Elsewhere: not available yet.
 //!
 //! Only what this process turned on is turned off: a virtual monitor the
 //! computer's owner keeps on stays on. A mark on disk says that the Hext
@@ -25,7 +29,7 @@ pub struct Lease(());
 static LEASES: Mutex<(usize, bool)> = Mutex::new((0, false));
 
 /// The driver's device, as found.
-/// (Only Windows finds it on or broken, for now.)
+/// (Only Windows finds it broken.)
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -42,6 +46,13 @@ enum State {
 /// mark (what is turned on is turned off even if this process dies).
 pub fn available() -> bool {
     imp::can_change() && imp::installed()
+}
+
+/// Whether the computer has no monitor connected: nothing to show without
+/// the virtual one. A monitor asleep counts (on a Mac, it is not in the list
+/// to capture until it wakes, which it does for the session).
+pub fn no_monitor() -> bool {
+    imp::no_monitor()
 }
 
 /// Whether the virtual monitor that is on was turned on by the Hext (this
@@ -344,6 +355,11 @@ mod imp {
         Some((PathBuf::from(SETTINGS), SETTINGS_XML))
     }
 
+    /// Windows lists a monitor that is asleep (its image is black).
+    pub fn no_monitor() -> bool {
+        crate::displays(false).is_ok_and(|displays| displays.is_empty())
+    }
+
     /// The mark that the Hext turned it on, in the service's folder
     /// (`%ProgramData%\HextRemote`; without a service, there is none).
     fn mark_path() -> Option<PathBuf> {
@@ -381,7 +397,176 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)] // Objective-C messages to classes without headers
+mod imp {
+    use std::ffi::{CStr, c_char, c_void};
+    use std::sync::Mutex;
+
+    use objc2::msg_send;
+    use objc2::rc::{Allocated, Retained};
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_core_graphics::{CGDisplayVendorNumber, CGError, CGGetOnlineDisplayList};
+    use objc2_foundation::{NSArray, NSSize, NSString};
+
+    use super::State;
+    use crate::CaptureError;
+
+    /// The classes of `CGVirtualDisplay`, which Apple does not document: looked
+    /// up when used, so a macOS without them only goes without the monitor.
+    const DESCRIPTOR: &CStr = c"CGVirtualDisplayDescriptor";
+    const DISPLAY: &CStr = c"CGVirtualDisplay";
+    const SETTINGS: &CStr = c"CGVirtualDisplaySettings";
+    const MODE: &CStr = c"CGVirtualDisplayMode";
+
+    /// The monitor's vendor ("HX"), by which it is told from the others.
+    const VENDOR: u32 = 0x4858;
+    /// Its largest size, and the sizes it offers, at 60 Hz, 1920×1080 first
+    /// (the one it starts in).
+    const MAX: (u32, u32) = (1920, 1080);
+    const MODES: [(u32, u32); 3] = [(1920, 1080), (1600, 900), (1280, 720)];
+
+    /// The monitor, while it is on: it exists while this object does (in
+    /// this process, which captures it; it goes with the process).
+    struct Virtual {
+        _display: Retained<AnyObject>,
+    }
+    // SAFETY: only kept and released here, behind the lock; macOS does its
+    // work on the descriptor's queue.
+    unsafe impl Send for Virtual {}
+
+    static ON: Mutex<Option<Virtual>> = Mutex::new(None);
+
+    unsafe extern "C" {
+        /// libdispatch (in libSystem): a queue, +1, an Objective-C object.
+        fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> *mut AnyObject;
+    }
+
+    fn class(name: &CStr) -> Result<&'static AnyClass, CaptureError> {
+        AnyClass::get(name).ok_or_else(|| {
+            CaptureError::Platform(
+                "este macOS não permite monitor virtual (sem CGVirtualDisplay); use um adaptador HDMI".into(),
+            )
+        })
+    }
+
+    pub fn installed() -> bool {
+        [DESCRIPTOR, DISPLAY, SETTINGS, MODE]
+            .iter()
+            .all(|name| AnyClass::get(name).is_some())
+    }
+
+    /// Any process may create one, for as long as it lives.
+    pub fn can_change() -> bool {
+        true
+    }
+
+    pub fn state() -> Result<State, CaptureError> {
+        Ok(if ON.lock().expect("lock").is_some() {
+            State::On
+        } else {
+            State::Off
+        })
+    }
+
+    pub fn set_on(on: bool) -> Result<(), CaptureError> {
+        let mut current = ON.lock().expect("lock");
+        if !on {
+            // Released: macOS takes the monitor away.
+            current.take();
+            return Ok(());
+        }
+        if current.is_none() {
+            *current = Some(Virtual {
+                _display: create()?,
+            });
+        }
+        Ok(())
+    }
+
+    fn create() -> Result<Retained<AnyObject>, CaptureError> {
+        let failed = |what: &str| CaptureError::Platform(format!("monitor virtual: {what}"));
+        let (descriptor_class, display_class) = (class(DESCRIPTOR)?, class(DISPLAY)?);
+        let (settings_class, mode_class) = (class(SETTINGS)?, class(MODE)?);
+        unsafe {
+            let descriptor: Option<Retained<AnyObject>> = msg_send![descriptor_class, new];
+            let descriptor = descriptor.ok_or_else(|| failed("sem descritor"))?;
+            let queue =
+                dispatch_queue_create(c"br.com.hext.monitor-virtual".as_ptr(), std::ptr::null());
+            let queue = Retained::from_raw(queue).ok_or_else(|| failed("sem fila"))?;
+            let _: () = msg_send![&*descriptor, setQueue: &*queue];
+            let _: () =
+                msg_send![&*descriptor, setName: &*NSString::from_str("Hext Remote (virtual)")];
+            let _: () = msg_send![&*descriptor, setMaxPixelsWide: MAX.0];
+            let _: () = msg_send![&*descriptor, setMaxPixelsHigh: MAX.1];
+            // 24": the size sets the density macOS assumes.
+            let _: () = msg_send![&*descriptor, setSizeInMillimeters: NSSize::new(531.0, 299.0)];
+            let _: () = msg_send![&*descriptor, setVendorID: VENDOR];
+            let _: () = msg_send![&*descriptor, setProductID: 1u32];
+            let _: () = msg_send![&*descriptor, setSerialNum: 1u32];
+
+            let display: Allocated<AnyObject> = msg_send![display_class, alloc];
+            let display: Option<Retained<AnyObject>> =
+                msg_send![display, initWithDescriptor: &*descriptor];
+            let display = display.ok_or_else(|| failed("o macOS não o criou"))?;
+            let id: u32 = msg_send![&*display, displayID];
+            if id == 0 {
+                return Err(failed("o macOS não o criou"));
+            }
+
+            let modes = MODES
+                .iter()
+                .map(|&(width, height)| {
+                    let mode: Allocated<AnyObject> = msg_send![mode_class, alloc];
+                    let mode: Option<Retained<AnyObject>> = msg_send![
+                        mode,
+                        initWithWidth: width,
+                        height: height,
+                        refreshRate: 60.0f64
+                    ];
+                    mode.ok_or_else(|| failed("sem resolução"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let settings: Option<Retained<AnyObject>> = msg_send![settings_class, new];
+            let settings = settings.ok_or_else(|| failed("sem ajustes"))?;
+            let _: () = msg_send![&*settings, setHiDPI: 0u32];
+            let _: () = msg_send![&*settings, setModes: &*NSArray::from_retained_slice(&modes)];
+            let applied: bool = msg_send![&*display, applySettings: &*settings];
+            if !applied {
+                return Err(failed("o macOS recusou as resoluções"));
+            }
+            Ok(display)
+        }
+    }
+
+    /// Online: connected, awake or asleep (not only the active ones).
+    pub fn no_monitor() -> bool {
+        let mut ids = [0u32; 32];
+        let mut count = 0u32;
+        let error =
+            unsafe { CGGetOnlineDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+        let ids = &ids[..(count as usize).min(ids.len())];
+        error == CGError::Success && ids.iter().all(|&id| CGDisplayVendorNumber(id) == VENDOR)
+    }
+
+    pub fn is_virtual(id: &str) -> bool {
+        id.parse()
+            .is_ok_and(|id| CGDisplayVendorNumber(id) == VENDOR)
+    }
+
+    pub fn settings() -> Option<(std::path::PathBuf, &'static str)> {
+        None
+    }
+
+    /// Nothing outlives the process: the monitor goes with it.
+    pub fn mark(_on: bool) {}
+
+    pub fn marked() -> bool {
+        false
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use crate::CaptureError;
 
@@ -392,6 +577,10 @@ mod imp {
     }
 
     pub fn can_change() -> bool {
+        false
+    }
+
+    pub fn no_monitor() -> bool {
         false
     }
 
@@ -422,7 +611,7 @@ pub fn settings() -> Option<(std::path::PathBuf, &'static str)> {
 }
 
 /// Whether display `id` ([`crate::Display::id`]) is the virtual monitor.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn is_virtual(id: &str) -> bool {
     imp::is_virtual(id)
 }
