@@ -115,7 +115,9 @@ jobs:
       - name: Interface (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get install -y xvfb xdotool imagemagick
+          # (With what the packages bring for the viewer's window.)
+          sudo apt-get install -y xvfb xdotool imagemagick \
+            libxkbcommon-x11-0 libvulkan1 libegl1 mesa-vulkan-drivers
           bash installer/linux/ui-smoke.sh dist/hext-remote ui-shots
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

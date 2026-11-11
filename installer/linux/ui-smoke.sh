@@ -46,3 +46,11 @@ import -window root "$out/home.png"
 kill -0 "$app" || { echo "a interface fechou:"; cat "$out/ui.log"; exit 1; }
 kill "$app" || true
 echo "janela $window: $out/home.png"
+
+# The viewer's window, toward an ID nobody has: it must open and say so,
+# not fall over a library it opens only when it starts.
+timeout 30 "$program" view 123456789 >"$out/viewer.log" 2>&1 || true
+if grep -q panicked "$out/viewer.log"; then
+  echo "o visualizador caiu:"; cat "$out/viewer.log"; exit 1
+fi
+grep -v INFO "$out/viewer.log" | tail -3

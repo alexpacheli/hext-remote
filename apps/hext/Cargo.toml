@@ -75,7 +75,9 @@ rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
 workspace = true
 
 # The Linux packages: cargo deb / cargo generate-rpm, in the release pipeline.
-# The libraries they need (WebKitGTK, GTK) are found in the program itself.
+# The libraries the program links (WebKitGTK, GTK) are found in it; the ones
+# the viewer's window opens only when it starts (keyboard on X11, Vulkan and
+# EGL for the video) are named here, or the window would not open.
 [package.metadata.deb]
 name = "hext-remote"
 maintainer = "Hext Remote <suporte@hext.com.br>"
@@ -83,6 +85,8 @@ copyright = "Hext"
 extended-description = "Acesso e suporte remoto. No Linux, por enquanto, para acessar outros computadores."
 section = "net"
 priority = "optional"
+depends = "$auto, libxkbcommon-x11-0, libvulkan1, libegl1"
+recommends = "mesa-vulkan-drivers"
 assets = [
     ["target/release/hext", "usr/bin/hext-remote", "755"],
     ["../../installer/linux/hext-remote.desktop", "usr/share/applications/", "644"],
@@ -98,3 +102,29 @@ assets = [
     { source = "../../installer/linux/hext-remote.desktop", dest = "/usr/share/applications/hext-remote.desktop", mode = "644" },
     { source = "icons/icon.png", dest = "/usr/share/icons/hicolor/512x512/apps/hext-remote.png", mode = "644" },
 ]
+
+# By hand: what the program links directly, by soname (the automatic list
+# reads every library under them on the build's Ubuntu, with its versions:
+# ICU 70, libjpeg 8… that Fedora does not have).
+auto-req = "no"
+
+[package.metadata.generate-rpm.requires]
+"libwebkit2gtk-4.1.so.0()(64bit)" = "*"
+"libjavascriptcoregtk-4.1.so.0()(64bit)" = "*"
+"libsoup-3.0.so.0()(64bit)" = "*"
+"libgtk-3.so.0()(64bit)" = "*"
+"libgdk-3.so.0()(64bit)" = "*"
+"libgdk_pixbuf-2.0.so.0()(64bit)" = "*"
+"libcairo.so.2()(64bit)" = "*"
+"libgio-2.0.so.0()(64bit)" = "*"
+"libgobject-2.0.so.0()(64bit)" = "*"
+"libglib-2.0.so.0()(64bit)" = "*"
+"libdbus-1.so.3()(64bit)" = "*"
+"libstdc++.so.6()(64bit)" = "*"
+# Opened by the viewer's window when it starts.
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libvulkan.so.1()(64bit)" = "*"
+"libEGL.so.1()(64bit)" = "*"
+
+[package.metadata.generate-rpm.recommends]
+mesa-vulkan-drivers = "*"
