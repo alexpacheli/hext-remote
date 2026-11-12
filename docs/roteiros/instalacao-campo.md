@@ -53,7 +53,7 @@ final faria. Serve para fechar a F6. Marque cada passo e anote avisos do sistema
 
 Em Ubuntu (ou Debian) e Fedora reais, não só no CI:
 
-1. [ ] `sudo apt install ./hext-remote_0.8.0-1_amd64.deb`, sem instalar mais nada antes, e `hext-remote --version`
+1. [ ] `sudo apt install ./hext-remote_0.8.0-1_amd64.deb` (em ARM, `_arm64.deb`), sem instalar mais nada antes, e `hext-remote --version`
    mostra 0.8.0.
 2. [ ] Abrir **Hext Remote** pelo menu de aplicativos: a tela inicial abre sem ID e sem a aba Segurança (o Linux
    ainda só acessa outros computadores).
@@ -66,7 +66,7 @@ Em Ubuntu (ou Debian) e Fedora reais, não só no CI:
 7. [ ] Atualizar: com uma versão mais nova publicada, a tela inicial avisa. `sudo apt install` do `.deb` novo
    substitui a versão.
 8. [ ] `sudo apt remove hext-remote` remove, e o app some do menu.
-9. [ ] No Fedora: `sudo dnf install ./hext-remote-0.8.0-1.x86_64.rpm` e os mesmos passos 1 a 8, com `dnf`.
+9. [ ] No Fedora: `sudo dnf install ./hext-remote-0.8.0-1.x86_64.rpm` (em ARM, `.aarch64.rpm`) e os mesmos passos 1 a 8, com `dnf`.
 10. [ ] `.AppImage`: `chmod +x` e abrir `./HextRemote-0.8.0-x86_64.AppImage` (usa o WebKitGTK do sistema).
 
 ## Resultado

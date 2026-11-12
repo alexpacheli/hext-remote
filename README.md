@@ -60,7 +60,7 @@ The installers are in [Releases](https://github.com/alexpacheli/hext-remote/rele
 | Windows | `HextRemote-<version>-x64.msi` | Installs the app and the service (unattended access, sign-in screen). For many computers: `msiexec /i HextRemote-<version>-x64.msi /qn`. |
 | Windows | `HextRemote-<version>-portable.exe` | For a quick support session, without installing. |
 | macOS | `HextRemote-<version>.dmg` | Drag Hext Remote to Applications. |
-| Linux | `hext-remote_<version>-1_amd64.deb` (Ubuntu 22.04+, Debian) or `hext-remote-<version>-1.x86_64.rpm` (Fedora); also `.AppImage` | `sudo apt install ./hext-remote_<version>-1_amd64.deb` or `sudo dnf install ./hext-remote-<version>-1.x86_64.rpm` (they bring the libraries they need); it then shows in the menu. For now, to access other computers only: it has no ID, so it cannot be accessed. |
+| Linux | `hext-remote_<version>-1_amd64.deb` (Ubuntu 22.04+, Debian) or `hext-remote-<version>-1.x86_64.rpm` (Fedora); on ARM, `_arm64.deb` and `.aarch64.rpm`; also `.AppImage` (x86_64) | `sudo apt install ./hext-remote_<version>-1_amd64.deb` or `sudo dnf install ./hext-remote-<version>-1.x86_64.rpm` (they bring the libraries they need); it then shows in the menu. For now, to access other computers only: it has no ID, so it cannot be accessed. |
 
 The Windows installers are not code-signed: on first open, SmartScreen warns (More info → Run anyway). The
 macOS app is signed with an Apple Developer ID and notarized. See the [privacy policy](#privacy-policy).
