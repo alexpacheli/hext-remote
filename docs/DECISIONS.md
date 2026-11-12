@@ -43,7 +43,7 @@ database opens no computer. It costs more work than trusting the server.
 **Accounts: e-mail, password and TOTP, managed in the app only** (F5). *Why:* the usual sign-in, with a second
 factor, and no web panel to secure. Passkeys may come later.
 
-**A patched copy of `netwatch` (iroh's network monitor), without WMI** (November 2026, after 0.8.0). On Windows
+**A patched copy of `netwatch` (iroh's network monitor), without WMI** (0.8.1). On Windows
 `netwatch` 0.19.3 found the default route with a WMI query, over COM, from each endpoint's own thread. With
 several endpoints opening at once, COM in the process used memory already freed: the signaling tests hung or
 crashed on the Windows runner of CI, and under page heap every run stopped inside those queries. The copy in

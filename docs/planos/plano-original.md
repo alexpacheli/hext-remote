@@ -392,7 +392,7 @@ docs/
 | **F6 — Distribuição** ([plano](F6.md)) | Instaladores, assinatura, notarização, auto-update, `.exe` portátil. **Linux:** `.deb`, `.rpm` e `.AppImage` no pipeline de release e testados numa máquina Linux real (hoje o CI só compila a linha de comando, sem nenhum teste fora do CI). O app Linux completo (interface e host) vem na F7, usando esses pacotes | Usuário final instala e o app se atualiza sozinho (no Mac, sem avisos; no Windows, o SmartScreen avisa enquanto não houver assinatura); no Linux, o pacote instala, atualiza e roda |
 | **F7 — Extras** | Cliente e host Linux, vários técnicos no mesmo computador (se precisar), áudio, privacidade (tela preta), gravação de sessão, HEVC/AV1, Wake-on-LAN, mobile e web | — |
 
-**Situação (novembro de 2026, versão 0.8.0):** F3 a F6 implementadas e publicadas. Faltam os roteiros de campo que fecham cada fase (F4 marco 13, F5 marco 8, F6 marco 4) e a tela de login do Mac ([F6](F6.md), seção 3.1). Fora das fases, o monitor virtual ([docs/monitor-virtual.md](../monitor-virtual.md)) entrou na 0.7.0.
+**Situação (novembro de 2026, versão 0.8.1):** F3 a F6 implementadas e publicadas. Faltam os roteiros de campo que fecham cada fase (F4 marco 13, F5 marco 8, F6 marco 4) e a tela de login do Mac ([F6](F6.md), seção 3.1). Fora das fases, o monitor virtual ([docs/monitor-virtual.md](../monitor-virtual.md)) entrou na 0.7.0.
 
 ---
 
