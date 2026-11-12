@@ -36,6 +36,9 @@ pub struct EndpointConfig {
 /// An endpoint whose identity is this device's key: peers authenticate it
 /// by that key (its ID in `iroh`), and it authenticates them by theirs.
 pub async fn bind(key: &DeviceKey, config: &EndpointConfig) -> Result<Endpoint> {
+    // Before the network monitor's WMI queries (see `com`).
+    #[cfg(windows)]
+    crate::com::init();
     let transport = QuicTransportConfig::builder()
         .max_idle_timeout(Some(
             IdleTimeout::try_from(IDLE_TIMEOUT).expect("10 s fits a VarInt"),

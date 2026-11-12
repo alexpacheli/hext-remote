@@ -6,6 +6,8 @@
 //! networks allow it (hole punching) and otherwise goes through the relay;
 //! either way the session is end-to-end encrypted between the two devices.
 
+#[cfg(windows)]
+mod com;
 mod endpoint;
 mod rate;
 mod session;
