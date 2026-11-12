@@ -2,7 +2,7 @@
 
 **English** | [Português](ARCHITECTURE.pt-BR.md)
 
-How Hext Remote works today (version 0.7). The reasons behind the main choices are in
+How Hext Remote works today (version 0.8). The reasons behind the main choices are in
 [docs/DECISIONS.md](docs/DECISIONS.md), what is done and what is next in [docs/STATUS.md](docs/STATUS.md), and the
 original plan, written before the code, in [docs/planos/plano-original.md](docs/planos/plano-original.md) (in
 Portuguese).

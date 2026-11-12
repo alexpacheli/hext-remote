@@ -2,7 +2,7 @@
 
 [English](ARCHITECTURE.md) | **Português**
 
-Como o Hext Remote funciona hoje (versão 0.7). Os porquês das principais escolhas estão em
+Como o Hext Remote funciona hoje (versão 0.8). Os porquês das principais escolhas estão em
 [docs/DECISIONS.pt-BR.md](docs/DECISIONS.pt-BR.md), o que está pronto e o que vem a seguir em
 [docs/STATUS.pt-BR.md](docs/STATUS.pt-BR.md), e o plano original, escrito antes do código, em
 [docs/planos/plano-original.md](docs/planos/plano-original.md).
