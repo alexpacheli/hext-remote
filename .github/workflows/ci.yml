@@ -67,10 +67,14 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
+          export HEXT_DIAG_FILE="$RUNNER_TEMP\\hext-diag.txt"
+          cargo test -p hext --bin hext --locked --no-run
           for i in $(seq 1 15); do
-            echo "=== rodada $i"
-            cargo test -p hext --bin hext --locked 2>&1 | grep -vE ' \.\.\. ok$' || true
+            echo "=== rodada $i $(date +%T)"
+            timeout 900 cargo test -p hext --bin hext --locked -- -q || echo "falhou: $?"
+            if [ -f "$HEXT_DIAG_FILE" ]; then cat "$HEXT_DIAG_FILE"; break; fi
           done
+          echo "=== fim $(date +%T)"
 
       - name: Test
         run: cargo test --workspace --locked

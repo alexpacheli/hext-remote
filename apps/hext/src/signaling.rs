@@ -607,29 +607,51 @@ mod tests {
             ]
             .into_iter()
             .find(|p| std::path::Path::new(p).exists());
-            let Some(cdb) = cdb else {
-                eprintln!("diag: cdb não encontrado");
+            let Some(file) = std::env::var_os("HEXT_DIAG_FILE") else {
                 return;
             };
-            let out = std::process::Command::new(cdb)
+            let note = |s: &str| {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file)
+                {
+                    let _ = writeln!(f, "{s}");
+                }
+            };
+            note("diag: uma etapa travou; chamando o cdb");
+            let Some(cdb) = cdb else {
+                note("diag: cdb não encontrado");
+                return;
+            };
+            let out = std::fs::OpenOptions::new().append(true).open(&file);
+            let Ok(out) = out else { return };
+            let child = std::process::Command::new(cdb)
                 .args([
-                    "-pv",
+                    "-pvr",
                     "-p",
                     &std::process::id().to_string(),
                     "-y",
                     r"srv*C:\symbols*https://msdl.microsoft.com/download/symbols",
                     "-c",
-                    ".reload; !locks; ~*kn 40; qd",
+                    "!locks; ~*kn 40; qd",
                 ])
-                .output();
-            match out {
-                Ok(out) => eprintln!(
-                    "diag cdb:\n{}\n{}",
-                    String::from_utf8_lossy(&out.stdout),
-                    String::from_utf8_lossy(&out.stderr)
-                ),
-                Err(e) => eprintln!("diag: cdb falhou: {e}"),
+                .stdout(out.try_clone().unwrap())
+                .stderr(out)
+                .spawn();
+            let mut child = match child {
+                Ok(c) => c,
+                Err(e) => return note(&format!("diag: cdb falhou: {e}")),
+            };
+            for _ in 0..300 {
+                if let Ok(Some(_)) = child.try_wait() {
+                    return note("diag: cdb terminou");
+                }
+                std::thread::sleep(Duration::from_secs(1));
             }
+            let _ = child.kill();
+            note("diag: cdb morto após 300 s");
         });
     }
 
