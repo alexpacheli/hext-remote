@@ -3,7 +3,7 @@
 [English](STATUS.md) | **Português**
 
 Em que pé está o Hext Remote: o que está pronto, o que está em conferência e o que vem a seguir. Atualizado a cada
-versão. **Última atualização: novembro de 2026, versão 0.8.0.**
+versão. **Última atualização: novembro de 2026, versão 0.8.1.**
 
 ## Pronto
 

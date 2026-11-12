@@ -3,7 +3,7 @@
 **English** | [Português](STATUS.pt-BR.md)
 
 Where Hext Remote stands: what is done, what is being checked and what comes next. Updated with each release.
-**Last update: November 2026, version 0.8.0.**
+**Last update: November 2026, version 0.8.1.**
 
 ## Done
 

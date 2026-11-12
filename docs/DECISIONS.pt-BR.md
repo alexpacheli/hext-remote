@@ -46,7 +46,7 @@ invadido ou um banco vazado não abre nenhum computador. Custa mais trabalho do 
 **Contas: e-mail, senha e TOTP, gerenciadas só no app** (F5). *Por quê:* a entrada de sempre, com um segundo
 fator, e sem um painel web para proteger. Passkeys podem vir depois.
 
-**Uma cópia corrigida do `netwatch` (o monitor de rede do iroh), sem WMI** (novembro de 2026, depois da 0.8.0).
+**Uma cópia corrigida do `netwatch` (o monitor de rede do iroh), sem WMI** (0.8.1).
 No Windows, o `netwatch` 0.19.3 achava a rota padrão com uma consulta WMI, via COM, na thread de cada endpoint.
 Com vários endpoints abrindo ao mesmo tempo, o COM do processo usava memória já liberada: os testes de
 sinalização travavam ou caíam no runner Windows do CI, e sob page heap toda execução parava dentro dessas
