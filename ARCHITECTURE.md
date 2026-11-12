@@ -92,7 +92,8 @@ ui (always as the user)  started by the service, talks to it over a pipe only th
 bound technicians, account), stored in the user's folder. The sign-in screen, before anyone logs in, needs a
 system LaunchDaemon that is not built yet ([STATUS](docs/STATUS.md)).
 
-**Linux:** command line only (`hext-remote view`, a client). The interface and a real host come later.
+**Linux:** the interface, as a technician only: account, My computers, recent ones and opening other computers,
+each in the viewer's window. Being accessed (a host) comes later.
 
 ## 5. Who gets in
 
@@ -121,7 +122,8 @@ them in SQLite, and an unconfirmed account is deleted in 24 hours.
   SmartScreen warns on first open. macOS: `.dmg`, signed with a Developer ID and notarized. Linux: `.deb`,
   `.rpm`, `.AppImage`.
 - **Updates:** each release carries `latest.json` (versions and SHA-256 of each installer) signed with an
-  Ed25519 key kept as a repository secret; the app accepts only that signature. The Windows service checks every
+  Ed25519 key kept as a repository secret, by `hext-release`, a small program that does only that (no interface,
+  no network); the app accepts only that signature. The Windows service checks every
   hour and installs between sessions; the Mac app swaps itself in Applications (Developer ID builds only);
   elsewhere the home screen offers the download.
 
@@ -129,7 +131,7 @@ them in SQLite, and an unconfirmed account is deleted in 24 hours.
 
 | | Windows | macOS | Linux |
 |---|---|---|---|
-| Technician (viewer) | ✅ | ✅ | command line |
+| Technician (viewer) | ✅ | ✅ | ✅ (interface) |
 | Customer (host) | ✅, including sign-in screen and UAC | ✅, after login | test pattern only |
 | Unattended | ✅ service | ✅ after login | — |
 | Virtual monitor | ✅ (optional driver) | ✅ | — |

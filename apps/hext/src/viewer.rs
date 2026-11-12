@@ -64,6 +64,9 @@ const BACK_FIRST: Duration = Duration::from_secs(2);
 const BACK_MAX: Duration = Duration::from_secs(10);
 /// How long the title says how a file ended.
 const TRANSFER_SHOWN: Duration = Duration::from_secs(8);
+/// How long the title points to a question about a file (Linux).
+#[cfg(target_os = "linux")]
+const ASK_SHOWN: Duration = Duration::from_secs(60);
 /// How long the mouse waits for the host to change displays.
 const SWITCH_WAIT: Duration = Duration::from_secs(2);
 /// How long a viewer of the interface stays with no window, for the next
@@ -1125,6 +1128,21 @@ impl Viewer {
                 self.show_transfer(transfer.to_string(), until);
             }
             SessionEvent::AskFile { text, answer } => {
+                // On Linux the question is a window of its own (GTK cannot
+                // sit over this one): this one points to it, so it is not
+                // left unseen behind the session and refused by the clock.
+                #[cfg(target_os = "linux")]
+                if self.window.is_some() {
+                    self.show_transfer(
+                        "Um arquivo está chegando: responda na janela da pergunta".into(),
+                        Some(Instant::now() + ASK_SHOWN),
+                    );
+                    if let Some(window) = &self.window {
+                        window.request_user_attention(Some(
+                            winit::window::UserAttentionType::Critical,
+                        ));
+                    }
+                }
                 if let Some(window) = &self.window {
                     self.runtime.spawn(ask_file(window, text, answer));
                 }
@@ -1738,7 +1756,6 @@ fn share_clipboard(
 }
 
 /// Asks over the session's window; a question left unanswered is a no.
-#[cfg(any(windows, target_os = "macos"))]
 fn ask_file(
     window: &Window,
     text: String,
@@ -1764,17 +1781,6 @@ fn ask_file(
         };
         let _ = answer.send(yes);
     }
-}
-
-/// Nothing to ask with: no file is taken.
-#[cfg(not(any(windows, target_os = "macos")))]
-fn ask_file(
-    _window: &Window,
-    _text: String,
-    answer: oneshot::Sender<bool>,
-) -> std::future::Ready<()> {
-    let _ = answer.send(false);
-    std::future::ready(())
 }
 
 /// Trades files with the host, for as long as the session lasts: what it

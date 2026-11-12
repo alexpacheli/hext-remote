@@ -154,9 +154,15 @@ struct View {
     update: Option<UpdateView>,
     /// The portable app on Windows: it can install itself here.
     installable: bool,
+    /// Others can access this computer. Not on Linux yet: there the app only
+    /// opens other computers.
+    receives: bool,
     /// This app's version, shown in the sidebar.
     version: &'static str,
 }
+
+/// Whether this system's computer can be accessed (Windows and macOS).
+const RECEIVES: bool = cfg!(any(windows, target_os = "macos"));
 
 #[derive(Debug, Clone, Serialize)]
 struct UpdateView {
@@ -458,9 +464,15 @@ fn open_url(url: &str) -> std::io::Result<()> {
         command.creation_flags(0x0800_0000); // no console window
         command
     };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = std::process::Command::new("/usr/bin/open");
+        command.arg(url);
+        command
+    };
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
         command.arg(url);
         command
     };
@@ -543,6 +555,14 @@ fn open_home(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         let home = window(&app, "main", "index.html", |builder| {
+            // Before the page draws: what is about this computer receiving
+            // access never shows where it cannot (the view comes later).
+            let builder = if RECEIVES {
+                builder
+            } else {
+                builder
+                    .initialization_script("document.documentElement.classList.add('viewer-only');")
+            };
             builder
                 .title("Hext Remote")
                 .inner_size(940.0, 620.0)
@@ -838,6 +858,10 @@ async fn talk<P: AsyncRead + AsyncWrite>(
 
 /// The app's connection to the owner of the sessions, on a thread of its own.
 fn connect_to_host(app: AppHandle, link: Link, outgoing: mpsc::UnboundedReceiver<FromUi>) {
+    // No screen to share here yet (Linux): no host, no ID, nothing to ask.
+    if !RECEIVES {
+        return;
+    }
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(runtime) => runtime,
@@ -1909,6 +1933,9 @@ pub fn run(link: Link) -> Result<()> {
         let login = matches!(link, Link::Login);
         (login, login || installed, installed)
     };
+    // Linux: the window that opens other computers, and nothing more.
+    #[cfg(target_os = "linux")]
+    let (hidden, stays, can_restart) = (false, false, false);
     let (to_host, outgoing) = mpsc::unbounded_channel();
 
     let app = tauri::Builder::default()
@@ -1928,7 +1955,8 @@ pub fn run(link: Link) -> Result<()> {
         .manage(Shared {
             view: Mutex::new(View {
                 recent: Recent::load().into_list(),
-                installable: cfg!(any(windows, target_os = "macos"))
+                receives: RECEIVES,
+                installable: RECEIVES
                     && matches!(link, Link::Portable)
                     && !crate::service::installed(),
                 version: crate::APP_VERSION,

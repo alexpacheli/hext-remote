@@ -8,13 +8,14 @@
 //! The Windows service installs the new `.msi` by itself, between sessions;
 //! elsewhere the app says there is a new version and opens its page.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
-use serde::{Deserialize, Serialize};
+use ring::signature::{ED25519, UnparsedPublicKey};
+
+use crate::release::sha256;
+pub use crate::release::{Asset, Manifest};
 
 /// Where the releases are (`HEXT_RELEASES` when compiling, for a copy of the
 /// project that publishes its own).
@@ -25,20 +26,6 @@ const RELEASES: &str = crate::built_or(
 
 /// The public half of the key that signs the releases (64 hex digits).
 const KEY: Option<&str> = option_env!("HEXT_UPDATE_KEY");
-
-/// What a release has, as `latest.json` says it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Manifest {
-    pub version: String,
-    /// By kind ("windows-msi", "macos-dmg", ...).
-    pub files: BTreeMap<String, Asset>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Asset {
-    pub name: String,
-    pub sha256: String,
-}
 
 impl Manifest {
     /// Where a file of this release is downloaded from.
@@ -97,77 +84,6 @@ pub fn verify(bytes: &[u8], signature: &str, key: &[u8; 32]) -> Result<Manifest>
         .verify(bytes, &signature)
         .map_err(|_| anyhow::anyhow!("a assinatura da atualização não confere"))?;
     serde_json::from_slice(bytes).context("lista da atualização inválida")
-}
-
-/// A new signing key: the seed (secret, for the pipeline) and the public
-/// half (built into the app), both in hex.
-pub fn keygen() -> Result<(String, String)> {
-    // (Our copies of the seed are wiped; ring's own, inside the pair, are
-    // out of reach.)
-    let mut seed = zeroize::Zeroizing::new([0u8; 32]);
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), seed.as_mut())
-        .map_err(|_| anyhow::anyhow!("sem números aleatórios"))?;
-    let pair = Ed25519KeyPair::from_seed_unchecked(seed.as_ref())
-        .map_err(|_| anyhow::anyhow!("chave inválida"))?;
-    Ok((hex::encode(seed), hex::encode(pair.public_key().as_ref())))
-}
-
-/// `bytes` signed with `seed` (hex), in hex.
-pub fn sign(bytes: &[u8], seed: &str) -> Result<String> {
-    let mut raw = zeroize::Zeroizing::new([0u8; 32]);
-    hex::decode_to_slice(seed.trim(), raw.as_mut()).context("chave de assinatura inválida")?;
-    let pair = Ed25519KeyPair::from_seed_unchecked(raw.as_ref())
-        .map_err(|_| anyhow::anyhow!("chave inválida"))?;
-    Ok(hex::encode(pair.sign(bytes).as_ref()))
-}
-
-/// The kind of a release file, by its name.
-fn kind(name: &str) -> Option<&'static str> {
-    [
-        ("-x64.msi", "windows-msi"),
-        ("-portable.exe", "windows-portable"),
-        ("-macos.app.tar.gz", "macos-app"),
-        (".dmg", "macos-dmg"),
-        (".deb", "linux-deb"),
-        (".rpm", "linux-rpm"),
-        (".AppImage", "linux-appimage"),
-    ]
-    .into_iter()
-    .find(|(end, _)| name.ends_with(end))
-    .map(|(_, kind)| kind)
-}
-
-/// The manifest of the files in `dir`, for `version`.
-pub fn manifest_of(dir: &Path, version: &str) -> Result<Manifest> {
-    let mut files = BTreeMap::new();
-    for entry in std::fs::read_dir(dir).with_context(|| dir.display().to_string())? {
-        let path = entry?.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        let Some(kind) = kind(name) else {
-            continue;
-        };
-        let bytes = std::fs::read(&path).with_context(|| path.display().to_string())?;
-        files.insert(
-            kind.to_owned(),
-            Asset {
-                name: name.to_owned(),
-                sha256: sha256(&bytes),
-            },
-        );
-    }
-    if files.is_empty() {
-        bail!("nenhum instalador em {}", dir.display());
-    }
-    Ok(Manifest {
-        version: version.to_owned(),
-        files,
-    })
-}
-
-fn sha256(bytes: &[u8]) -> String {
-    hex::encode(ring::digest::digest(&ring::digest::SHA256, bytes))
 }
 
 fn http() -> Result<reqwest::Client> {
@@ -262,18 +178,15 @@ pub fn command(action: crate::UpdateAction) -> Result<()> {
             }
         }
         crate::UpdateAction::Keygen => {
-            let (seed, public) = keygen()?;
+            let (seed, public) = crate::release::keygen()?;
             println!("Segredo UPDATE_SIGNING_KEY (não compartilhe): {seed}");
             println!("Variável HEXT_UPDATE_KEY (pública):          {public}");
         }
+        // (The pipeline signs with hext-release, not with the app.)
         crate::UpdateAction::Manifest { dir, version } => {
             let seed = std::env::var("UPDATE_SIGNING_KEY")
                 .context("UPDATE_SIGNING_KEY: a chave que assina as atualizações")?;
-            let manifest = manifest_of(&dir, &version)?;
-            let bytes = serde_json::to_vec_pretty(&manifest)?;
-            let signature = sign(&bytes, &seed)?;
-            std::fs::write(dir.join("latest.json"), &bytes)?;
-            std::fs::write(dir.join("latest.json.sig"), &signature)?;
+            let manifest = crate::release::write_signed(&dir, &version, &seed)?;
             for (kind, asset) in &manifest.files {
                 println!("{kind}: {}", asset.name);
             }
@@ -284,7 +197,10 @@ pub fn command(action: crate::UpdateAction) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::release::{keygen, manifest_of, sign};
 
     #[test]
     fn only_plain_file_names_are_downloaded() {

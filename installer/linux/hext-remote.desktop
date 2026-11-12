@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=Hext Remote
-Comment=Acesso remoto (linha de comando no Linux até a F7)
+Comment=Acesso e suporte remoto
 Exec=hext-remote
 Icon=hext-remote
-Terminal=true
+Terminal=false
 Categories=Network;RemoteAccess;
+StartupWMClass=hext-remote

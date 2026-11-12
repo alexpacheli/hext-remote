@@ -96,6 +96,8 @@ const pages = {
       });
     },
     show(view) {
+      // (Also set before the page draws, by the window: see ui.rs.)
+      document.documentElement.classList.toggle("viewer-only", !view.receives);
       this.id = view.id;
       $("own-id").textContent = view.id ? formatId(view.id) : "Conectando…";
       $("copy-id").hidden = !view.id;

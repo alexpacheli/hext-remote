@@ -14,6 +14,7 @@ versão. **Última atualização: novembro de 2026, versão 0.7.1.**
 | F4 — Essenciais de suporte | Serviço do Windows (tela de login, UAC, `Ctrl+Alt+Del`), senha de acesso, área de transferência, arquivos, chat, vários monitores, reiniciar e reconectar, técnicos vinculados, vários computadores ao mesmo tempo | [F4](planos/F4.md) |
 | F5 — Contas | Contas com 2FA, lista assinada de dispositivos, entrada sem aceite para os dispositivos do dono, compartilhamento, registro de acessos | [F5](planos/F5.md) |
 | F6 — Distribuição | `.msi`, `.exe` portátil, `.dmg` notarizado, `.deb`/`.rpm`/`.AppImage`, atualização automática assinada, acesso não assistido no Mac depois do login | [F6](planos/F6.md) |
+| Interface no Linux | O app como técnico no Linux: conta, Meus computadores, acessar outros computadores; `.deb` e `.rpm` com as bibliotecas de que precisam (WebKitGTK) | [arquitetura](../ARCHITECTURE.pt-BR.md#7-plataformas) |
 | Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0` | [monitor-virtual](monitor-virtual.md) |
 
 Os nomes em "Meus computadores" seguem o nome atual de cada computador (0.7.1).
@@ -29,6 +30,8 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - [ ] **F6:** instalar, atualizar e desinstalar em máquinas reais ([instalacao-campo](roteiros/instalacao-campo.md)).
 - [ ] **Monitor virtual:** resolução, monitor fantasma (um que perdeu o cabo) e desinstalação em máquinas reais;
       a tela de login só com o monitor virtual ([monitor-virtual](monitor-virtual.md)).
+- [ ] **Linux:** instalar o `.deb` num Ubuntu e o `.rpm` num Fedora, abrir pelo menu, entrar na conta e acessar
+      um computador (vídeo, teclado, mouse, arquivo recebido).
 
 ## Em aberto
 
@@ -37,6 +40,7 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - No runner do Windows do CI, um teste de rede às vezes trava no início (`hext_net::bind`); rodar de novo passa.
 - Em algumas redes domésticas sem CGNAT, a conexão ainda passa pelo relay em vez de ir direto: testar o UPnP no
   roteador.
+- O `.AppImage` do Linux usa o WebKitGTK do sistema (`libwebkit2gtk-4.1`): onde ele não existe, não abre.
 
 ## A seguir
 
@@ -45,5 +49,5 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - **O visualizador lembrar o último monitor** escolhido em cada computador.
 - **Fluidez:** comparar lado a lado com o Parsec e aplicar o que o estudo achou
   ([fluidez-parsec](estudos/fluidez-parsec.md)).
-- **F7 — Extras:** interface e host no Linux, áudio, tela de privacidade, gravação de sessão, HEVC/AV1,
+- **F7 — Extras:** host no Linux (ser acessado), áudio, tela de privacidade, gravação de sessão, HEVC/AV1,
   Wake-on-LAN, mobile e web.
