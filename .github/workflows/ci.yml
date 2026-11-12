@@ -72,7 +72,7 @@ jobs:
       - name: Diag bind
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p hext --bin hext --locked signaling::tests:: -- --nocapture
+        run: cargo test -p hext --bin hext --locked signaling::tests -- --nocapture
 
       - name: Test
         run: cargo test --workspace --locked
