@@ -46,6 +46,10 @@ jobs:
             os: ubuntu-latest
             targets: x86_64-unknown-linux-gnu
             artifact: hext-remote-linux-x64
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            targets: aarch64-unknown-linux-gnu
+            artifact: hext-remote-linux-arm64
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -101,10 +105,10 @@ jobs:
       - name: Build release (Linux)
         if: runner.os == 'Linux'
         run: |
-          cargo build --release --locked -p hext -p hext-server --target x86_64-unknown-linux-gnu
+          cargo build --release --locked -p hext -p hext-server --target ${{ matrix.targets }}
           mkdir dist
-          cp target/x86_64-unknown-linux-gnu/release/hext dist/hext-remote
-          cp target/x86_64-unknown-linux-gnu/release/hext-server dist/hext-server
+          cp target/${{ matrix.targets }}/release/hext dist/hext-remote
+          cp target/${{ matrix.targets }}/release/hext-server dist/hext-server
 
       - name: Smoke test
         shell: bash
@@ -119,7 +123,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo install cargo-deb --locked
-          cargo deb -p hext --target x86_64-unknown-linux-gnu --no-build --output pkg/
+          cargo deb -p hext --target ${{ matrix.targets }} --no-build --output pkg/
           . /etc/os-release
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg" "ubuntu:$VERSION_ID" \
             bash /src/installer/linux/package-test.sh "/pkg/$(basename pkg/*.deb)" /pkg/shots
@@ -127,7 +131,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: runner.os == 'Linux' && always()
         with:
-          name: interface-linux
+          name: interface-${{ matrix.artifact }}
           path: pkg/shots/
           if-no-files-found: ignore
 
