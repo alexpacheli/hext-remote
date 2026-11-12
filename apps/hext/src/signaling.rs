@@ -588,9 +588,49 @@ mod tests {
 
     /// `step`'s result, or a failure naming it.
     async fn step<T>(what: &str, step: impl std::future::Future<Output = T>) -> T {
-        tokio::time::timeout(STEP, step)
-            .await
-            .unwrap_or_else(|_| panic!("{what}: não terminou em {STEP:?}"))
+        match tokio::time::timeout(STEP, step).await {
+            Ok(t) => t,
+            Err(_) => {
+                dump_stacks();
+                panic!("{what}: não terminou em {STEP:?}")
+            }
+        }
+    }
+
+    /// DIAGNÓSTICO, temporário: as pilhas de todas as threads (cdb), uma vez.
+    fn dump_stacks() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let cdb = [
+                r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe",
+                r"C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe",
+            ]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists());
+            let Some(cdb) = cdb else {
+                eprintln!("diag: cdb não encontrado");
+                return;
+            };
+            let out = std::process::Command::new(cdb)
+                .args([
+                    "-pv",
+                    "-p",
+                    &std::process::id().to_string(),
+                    "-y",
+                    r"srv*C:\symbols*https://msdl.microsoft.com/download/symbols",
+                    "-c",
+                    ".reload; !locks; ~*kn 40; qd",
+                ])
+                .output();
+            match out {
+                Ok(out) => eprintln!(
+                    "diag cdb:\n{}\n{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+                Err(e) => eprintln!("diag: cdb falhou: {e}"),
+            }
+        });
     }
 
     /// A signaling server on this machine, the host and the technician
