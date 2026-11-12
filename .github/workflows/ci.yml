@@ -72,7 +72,12 @@ jobs:
       - name: Diag bind
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p hext --bin hext --locked signaling::tests -- --nocapture
+        shell: bash
+        run: |
+          for i in $(seq 1 15); do
+            echo "=== rodada $i"
+            cargo test -p hext --bin hext --locked 2>&1 | grep -vE ' \.\.\. ok$' || true
+          done
 
       - name: Test
         run: cargo test --workspace --locked
