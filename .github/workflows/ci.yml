@@ -66,13 +66,23 @@ jobs:
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: bash
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "1"
         run: |
-          export HEXT_DIAG_FILE="$RUNNER_TEMP\\hext-diag.txt"
-          cargo test -p hext --bin hext --locked --no-run
-          for i in $(seq 1 15); do
+          dbg="/c/Program Files (x86)/Windows Kits/10/Debuggers/x64"
+          ls "$dbg" | head -50 || true
+          exe=$(cargo test -p hext --bin hext --locked --no-run --message-format=json \
+            | jq -r 'select(.executable != null and .target.name == "hext") | .executable')
+          echo "exe: $exe"
+          "$dbg/gflags.exe" /p /enable "$(basename "$exe")" /full
+          for i in $(seq 1 8); do
             echo "=== rodada $i $(date +%T)"
-            timeout 900 cargo test -p hext --bin hext --locked -- -q || echo "falhou: $?"
-            if [ -f "$HEXT_DIAG_FILE" ]; then cat "$HEXT_DIAG_FILE"; break; fi
+            timeout 1500 "$dbg/cdb.exe" -g -G -lines \
+              -y "$(dirname "$exe");srv*C:\\symbols*https://msdl.microsoft.com/download/symbols" \
+              -c ".echo HEXT_PARADA; .lastevent; .ecxr; kn 80; !heap -p -a @@(@\$exr_param1); ~*kn 30; q" \
+              "$exe" -q --test-threads=8 > out.txt 2>&1 || echo "saiu: $?"
+            if grep -q HEXT_PARADA out.txt; then cat out.txt; break; fi
+            tail -5 out.txt
           done
           echo "=== fim $(date +%T)"
 
