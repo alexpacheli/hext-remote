@@ -553,13 +553,13 @@ mod tests {
     const WHOLE: Duration = Duration::from_secs(90);
 
     /// Runs `test` on its own thread and runtime, and fails if it does not
-    /// end within [`WHOLE`]. On the Windows runner of CI these tests have
-    /// hung now and then (until the job's 45 minutes ran out) and a
-    /// `tokio::time::timeout` inside never fired: something blocked the
-    /// test's only thread outright (the iroh endpoint registers its network
-    /// callbacks with Win32 synchronously). A watchdog on another thread
-    /// fails whatever blocks; with more than one worker, the timeouts of
-    /// each step still fire and say which one it was.
+    /// end within [`WHOLE`]. On the Windows runner of CI these tests used to
+    /// hang (until the job's 45 minutes ran out): the five endpoints opening
+    /// at once each asked WMI for the default route, and COM in this process
+    /// ended up using freed memory (see `vendor/netwatch`, which no longer
+    /// asks WMI). Should anything block a thread outright again, a watchdog
+    /// on another thread fails the test; with more than one worker, the
+    /// timeouts of each step still fire and say which one it was.
     fn within(test: impl std::future::Future<Output = ()> + Send + 'static) {
         let (done, ended) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || {

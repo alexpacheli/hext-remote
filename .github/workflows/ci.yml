@@ -75,6 +75,26 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # vendor/netwatch replaces netwatch's WMI query (see its PATCHED.md).
+      # The patch only applies to that exact version: if iroh moves to
+      # another, cargo just warns and the WMI query (and its crashes) would
+      # come back unnoticed.
+      - name: No WMI in the dependencies
+        if: runner.os == 'Linux'
+        run: |
+          if grep -qx 'name = "wmi"' Cargo.lock; then
+            echo "::error::wmi voltou ao Cargo.lock: o patch do netwatch (vendor/netwatch) não vale mais para a versão que o iroh usa."
+            cargo tree -i wmi --target x86_64-pc-windows-msvc || true
+            exit 1
+          fi
+
+      # The patched part of vendor/netwatch, outside the workspace, is
+      # tested here, where it runs (the home router test needs a home).
+      - name: Test vendor/netwatch
+        if: runner.os == 'Windows'
+        run: |
+          cargo test --manifest-path vendor/netwatch/Cargo.toml --target-dir target --lib -- interfaces:: --skip test_likely_home_router
+
       - name: Server image
         if: runner.os == 'Linux'
         run: docker build -f apps/hext-server/Dockerfile -t hext-server .

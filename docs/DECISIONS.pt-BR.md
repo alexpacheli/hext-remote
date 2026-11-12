@@ -46,6 +46,14 @@ invadido ou um banco vazado não abre nenhum computador. Custa mais trabalho do 
 **Contas: e-mail, senha e TOTP, gerenciadas só no app** (F5). *Por quê:* a entrada de sempre, com um segundo
 fator, e sem um painel web para proteger. Passkeys podem vir depois.
 
+**Uma cópia corrigida do `netwatch` (o monitor de rede do iroh), sem WMI** (novembro de 2026, depois da 0.8.0).
+No Windows, o `netwatch` 0.19.3 achava a rota padrão com uma consulta WMI, via COM, na thread de cada endpoint.
+Com vários endpoints abrindo ao mesmo tempo, o COM do processo usava memória já liberada: os testes de
+sinalização travavam ou caíam no runner Windows do CI, e sob page heap toda execução parava dentro dessas
+consultas. A cópia em `vendor/netwatch` (por `[patch.crates-io]`) lê a tabela de rotas do IP Helper e devolve o
+mesmo valor; nada mais nela mudou. *Por quê:* o defeito estava no uso do COM pela dependência, e preparar o COM
+por fora não o resolveu. Para largar a cópia, o `netwatch` precisa deixar o WMI de vez (a 0.20.0 ainda usa).
+
 ## App
 
 **Rust, um executável nativo.** Sem runtime, .NET ou Java. *Por quê:* download pequeno para um atendimento rápido,
