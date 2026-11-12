@@ -55,6 +55,8 @@ fn kind(name: &str) -> Option<&'static str> {
         ("-portable.exe", "windows-portable"),
         ("-macos.app.tar.gz", "macos-app"),
         (".dmg", "macos-dmg"),
+        ("_arm64.deb", "linux-deb-arm64"),
+        (".aarch64.rpm", "linux-rpm-arm64"),
         (".deb", "linux-deb"),
         (".rpm", "linux-rpm"),
         (".AppImage", "linux-appimage"),

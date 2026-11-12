@@ -113,8 +113,8 @@ nada. É o que DeskPad, BetterDisplay e outros usam.
 
 ## Linux
 
-Fica para a F7, com a interface gráfica (no X11, `xf86-video-dummy` ou `xrandr --setmonitor`; no Wayland,
-depende do compositor).
+Fica para a F7, com o host no Linux (ser acessado; a interface de técnico já existe desde a 0.8.0). No X11,
+`xf86-video-dummy` ou `xrandr --setmonitor`; no Wayland, depende do compositor.
 
 ## Marcos
 

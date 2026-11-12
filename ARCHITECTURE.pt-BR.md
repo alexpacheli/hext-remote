@@ -123,7 +123,7 @@ guarda em SQLite, e uma conta não confirmada é apagada em 24 horas.
   pessoa a publica. Cada instalador é testado no CI (instalar, rodar, desinstalar).
 - Windows: `.msi` (app, serviço, driver opcional do monitor virtual) e `.exe` portátil, **sem assinatura de
   código**: o SmartScreen avisa na primeira abertura. macOS: `.dmg`, assinado com Developer ID e notarizado.
-  Linux: `.deb`, `.rpm`, `.AppImage`.
+  Linux: `.deb` e `.rpm` (x86_64 e ARM64), `.AppImage` (x86_64).
 - **Atualização:** cada release leva o `latest.json` (versões e SHA-256 de cada instalador), assinado com uma
   chave Ed25519 guardada como segredo do repositório, pelo `hext-release`, um programa pequeno que só faz isso (sem
   interface, sem rede); o app só aceita essa assinatura. O serviço do Windows

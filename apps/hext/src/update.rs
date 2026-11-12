@@ -270,13 +270,15 @@ mod tests {
             "HextRemote-0.6.0-macos.app.tar.gz",
             "hext-remote_0.6.0-1_amd64.deb",
             "hext-remote-0.6.0-1.x86_64.rpm",
+            "hext-remote_0.6.0-1_arm64.deb",
+            "hext-remote-0.6.0-1.aarch64.rpm",
             "HextRemote-0.6.0-x86_64.AppImage",
             "SHA256SUMS.txt",
         ] {
             std::fs::write(dir.join(name), name).unwrap();
         }
         let manifest = manifest_of(&dir, "0.6.0").unwrap();
-        assert_eq!(manifest.files.len(), 7, "{manifest:?}");
+        assert_eq!(manifest.files.len(), 9, "{manifest:?}");
         let msi = &manifest.files["windows-msi"];
         assert_eq!(msi.sha256, sha256(b"HextRemote-0.6.0-x64.msi"));
         assert_eq!(
@@ -286,6 +288,14 @@ mod tests {
         assert_eq!(
             manifest.files["macos-app"].name,
             "HextRemote-0.6.0-macos.app.tar.gz"
+        );
+        assert_eq!(
+            manifest.files["linux-deb"].name,
+            "hext-remote_0.6.0-1_amd64.deb"
+        );
+        assert_eq!(
+            manifest.files["linux-rpm-arm64"].name,
+            "hext-remote-0.6.0-1.aarch64.rpm"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

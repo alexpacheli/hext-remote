@@ -119,8 +119,8 @@ them in SQLite, and an unconfirmed account is deleted in 24 hours.
 - `.github/workflows/release.yml` builds everything from a `v*` tag and opens a **draft** release; a person
   publishes it. Each installer is tested in CI (install, run, uninstall).
 - Windows: `.msi` (app, service, optional virtual monitor driver) and a portable `.exe`, **not code-signed**:
-  SmartScreen warns on first open. macOS: `.dmg`, signed with a Developer ID and notarized. Linux: `.deb`,
-  `.rpm`, `.AppImage`.
+  SmartScreen warns on first open. macOS: `.dmg`, signed with a Developer ID and notarized. Linux: `.deb`
+  and `.rpm` (x86_64 and ARM64), `.AppImage` (x86_64).
 - **Updates:** each release carries `latest.json` (versions and SHA-256 of each installer) signed with an
   Ed25519 key kept as a repository secret, by `hext-release`, a small program that does only that (no interface,
   no network); the app accepts only that signature. The Windows service checks every
