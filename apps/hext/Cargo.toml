@@ -48,6 +48,7 @@ tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
 hext-server = { path = "../hext-server" }
+netwatch = "=0.19.3" # DIAGNÓSTICO, temporário
 
 [target.'cfg(windows)'.dependencies]
 windows-core.workspace = true

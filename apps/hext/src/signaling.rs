@@ -615,6 +615,25 @@ mod tests {
             bind: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
             accept: true,
         };
+        // DIAGNÓSTICO, temporário: cada etapa do bind do iroh, medida.
+        let t = std::time::Instant::now();
+        eprintln!("diag {:?}: default_route...", t.elapsed());
+        let r = step(
+            "diag default_route",
+            netwatch::interfaces::default_route_interface(),
+        )
+        .await;
+        eprintln!("diag {:?}: default_route = {r:?}", t.elapsed());
+        let s = step("diag State::new", netwatch::interfaces::State::new()).await;
+        eprintln!(
+            "diag {:?}: State::new ok ({} ifs)",
+            t.elapsed(),
+            s.interfaces.len()
+        );
+        let m = step("diag Monitor::new", netwatch::netmon::Monitor::new()).await;
+        eprintln!("diag {:?}: Monitor::new ok={}", t.elapsed(), m.is_ok());
+        drop(m);
+        eprintln!("diag {:?}: Monitor dropped", t.elapsed());
         let endpoint = step("endpoint do host", hext_net::bind(host_key, &config))
             .await
             .unwrap();
