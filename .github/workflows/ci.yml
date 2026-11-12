@@ -92,7 +92,8 @@ jobs:
       # tested here, where it runs (the home router test needs a home).
       - name: Test vendor/netwatch
         if: runner.os == 'Windows'
-        run: cargo test --manifest-path vendor/netwatch/Cargo.toml --target-dir target --lib -- interfaces:: --skip test_likely_home_router
+        run: |
+          cargo test --manifest-path vendor/netwatch/Cargo.toml --target-dir target --lib -- interfaces:: --skip test_likely_home_router
 
       - name: Server image
         if: runner.os == 'Linux'
