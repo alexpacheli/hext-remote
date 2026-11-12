@@ -74,7 +74,8 @@ jobs:
           exe=$(cargo test -p hext --bin hext --locked --no-run --message-format=json \
             | jq -r 'select(.executable != null and .target.name == "hext") | .executable')
           echo "exe: $exe"
-          "$dbg/gflags.exe" /p /enable "$(basename "$exe")" /full
+          MSYS2_ARG_CONV_EXCL='*' "$dbg/gflags.exe" /p /enable "$(basename "$exe")" /full
+          MSYS2_ARG_CONV_EXCL='*' "$dbg/gflags.exe" /p
           for i in $(seq 1 8); do
             echo "=== rodada $i $(date +%T)"
             timeout 1500 "$dbg/cdb.exe" -g -G -lines \
