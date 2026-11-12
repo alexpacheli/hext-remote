@@ -1,6 +1,16 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*"]
+# Patched copies of dependencies (see [patch.crates-io]), not ours to lint.
+exclude = ["vendor"]
+
+# netwatch (iroh's network monitor) found the default route on Windows with
+# a WMI query, over COM, from each endpoint's own thread: with endpoints
+# opening at once, COM in this process used memory already freed (hangs and
+# crashes on the Windows runner of CI). The copy in vendor/netwatch asks the
+# IP Helper instead (see its src/interfaces/windows.rs); nothing else changed.
+[patch.crates-io]
+netwatch = { path = "vendor/netwatch" }
 
 [workspace.package]
 version = "0.8.0"
