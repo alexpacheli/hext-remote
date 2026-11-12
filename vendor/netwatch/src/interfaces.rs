@@ -1,3 +1,5 @@
+// Patched for Hext Remote: `#[allow(warnings)]` on the submodules copied
+// unchanged (see lib.rs and PATCHED.md); nothing else differs.
 //! Contains helpers for looking up system network interfaces.
 //!
 //! All public types are defined here once and have the same shape on every
@@ -21,15 +23,20 @@ use crate::ip::{LocalAddresses, is_link_local};
 // the `platform` alias: `get_state()`, `default_route()` and `home_router()`.
 // The `netdev`-capable modules share enumeration via `netdev_impl`.
 #[cfg(netdev)]
+#[allow(warnings)] // copied unchanged (see lib.rs)
 mod netdev_impl;
 
 #[cfg(bsd)]
+#[allow(warnings)] // copied unchanged (see lib.rs)
 pub(super) mod bsd;
 #[cfg(any(target_os = "linux", target_os = "android"))]
+#[allow(warnings)] // copied unchanged (see lib.rs)
 mod linux;
 #[cfg(posix_minimal)]
+#[allow(warnings)] // copied unchanged (see lib.rs)
 mod posix_minimal;
 #[cfg(wasm_browser)]
+#[allow(warnings)] // copied unchanged (see lib.rs)
 mod wasm_browser;
 #[cfg(target_os = "windows")]
 mod windows;

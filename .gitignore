@@ -10,3 +10,4 @@
 secrets.env
 mail.env
 .env
+/vendor/netwatch/Cargo.lock

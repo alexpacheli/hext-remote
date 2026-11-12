@@ -37,7 +37,6 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 
 - Um computador online mostrando tela preta com o monitor desligado: investigar (versão e título do
   visualizador). Ideia: perceber uma captura toda preta e passar para o monitor virtual.
-- No runner do Windows do CI, um teste de rede às vezes trava no início (`hext_net::bind`); rodar de novo passa.
 - Em algumas redes domésticas sem CGNAT, a conexão ainda passa pelo relay em vez de ir direto: testar o UPnP no
   roteador.
 - O `.AppImage` do Linux usa o WebKitGTK do sistema (`libwebkit2gtk-4.1`): onde ele não existe, não abre.

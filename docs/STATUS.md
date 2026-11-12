@@ -37,7 +37,6 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 
 - A computer online but showing a black screen with its display off: to investigate (version and the viewer's
   title). Idea: notice an all-black capture and switch to the virtual monitor.
-- On the Windows CI runner, a networking test sometimes hangs at startup (`hext_net::bind`); rerunning passes.
 - On some home networks without CGNAT, the connection still goes through the relay instead of direct: try UPnP
   on the router.
 - The Linux `.AppImage` uses the system's WebKitGTK (`libwebkit2gtk-4.1`): where it is missing, it does not open.

@@ -53,10 +53,16 @@ fn get_default_route() -> Result<DefaultRouteDetails, Error> {
 }
 
 pub async fn default_route() -> Option<DefaultRouteDetails> {
-    match get_default_route() {
-        Ok(route) => Some(route),
-        Err(err) => {
+    // Off the runtime's threads, as the WMI query was: the route table is
+    // read with a blocking call.
+    match tokio::task::spawn_blocking(get_default_route).await {
+        Ok(Ok(route)) => Some(route),
+        Ok(Err(err)) => {
             warn!("failed to retrieve default route: {:#?}", err);
+            None
+        }
+        Err(err) => {
+            warn!("default route task panicked: {:#?}", err);
             None
         }
     }
