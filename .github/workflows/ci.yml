@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.run_id }} # DIAGNÓSTICO, temporário
   cancel-in-progress: true
 
 env:
@@ -38,14 +38,7 @@ jobs:
             os: windows-latest
             targets: x86_64-pc-windows-msvc
             artifact: HextRemote-windows-x64
-          - name: macOS universal
-            os: macos-latest
-            targets: aarch64-apple-darwin,x86_64-apple-darwin
-            artifact: HextRemote-macos-universal
-          - name: Linux x64
-            os: ubuntu-latest
-            targets: x86_64-unknown-linux-gnu
-            artifact: hext-remote-linux-x64
+          # DIAGNÓSTICO, temporário: só o Windows.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
