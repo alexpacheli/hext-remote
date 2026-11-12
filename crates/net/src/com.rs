@@ -1,20 +1,23 @@
-//! COM for this process, set up once before `iroh` queries WMI.
+//! COM and WMI for this process, set up once before `iroh` queries WMI.
 //!
 //! Each endpoint's network monitor asks WMI for the default route, from a
-//! blocking thread. The `wmi` crate, finding COM not yet set up, sets it up
-//! itself inside that query: it joins the process to the multithreaded
-//! apartment (`CoIncrementMTAUsage`) and then sets the process's security
-//! (`CoInitializeSecurity`). With several endpoints opening at once, one
-//! thread sets the security while others, already in the apartment, are
-//! creating and calling WMI objects; Windows requires it before any of
-//! that, and inside COM objects were used after being freed. On the Windows
-//! runner of CI, the signaling tests (five endpoints at once) hung in calls
-//! that allocate or crashed (access violation); under page heap, every run
-//! stopped in COM inside those WMI queries.
+//! blocking thread, and with several endpoints opening at once (the
+//! signaling tests open five) those queries overlap. On the Windows runner
+//! of CI the tests hung in calls that allocate, or crashed with an access
+//! violation; under page heap every run stopped inside COM in those
+//! queries, one of them in code of `wbemprox.dll` already unloaded.
 //!
-//! Done once here, before any endpoint, nothing is left for the queries to
-//! set up: they find the apartment and the security in place. The same
-//! choices `wmi` would make, so nothing else changes.
+//! Two things, both done once here before any endpoint:
+//!
+//! - WMI's own DLLs stay loaded. When a query lets go of its objects, the
+//!   DLL that served them (`wbemprox.dll`, `fastprox.dll`) has nothing in
+//!   use and COM unloads it shortly after, from a thread-pool timer, while
+//!   another thread may still be running inside it.
+//! - The process joins the multithreaded apartment and its COM security is
+//!   set before the first query. Otherwise the `wmi` crate does both inside
+//!   whichever query first finds COM not set up, while other threads are
+//!   already calling WMI; Windows wants the security set before any of
+//!   that. The same choices `wmi` would make, so nothing else changes.
 
 #[allow(unsafe_code)] // plain Win32 calls, with no pointers of ours
 pub fn init() {
@@ -25,9 +28,23 @@ pub fn init() {
         CoIncrementMTAUsage, CoInitializeSecurity, EOAC_NONE, RPC_C_AUTHN_LEVEL_DEFAULT,
         RPC_C_IMP_LEVEL_IMPERSONATE,
     };
+    use windows::Win32::System::LibraryLoader::{LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
+    use windows::core::{HSTRING, PCWSTR};
 
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
+        // Loaded here too, and never freed: COM unloading them only drops
+        // its own reference. From System32 only.
+        for dll in ["wbemprox.dll", "fastprox.dll"] {
+            let name = HSTRING::from(dll);
+            // SAFETY: a valid, terminated name; the module is kept for good.
+            let loaded = unsafe {
+                LoadLibraryExW(PCWSTR(name.as_ptr()), None, LOAD_LIBRARY_SEARCH_SYSTEM32)
+            };
+            if let Err(e) = loaded {
+                tracing::warn!("{dll}: {e}");
+            }
+        }
         // The process stays in the apartment for good (the cookie that
         // would leave it is dropped), as `wmi` does.
         // SAFETY: takes nothing and returns a cookie.

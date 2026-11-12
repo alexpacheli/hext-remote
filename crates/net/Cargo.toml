@@ -22,7 +22,7 @@ tracing.workspace = true
 futures-util.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows.workspace = true
+windows = { workspace = true, features = ["Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
 tokio.workspace = true
