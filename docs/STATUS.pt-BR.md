@@ -3,7 +3,7 @@
 [English](STATUS.md) | **Português**
 
 Em que pé está o Hext Remote: o que está pronto, o que está em conferência e o que vem a seguir. Atualizado a cada
-versão. **Última atualização: novembro de 2026, versão 0.7.1.**
+versão. **Última atualização: novembro de 2026, versão 0.8.0.**
 
 ## Pronto
 
@@ -14,7 +14,7 @@ versão. **Última atualização: novembro de 2026, versão 0.7.1.**
 | F4 — Essenciais de suporte | Serviço do Windows (tela de login, UAC, `Ctrl+Alt+Del`), senha de acesso, área de transferência, arquivos, chat, vários monitores, reiniciar e reconectar, técnicos vinculados, vários computadores ao mesmo tempo | [F4](planos/F4.md) |
 | F5 — Contas | Contas com 2FA, lista assinada de dispositivos, entrada sem aceite para os dispositivos do dono, compartilhamento, registro de acessos | [F5](planos/F5.md) |
 | F6 — Distribuição | `.msi`, `.exe` portátil, `.dmg` notarizado, `.deb`/`.rpm`/`.AppImage`, atualização automática assinada, acesso não assistido no Mac depois do login | [F6](planos/F6.md) |
-| Interface no Linux | O app como técnico no Linux: conta, Meus computadores, acessar outros computadores; `.deb` e `.rpm` com as bibliotecas de que precisam (WebKitGTK) | [arquitetura](../ARCHITECTURE.pt-BR.md#7-plataformas) |
+| Interface no Linux | O app como técnico no Linux: conta, Meus computadores, acessar outros computadores; `.deb` e `.rpm` com as bibliotecas de que precisam (WebKitGTK) (0.8.0) | [arquitetura](../ARCHITECTURE.pt-BR.md#7-plataformas) |
 | Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0` | [monitor-virtual](monitor-virtual.md) |
 
 Os nomes em "Meus computadores" seguem o nome atual de cada computador (0.7.1).

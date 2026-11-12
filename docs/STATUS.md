@@ -3,7 +3,7 @@
 **English** | [Português](STATUS.pt-BR.md)
 
 Where Hext Remote stands: what is done, what is being checked and what comes next. Updated with each release.
-**Last update: November 2026, version 0.7.1.**
+**Last update: November 2026, version 0.8.0.**
 
 ## Done
 
@@ -14,7 +14,7 @@ Where Hext Remote stands: what is done, what is being checked and what comes nex
 | F4 — Support essentials | Windows service (sign-in screen, UAC, `Ctrl+Alt+Del`), access password, clipboard, files, chat, several monitors, restart and reconnect, bound technicians, several computers at once | [F4](planos/F4.md) |
 | F5 — Accounts | Accounts with 2FA, signed device list, entry without consent for the owner's devices, sharing, access log | [F5](planos/F5.md) |
 | F6 — Distribution | `.msi`, portable `.exe`, notarized `.dmg`, `.deb`/`.rpm`/`.AppImage`, signed automatic updates, unattended access on the Mac after login | [F6](planos/F6.md) |
-| Linux interface | The app as a technician on Linux: account, My computers, opening other computers; `.deb` and `.rpm` with the libraries they need (WebKitGTK) | [ARCHITECTURE](../ARCHITECTURE.md#7-platforms) |
+| Linux interface | The app as a technician on Linux: account, My computers, opening other computers; `.deb` and `.rpm` with the libraries they need (WebKitGTK) (0.8.0) | [ARCHITECTURE](../ARCHITECTURE.md#7-platforms) |
 | Virtual monitor | Session on a computer with no monitor (Windows driver as an installer option, macOS built in), resolution with `Ctrl+Alt+0` | [monitor-virtual](monitor-virtual.md) |
 
 Names in "My computers" follow the computer's current name (0.7.1).
