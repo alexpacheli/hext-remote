@@ -553,13 +553,13 @@ mod tests {
     const WHOLE: Duration = Duration::from_secs(90);
 
     /// Runs `test` on its own thread and runtime, and fails if it does not
-    /// end within [`WHOLE`]. On the Windows runner of CI these tests have
-    /// hung now and then (until the job's 45 minutes ran out) and a
-    /// `tokio::time::timeout` inside never fired: something blocked the
-    /// test's only thread outright (the iroh endpoint registers its network
-    /// callbacks with Win32 synchronously). A watchdog on another thread
-    /// fails whatever blocks; with more than one worker, the timeouts of
-    /// each step still fire and say which one it was.
+    /// end within [`WHOLE`]. On the Windows runner of CI these tests used to
+    /// hang (until the job's 45 minutes ran out): the five endpoints opening
+    /// at once each asked WMI for the default route, and COM in this process
+    /// ended up using freed memory (see `vendor/netwatch`, which no longer
+    /// asks WMI). Should anything block a thread outright again, a watchdog
+    /// on another thread fails the test; with more than one worker, the
+    /// timeouts of each step still fire and say which one it was.
     fn within(test: impl std::future::Future<Output = ()> + Send + 'static) {
         let (done, ended) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || {
@@ -588,71 +588,9 @@ mod tests {
 
     /// `step`'s result, or a failure naming it.
     async fn step<T>(what: &str, step: impl std::future::Future<Output = T>) -> T {
-        match tokio::time::timeout(STEP, step).await {
-            Ok(t) => t,
-            Err(_) => {
-                dump_stacks();
-                panic!("{what}: não terminou em {STEP:?}")
-            }
-        }
-    }
-
-    /// DIAGNÓSTICO, temporário: as pilhas de todas as threads (cdb), uma vez.
-    fn dump_stacks() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            let cdb = [
-                r"C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe",
-                r"C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe",
-            ]
-            .into_iter()
-            .find(|p| std::path::Path::new(p).exists());
-            let Some(file) = std::env::var_os("HEXT_DIAG_FILE") else {
-                return;
-            };
-            let note = |s: &str| {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&file)
-                {
-                    let _ = writeln!(f, "{s}");
-                }
-            };
-            note("diag: uma etapa travou; chamando o cdb");
-            let Some(cdb) = cdb else {
-                note("diag: cdb não encontrado");
-                return;
-            };
-            let out = std::fs::OpenOptions::new().append(true).open(&file);
-            let Ok(out) = out else { return };
-            let child = std::process::Command::new(cdb)
-                .args([
-                    "-pvr",
-                    "-p",
-                    &std::process::id().to_string(),
-                    "-y",
-                    r"srv*C:\symbols*https://msdl.microsoft.com/download/symbols",
-                    "-c",
-                    "!locks; ~*kn 40; qd",
-                ])
-                .stdout(out.try_clone().unwrap())
-                .stderr(out)
-                .spawn();
-            let mut child = match child {
-                Ok(c) => c,
-                Err(e) => return note(&format!("diag: cdb falhou: {e}")),
-            };
-            for _ in 0..300 {
-                if let Ok(Some(_)) = child.try_wait() {
-                    return note("diag: cdb terminou");
-                }
-                std::thread::sleep(Duration::from_secs(1));
-            }
-            let _ = child.kill();
-            note("diag: cdb morto após 300 s");
-        });
+        tokio::time::timeout(STEP, step)
+            .await
+            .unwrap_or_else(|_| panic!("{what}: não terminou em {STEP:?}"))
     }
 
     /// A signaling server on this machine, the host and the technician
@@ -677,25 +615,6 @@ mod tests {
             bind: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
             accept: true,
         };
-        // DIAGNÓSTICO, temporário: cada etapa do bind do iroh, medida.
-        let t = std::time::Instant::now();
-        eprintln!("diag {:?}: default_route...", t.elapsed());
-        let r = step(
-            "diag default_route",
-            netwatch::interfaces::default_route_interface(),
-        )
-        .await;
-        eprintln!("diag {:?}: default_route = {r:?}", t.elapsed());
-        let s = step("diag State::new", netwatch::interfaces::State::new()).await;
-        eprintln!(
-            "diag {:?}: State::new ok ({} ifs)",
-            t.elapsed(),
-            s.interfaces.len()
-        );
-        let m = step("diag Monitor::new", netwatch::netmon::Monitor::new()).await;
-        eprintln!("diag {:?}: Monitor::new ok={}", t.elapsed(), m.is_ok());
-        drop(m);
-        eprintln!("diag {:?}: Monitor dropped", t.elapsed());
         let endpoint = step("endpoint do host", hext_net::bind(host_key, &config))
             .await
             .unwrap();

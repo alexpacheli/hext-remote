@@ -2508,7 +2508,6 @@ dependencies = [
  "hext-server",
  "hext-session",
  "hext-signal",
- "netwatch",
  "qrcode",
  "reqwest",
  "rfd",
