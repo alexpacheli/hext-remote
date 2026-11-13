@@ -15,7 +15,7 @@ Where Hext Remote stands: what is done, what is being checked and what comes nex
 | F5 — Accounts | Accounts with 2FA, signed device list, entry without consent for the owner's devices, sharing, access log | [F5](planos/F5.md) |
 | F6 — Distribution | `.msi`, portable `.exe`, notarized `.dmg`, `.deb`/`.rpm`/`.AppImage`, signed automatic updates, unattended access on the Mac after login | [F6](planos/F6.md) |
 | Linux interface | The app as a technician on Linux: account, My computers, opening other computers; `.deb` and `.rpm` with the libraries they need (WebKitGTK) (0.8.0) | [ARCHITECTURE](../ARCHITECTURE.md#7-platforms) |
-| Virtual monitor | Session on a computer with no monitor (Windows driver as an installer option, macOS built in), resolution with `Ctrl+Alt+0` | [monitor-virtual](monitor-virtual.md) |
+| Virtual monitor | Session on a computer with no monitor (Windows driver as an installer option, macOS built in), resolution with `Ctrl+Alt+0`; a screen that stays black (a display turned off at its button) moves to the virtual one by itself | [monitor-virtual](monitor-virtual.md) |
 
 Names in "My computers" follow the computer's current name (0.7.1).
 
@@ -29,16 +29,16 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 - [ ] **F5:** the accounts checklist ([atendimento-campo-f5](roteiros/atendimento-campo-f5.md)).
 - [ ] **F6:** install, update and uninstall on real machines ([instalacao-campo](roteiros/instalacao-campo.md)).
 - [ ] **Virtual monitor:** resolution, a ghost monitor (one that lost its cable) and uninstall on real machines;
-      the sign-in screen with only the virtual monitor ([monitor-virtual](monitor-virtual.md)).
+      the sign-in screen with only the virtual monitor; a display turned off at its button moving to the virtual one by
+      itself ([monitor-virtual](monitor-virtual.md)).
 - [ ] **Linux:** install the `.deb` on Ubuntu and the `.rpm` on Fedora, open it from the menu, sign in and access
       a computer (video, keyboard, mouse, a file received).
 
 ## Open issues
 
-- A computer online but showing a black screen with its display off: to investigate (version and the viewer's
-  title). Idea: notice an all-black capture and switch to the virtual monitor.
-- On some home networks without CGNAT, the connection still goes through the relay instead of direct: try UPnP
-  on the router.
+- On some home networks without CGNAT, the connection still goes through the relay instead of direct. The app
+  already tries to open a port on the router (UPnP, NAT-PMP and PCP, through `iroh`): UPnP still has to be turned
+  on in the router and tested.
 - The Linux `.AppImage` uses the system's WebKitGTK (`libwebkit2gtk-4.1`): where it is missing, it does not open.
 
 ## Next

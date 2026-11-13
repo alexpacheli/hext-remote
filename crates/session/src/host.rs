@@ -1237,6 +1237,96 @@ fn can_turn_off(displays: &[Display]) -> bool {
     displays.iter().any(|d| !d.virtual_display)
 }
 
+/// How long a screen must stay black before the session moves to the
+/// virtual monitor.
+const BLACK_CONFIRM: Duration = Duration::from_secs(3);
+
+/// The least time between two looks at the pixels (each reads the image
+/// back from the GPU on Windows).
+const BLACK_LOOK: Duration = Duration::from_secs(1);
+
+/// A monitor that is listed but shows nothing (turned off at the button,
+/// a TV on another input, an output the session cannot draw on): the
+/// capture works and the technician sees black. Watched in the keyframes
+/// ([`hext_capture::is_black`]; not in their size, which a hardware encoder
+/// pads): black, then black again [`BLACK_CONFIRM`] later, and the session
+/// asks for the virtual monitor, once.
+#[derive(Default)]
+struct BlackWatch {
+    /// When the screen was first seen black.
+    since: Option<Instant>,
+    /// The second look was asked for.
+    asked: bool,
+    /// Moved to the virtual monitor already (or tried): not again.
+    done: bool,
+    /// When the pixels were last looked at.
+    looked: Option<Instant>,
+}
+
+/// What the watch wants after a keyframe.
+#[derive(Debug, PartialEq, Eq)]
+enum BlackVerdict {
+    /// Nothing to do.
+    Fine,
+    /// Black for long enough: move to the virtual monitor.
+    Black,
+}
+
+impl BlackWatch {
+    /// Whether to look at this keyframe's pixels: not after the move, and
+    /// not more often than [`BLACK_LOOK`] (keyframes come quickly on a
+    /// lossy link), except for the second look.
+    fn look(&mut self, now: Instant) -> bool {
+        let second = self.asked;
+        let rested = self.looked.is_none_or(|looked| now - looked >= BLACK_LOOK);
+        if self.done || !(second || rested) {
+            return false;
+        }
+        self.looked = Some(now);
+        true
+    }
+
+    /// A keyframe went out; `black` says whether it was.
+    fn keyframe(&mut self, black: bool, now: Instant) -> BlackVerdict {
+        if self.done || !black {
+            self.since = None;
+            self.asked = false;
+            return BlackVerdict::Fine;
+        }
+        match self.since {
+            None => {
+                self.since = Some(now);
+                BlackVerdict::Fine
+            }
+            Some(since) if now - since >= BLACK_CONFIRM => {
+                self.done = true;
+                self.since = None;
+                BlackVerdict::Black
+            }
+            Some(_) => BlackVerdict::Fine,
+        }
+    }
+
+    /// Whether a keyframe is due, for the second look.
+    fn due(&mut self, now: Instant) -> bool {
+        match self.since {
+            Some(since) if !self.asked && now - since >= BLACK_CONFIRM => {
+                self.asked = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Another monitor is shown: what was seen was of the last one, and its
+    /// first keyframe is looked at (a still screen sends no other).
+    fn moved(&mut self) {
+        self.since = None;
+        self.asked = false;
+        self.looked = None;
+    }
+}
+
 /// The virtual monitor, as the capture keeps it.
 #[derive(Default)]
 struct VirtualSwitch {
@@ -1572,6 +1662,7 @@ fn capture_loop(
     // Rate control skipped the last image; it must still be sent.
     let mut skipped = false;
     let mut report = CaptureReport::new();
+    let mut black = BlackWatch::default();
 
     while !shared.stop.load(Ordering::Relaxed) {
         report.roll();
@@ -1585,6 +1676,7 @@ fn capture_loop(
             // What the encoder held back is of the other display.
             skipped = false;
             shared.keyframe.store(true, Ordering::Relaxed);
+            black.moved();
         }
         // Respect the frame-rate cap; changes accumulate in the meantime.
         if let Some(last) = last_encode {
@@ -1619,6 +1711,9 @@ fn capture_loop(
             encoder.set_bitrate(wanted);
             bitrate = wanted;
         }
+        if black.due(Instant::now()) {
+            shared.keyframe.store(true, Ordering::Relaxed);
+        }
         let forced = shared.keyframe.swap(false, Ordering::Relaxed);
         if forced {
             encoder.force_keyframe();
@@ -1632,6 +1727,14 @@ fn capture_loop(
                 let started = Instant::now();
                 match encoder.drain() {
                     Ok(Some(encoded)) => {
+                        watch_black(
+                            &mut black,
+                            &encoded,
+                            capturer.as_ref(),
+                            &layout,
+                            virtual_offered,
+                            shared,
+                        );
                         let waited = Instant::now();
                         let sent = send_frame(
                             frames,
@@ -1687,6 +1790,14 @@ fn capture_loop(
             }
         };
         let encode_time = started.elapsed();
+        watch_black(
+            &mut black,
+            &encoded,
+            capturer.as_ref(),
+            &layout,
+            virtual_offered,
+            shared,
+        );
         report.encoded += 1;
         report.longest_encode = report.longest_encode.max(encode_time);
         last_encode = Some(tick);
@@ -1710,6 +1821,37 @@ fn capture_loop(
         if !sent {
             break;
         }
+    }
+}
+
+/// Looks at a keyframe for a black screen ([`BlackWatch`]), while the session
+/// shows a monitor that is not the virtual one and could move to it.
+fn watch_black(
+    black: &mut BlackWatch,
+    encoded: &hext_codec::Encoded,
+    capturer: &dyn Capturer,
+    layout: &Layout,
+    virtual_offered: bool,
+    shared: &Shared,
+) {
+    let now = Instant::now();
+    if !encoded.keyframe || !virtual_offered || !black.look(now) {
+        return;
+    }
+    let Some(frame) = capturer.frame() else {
+        return;
+    };
+    let on_virtual = layout
+        .current
+        .is_some_and(|current| layout.displays[current].virtual_display);
+    let dark = !on_virtual && hext_capture::is_black(frame) == Some(true);
+    if black.keyframe(dark, now) == BlackVerdict::Black {
+        info!(
+            "tela preta há {}s no monitor {}: passando para o monitor virtual",
+            BLACK_CONFIRM.as_secs(),
+            layout.current.map_or(0, |current| current + 1)
+        );
+        *shared.virtual_wanted.lock().expect("lock") = Some(true);
     }
 }
 
@@ -1819,6 +1961,67 @@ mod tests {
     use hext_capture::Rect;
 
     use super::*;
+
+    #[test]
+    fn the_pixels_are_looked_at_now_and_then() {
+        let start = Instant::now();
+        let mut watch = BlackWatch::default();
+        assert!(watch.look(start));
+        assert!(!watch.look(start + Duration::from_millis(300)), "too soon");
+        assert!(watch.look(start + BLACK_LOOK));
+        watch.keyframe(true, start + BLACK_LOOK);
+        assert!(watch.due(start + BLACK_LOOK + BLACK_CONFIRM));
+        // The second look always happens.
+        assert!(watch.look(start + BLACK_LOOK + BLACK_CONFIRM));
+        watch.keyframe(true, start + BLACK_LOOK + BLACK_CONFIRM);
+        assert!(!watch.look(start + BLACK_CONFIRM * 9), "moved already");
+    }
+
+    #[test]
+    fn a_screen_black_twice_in_a_row_moves_to_the_virtual_monitor_once() {
+        let start = Instant::now();
+        let mut watch = BlackWatch::default();
+        assert_eq!(watch.keyframe(true, start), BlackVerdict::Fine);
+        assert!(!watch.due(start + Duration::from_secs(1)));
+        // A keyframe in between (the viewer lost video) does not decide.
+        assert_eq!(
+            watch.keyframe(true, start + Duration::from_secs(1)),
+            BlackVerdict::Fine
+        );
+        // Time for the second look, asked for once.
+        assert!(watch.due(start + BLACK_CONFIRM));
+        assert!(!watch.due(start + BLACK_CONFIRM));
+        assert_eq!(
+            watch.keyframe(true, start + BLACK_CONFIRM),
+            BlackVerdict::Black
+        );
+        // Once per session.
+        assert_eq!(
+            watch.keyframe(true, start + BLACK_CONFIRM * 3),
+            BlackVerdict::Fine
+        );
+        assert!(!watch.due(start + BLACK_CONFIRM * 4));
+    }
+
+    #[test]
+    fn a_screen_that_lights_up_or_another_monitor_starts_over() {
+        let start = Instant::now();
+        let mut watch = BlackWatch::default();
+        watch.keyframe(true, start);
+        assert_eq!(
+            watch.keyframe(false, start + Duration::from_secs(1)),
+            BlackVerdict::Fine
+        );
+        assert!(!watch.due(start + BLACK_CONFIRM * 2), "it lit up");
+        watch.keyframe(true, start);
+        watch.moved();
+        assert!(!watch.due(start + BLACK_CONFIRM * 2), "another monitor");
+        assert_eq!(
+            watch.keyframe(true, start + BLACK_CONFIRM * 2),
+            BlackVerdict::Fine,
+            "the first look at the new one"
+        );
+    }
 
     fn monitor(id: &str) -> Display {
         Display {

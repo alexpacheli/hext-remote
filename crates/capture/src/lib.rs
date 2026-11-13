@@ -213,9 +213,100 @@ fn even(v: u32) -> u32 {
     v & !1
 }
 
+/// Every how many pixels, across and down, [`is_black`] looks.
+const BLACK_STEP: usize = 4;
+
+/// The brightest a black screen gets: in luma (16 is black in the limited
+/// range the NV12 images use), or in any BGRA channel.
+const BLACK_LUMA: u8 = 24;
+const BLACK_BGRA: u8 = 8;
+
+/// Whether `frame` is a black screen, looking at one pixel in every
+/// [`BLACK_STEP`] across and down: none brighter than black. A screen with
+/// anything on it (a taskbar, a window, text) has bright pixels; a monitor
+/// that is listed but shows nothing does not. `None`: it could not be read.
+///
+/// Reads the image back from the GPU when it is only there (Windows): a few
+/// milliseconds, so it is for now and then, not every frame.
+pub fn is_black(frame: &Frame) -> Option<bool> {
+    let (width, height) = (frame.width as usize, frame.height as usize);
+    if !frame.data.is_empty() {
+        return Some(match frame.format {
+            PixelFormat::Nv12 => luma_is_black(&frame.data, width, height, width),
+            PixelFormat::Bgra => frame
+                .data
+                .chunks_exact(width * 4)
+                .take(height)
+                .step_by(BLACK_STEP)
+                .all(|row| {
+                    row.chunks_exact(4)
+                        .step_by(BLACK_STEP)
+                        .all(|px| px[0].max(px[1]).max(px[2]) <= BLACK_BGRA)
+                }),
+        });
+    }
+    #[cfg(windows)]
+    if let Some(texture) = &frame.texture {
+        return gpu_nv12::luma(texture, |luma, pitch| {
+            luma_is_black(luma, width, height, pitch)
+        })
+        .inspect_err(|e| tracing::debug!("tela preta: {e}"))
+        .ok();
+    }
+    None
+}
+
+/// Whether the luma plane `luma` (`height` rows of `pitch` bytes, `width`
+/// of them the image) is black.
+fn luma_is_black(luma: &[u8], width: usize, height: usize, pitch: usize) -> bool {
+    luma.chunks(pitch)
+        .take(height)
+        .step_by(BLACK_STEP)
+        .all(|row| {
+            row[..width.min(row.len())]
+                .iter()
+                .step_by(BLACK_STEP)
+                .all(|&y| y <= BLACK_LUMA)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bgra(width: u32, height: u32, pixel: [u8; 4]) -> Frame {
+        Frame {
+            width,
+            height,
+            format: PixelFormat::Bgra,
+            data: pixel.repeat((width * height) as usize),
+            #[cfg(windows)]
+            texture: None,
+        }
+    }
+
+    #[test]
+    fn a_black_screen_is_black_and_one_with_anything_on_it_is_not() {
+        assert_eq!(is_black(&bgra(64, 32, [0, 0, 0, 255])), Some(true));
+        assert_eq!(is_black(&bgra(64, 32, [5, 3, 6, 255])), Some(true));
+        assert_eq!(is_black(&bgra(64, 32, [60, 40, 30, 255])), Some(false));
+        // A taskbar: a bright band across a black screen.
+        let mut frame = bgra(64, 32, [0, 0, 0, 255]);
+        let row = 64 * 4;
+        frame.data[28 * row..].fill(200);
+        assert_eq!(is_black(&frame), Some(false));
+        // NV12 in memory: the luma plane decides (16 is black).
+        let mut nv12 = vec![16u8; 64 * 32];
+        nv12.extend(vec![128u8; 64 * 16]);
+        let mut frame = Frame {
+            format: PixelFormat::Nv12,
+            data: nv12,
+            ..bgra(64, 32, [0; 4])
+        };
+        assert_eq!(is_black(&frame), Some(true));
+        frame.data[64 * 8 + 8] = 180;
+        assert_eq!(is_black(&frame), Some(false));
+    }
 
     fn at(x: i32, y: i32) -> Display {
         Display {

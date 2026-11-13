@@ -12,8 +12,9 @@ use std::mem::ManuallyDrop;
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV,
-    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ,
+    D3D11_MAPPED_SUBRESOURCE, D3D11_TEX2D_VPIV, D3D11_TEX2D_VPOV, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
     D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT, D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT,
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC, D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0,
@@ -43,6 +44,47 @@ const OUTPUT_COLOR_SPACE: u32 = 1 << 4;
 
 fn platform(context: &str, e: windows::core::Error) -> CaptureError {
     CaptureError::Platform(format!("{context}: {e}"))
+}
+
+/// Reads the luma plane of an NV12 texture back from the GPU and hands it
+/// to `look`, with its row pitch. For now and then (a copy of the whole
+/// image, a few milliseconds), on the capture's thread: the device has
+/// multithread protection.
+pub fn luma<T>(
+    nv12: &ID3D11Texture2D,
+    look: impl FnOnce(&[u8], usize) -> T,
+) -> Result<T, CaptureError> {
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    unsafe { nv12.GetDesc(&mut desc) };
+    let device = unsafe { nv12.GetDevice() }.map_err(|e| platform("GetDevice", e))?;
+    let context =
+        unsafe { device.GetImmediateContext() }.map_err(|e| platform("GetImmediateContext", e))?;
+    let staging_desc = D3D11_TEXTURE2D_DESC {
+        Usage: D3D11_USAGE_STAGING,
+        BindFlags: 0,
+        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+        MiscFlags: 0,
+        ..desc
+    };
+    let mut staging = None;
+    unsafe { device.CreateTexture2D(&staging_desc, None, Some(&mut staging)) }
+        .map_err(|e| platform("CreateTexture2D (leitura)", e))?;
+    let staging = staging.ok_or_else(|| CaptureError::Platform("sem textura de leitura".into()))?;
+    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+    unsafe {
+        context.CopyResource(&staging, nv12);
+        context
+            .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+            .map_err(|e| platform("Map", e))?;
+    }
+    let pitch = mapped.RowPitch as usize;
+    // The Y plane: `Height` rows of `RowPitch` bytes, at the start.
+    let plane = unsafe {
+        std::slice::from_raw_parts(mapped.pData.cast::<u8>(), pitch * desc.Height as usize)
+    };
+    let seen = look(plane, pitch);
+    unsafe { context.Unmap(&staging, 0) };
+    Ok(seen)
 }
 
 pub struct Nv12Converter {
@@ -434,5 +476,33 @@ mod tests {
         // Consecutive frames go to different textures of the ring.
         let next = converter.convert(&red).unwrap();
         assert_ne!(next, nv12);
+    }
+
+    #[test]
+    fn a_black_screen_is_read_back_as_black() {
+        let Some((device, context)) = device() else {
+            eprintln!("sem dispositivo D3D11 com vídeo; teste ignorado");
+            return;
+        };
+        let size = (640, 360);
+        let mut converter =
+            match Nv12Converter::new(&device, &context, DXGI_FORMAT_B8G8R8A8_UNORM, size) {
+                Ok(converter) => converter,
+                Err(e) => {
+                    eprintln!("sem processador de vídeo ({e}); teste ignorado");
+                    return;
+                }
+            };
+        let black_or = |nv12: &ID3D11Texture2D| {
+            luma(nv12, |plane, pitch| {
+                crate::luma_is_black(plane, size.0 as usize, size.1 as usize, pitch)
+            })
+            .unwrap()
+        };
+        let black = solid(&device, size, [0, 0, 0, 255]);
+        assert!(black_or(&converter.convert(&black).unwrap()));
+        // A dark desktop is not black.
+        let dark = solid(&device, size, [60, 40, 30, 255]);
+        assert!(!black_or(&converter.convert(&dark).unwrap()));
     }
 }

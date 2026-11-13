@@ -28,7 +28,13 @@ O Parsec resolve isso com o próprio driver de monitor virtual (fechado, não po
    opção "Monitor virtual" na lista de monitores: liga o virtual e mostra ele.
 3. Ao fim da sessão, o Hext desliga o monitor virtual. Um monitor fantasma que ficasse ligado aumentaria a área
    de trabalho e "esconderia" janelas para quem usa o computador com um monitor de verdade depois.
-4. Com um monitor de verdade ligado, e sem o técnico pedir, nada muda: o virtual não é criado.
+4. **Tela preta:** um monitor que continua na lista mas não mostra nada (desligado no botão, uma TV em outra
+   entrada, uma saída em que a sessão não desenha) deixa o técnico vendo preto. O host olha os pixels do primeiro
+   keyframe de cada monitor (lendo a imagem da GPU, por amostragem) e, se ela continuar toda preta 3 s depois,
+   liga o virtual e passa para ele, uma vez por sessão. O tamanho do keyframe não serve: o codificador da placa
+   de vídeo completa um quadro preto até o bitrate (medido: 16,7 KB, o mesmo de uma tela simples).
+5. Com um monitor de verdade ligado, mostrando alguma coisa, e sem o técnico pedir, nada muda: o virtual não é
+   criado.
 
 ## Windows
 
