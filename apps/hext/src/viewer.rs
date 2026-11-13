@@ -824,8 +824,7 @@ impl Viewer {
             .is_some_and(|bar| bar.plus && u32::from(index) + 1 == bar.count)
         {
             self.show_virtual();
-        } else if matches!(self.displays.virtual_display, VirtualDisplay::On { index: on, .. } if on == index)
-        {
+        } else if self.is_virtual(index) {
             // Shown already: its next size.
             self.show_virtual();
         } else {
@@ -862,8 +861,11 @@ impl Viewer {
         let more = |d: &Displays| d.count > 1 || d.virtual_display != VirtualDisplay::None;
         let first_time = more(&told) && !more(&self.displays);
         self.displays = told;
-        // The display chosen here last time, if the host still has it.
+        // The display chosen here last time, if the host still has it. Not
+        // when the session starts on the virtual monitor: that is where a
+        // computer with ghost or dark monitors is seen.
         if std::mem::take(&mut self.restore_display)
+            && !self.is_virtual(told.current)
             && let Some(index) = self.last_display.as_ref().and_then(LastDisplay::get)
             && index < told.count
             && !self.is_virtual(index)

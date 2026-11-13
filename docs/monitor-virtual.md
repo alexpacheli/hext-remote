@@ -136,7 +136,7 @@ Ordem: 0 → 1 → 2 e 3 em paralelo → 4. Os roteiros manuais ficam em cada ma
 aponta para eles.
 
 Depois do marco 1: o visualizador lembra o último monitor escolhido em cada computador (um arquivo
-`last_display` ao lado do `known_hosts`) e volta a ele quando a sessão abre. O monitor virtual não entra na conta:
+`last_display` ao lado do `known_hosts`) e volta a ele quando a sessão abre, a não ser que ela comece no monitor virtual. O virtual não entra na conta:
 com ele ligado, a sessão já começa nele, o que resolve o caso dos monitores fantasmas.
 
 ## Marco 1: como funciona e roteiro
