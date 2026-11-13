@@ -13,6 +13,7 @@ mod resume;
 mod session_codes;
 mod stats;
 
+pub use hext_metrics::Gaps;
 pub use lockout::Lockout;
 pub use resume::{
     KeptResume, NETWORK_GRACE, RESTART_LIFETIME, ResumeToken, ResumeTokens, TokenHash,

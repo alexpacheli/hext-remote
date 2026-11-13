@@ -168,6 +168,18 @@ do host é o que produz as paradas longas.
 Cada item traz o ganho esperado, o custo, o risco e como medir antes e depois. Os itens 1 a 3 não mudam o comportamento
 e devem vir primeiro: sem eles, as demais mudanças não têm como ser comparadas.
 
+**Já aplicado (novembro de 2026, antes da F7):**
+
+- **Item 2, em parte:** o maior intervalo entre quadros, contando só enquanto a imagem se move (de 250 ms para cima é tela
+  parada), e quantos passaram de 25 ms em cada segundo. No host, no fim da linha `captura:`; no visualizador, numa linha
+  `apresentação:` (as duas com `RUST_LOG=hext_video=debug`). O instante da captura dentro do `VideoFrame` ainda não entrou:
+  muda o protocolo e fica para quando a medição pedir.
+- **Item 4:** cada prazo da captura vem do prazo anterior (`próximo += intervalo`), não do instante em que o quadro
+  começou; depois de uma tela parada, conta de novo a partir do quadro que a quebrou. O atraso de cada `sleep` não se
+  acumula mais, e a 60 por segundo a captura acompanha a tela de 60 Hz. O limite continua valendo num monitor de 144 Hz.
+
+Os itens 1 e 3 continuam pedindo uma rodada em máquinas reais (o roteiro está no fim).
+
 ### 1. Igualar o caminho e o cenário da comparação
 
 - **O quê:** repetir Hext e Parsec com o host no cabo (ou, ao menos, os dois na mesma sub-rede), o Tailscale desligado em
@@ -282,7 +294,7 @@ e devem vir primeiro: sem eles, as demais mudanças não têm como ser comparada
 ## Roteiro da próxima medição
 
 1. Itens 1 e 2: mesma sub-rede, sem Tailscale, host no cabo; Hext e Parsec com o mesmo gesto, filmados.
-2. Ler `seguradas` (item 3) e o maior intervalo entre quadros capturados.
+2. Ler `seguradas` (item 3) e o maior intervalo entre quadros: `captura:` no host e `apresentação:` no visualizador.
 3. Repetir no Wi-Fi do host, para separar o efeito da rede.
 4. Registrar aqui, como as medições anteriores: latência de ponta a ponta de cada programa, quadros por segundo, maior
    intervalo, RTT, taxa e o que se viu na tela.

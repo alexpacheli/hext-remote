@@ -119,12 +119,64 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
+/// Gaps between frames while the picture moves: the stutter an average frame
+/// rate hides (57 frames a second can still be one 33 ms gap every quarter
+/// of a second). A gap of [`Gaps::STILL`] or more is a still screen, not a
+/// stutter, and does not count.
+#[derive(Debug, Default)]
+pub struct Gaps {
+    last: Option<std::time::Instant>,
+    longest: Duration,
+    late: u32,
+}
+
+impl Gaps {
+    /// Longer than this, nothing was moving.
+    pub const STILL: Duration = Duration::from_millis(250);
+    /// Longer than this, a frame of a 60 Hz screen was missed.
+    pub const LATE: Duration = Duration::from_millis(25);
+
+    /// A frame at `now`.
+    pub fn frame(&mut self, now: std::time::Instant) {
+        if let Some(last) = self.last.replace(now) {
+            let gap = now.saturating_duration_since(last);
+            if gap < Self::STILL {
+                self.longest = self.longest.max(gap);
+                self.late += u32::from(gap > Self::LATE);
+            }
+        }
+    }
+
+    /// The longest gap and how many were over [`Gaps::LATE`] since the last
+    /// call; counting starts over (from the last frame).
+    pub fn take(&mut self) -> (Duration, u32) {
+        let taken = (self.longest, self.late);
+        self.longest = Duration::ZERO;
+        self.late = 0;
+        taken
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn millis(v: u64) -> Duration {
         Duration::from_millis(v)
+    }
+
+    #[test]
+    fn only_gaps_while_moving_count() {
+        let mut gaps = Gaps::default();
+        let t0 = std::time::Instant::now();
+        for at in [0, 16, 33, 66, 83, 2000, 2016] {
+            gaps.frame(t0 + millis(at));
+        }
+        // 33 → 66 is a missed frame; 83 → 2000 is a still screen.
+        assert_eq!(gaps.take(), (millis(33), 1));
+        assert_eq!(gaps.take(), (Duration::ZERO, 0));
+        gaps.frame(t0 + millis(2050));
+        assert_eq!(gaps.take(), (millis(34), 1));
     }
 
     #[test]
