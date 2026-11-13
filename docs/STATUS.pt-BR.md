@@ -44,8 +44,8 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 
 ## A seguir
 
-- **F7 — Extras:** host no Linux (ser acessado), áudio, tela de privacidade, gravação de sessão, HEVC/AV1,
-  Wake-on-LAN, mobile e web.
+- **F7 — Extras** ([plano](planos/F7.md)): tela de privacidade, áudio, Wake-on-LAN e host no Linux (ser acessado);
+  gravação de sessão, HEVC/AV1, vários técnicos, mobile e web quando houver demanda.
 - **Fluidez, por último e com calma:** comparar lado a lado com o Parsec, na mesma rede e sem Tailscale, e aplicar o
   que o estudo achou ([fluidez-parsec](estudos/fluidez-parsec.md)). Já entrou: a captura acompanha a cadência da tela,
   e o log mostra o maior intervalo entre quadros nos dois lados.
