@@ -2491,7 +2491,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hext"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2530,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "hext-capture"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "hext-clipboard"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "arboard",
  "hext-proto",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "hext-codec"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-media",
@@ -2575,7 +2575,7 @@ dependencies = [
 
 [[package]]
 name = "hext-crypto"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "argon2",
  "hex",
@@ -2588,7 +2588,7 @@ dependencies = [
 
 [[package]]
 name = "hext-input"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "hext-proto",
  "objc2-core-foundation",
@@ -2600,11 +2600,11 @@ dependencies = [
 
 [[package]]
 name = "hext-metrics"
-version = "0.8.1"
+version = "0.8.2"
 
 [[package]]
 name = "hext-net"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2622,7 +2622,7 @@ dependencies = [
 
 [[package]]
 name = "hext-proto"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "postcard",
  "serde",
@@ -2632,7 +2632,7 @@ dependencies = [
 
 [[package]]
 name = "hext-render"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "bytemuck",
  "hext-codec",
@@ -2646,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "hext-server"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "hext-session"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "hext-capture",
  "hext-clipboard",
@@ -2689,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "hext-signal"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "futures-util",
  "hex",
@@ -7733,7 +7733,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vdd-spike"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "hext-capture",
