@@ -15,7 +15,7 @@ Where Hext Remote stands: what is done, what is being checked and what comes nex
 | F5 — Accounts | Accounts with 2FA, signed device list, entry without consent for the owner's devices, sharing, access log | [F5](planos/F5.md) |
 | F6 — Distribution | `.msi`, portable `.exe`, notarized `.dmg`, `.deb`/`.rpm`/`.AppImage`, signed automatic updates, unattended access on the Mac after login | [F6](planos/F6.md) |
 | Linux interface | The app as a technician on Linux: account, My computers, opening other computers; `.deb` and `.rpm` with the libraries they need (WebKitGTK) (0.8.0) | [ARCHITECTURE](../ARCHITECTURE.md#7-platforms) |
-| Virtual monitor | Session on a computer with no monitor (Windows driver as an installer option, macOS built in), resolution with `Ctrl+Alt+0`; a screen that stays black (a display turned off at its button) moves to the virtual one by itself | [monitor-virtual](monitor-virtual.md) |
+| Virtual monitor | Session on a computer with no monitor (Windows driver as an installer option, macOS built in), resolution with `Ctrl+Alt+0`; a screen that stays black (a display turned off at its button) moves to the virtual one by itself; the viewer goes back to the last monitor chosen for each computer | [monitor-virtual](monitor-virtual.md) |
 
 Names in "My computers" follow the computer's current name (0.7.1).
 
@@ -45,7 +45,6 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 
 - **Mac sign-in screen:** a system LaunchDaemon plus per-session agents, so a Mac is reachable after a restart,
   before anyone logs in ([F6, section 3.1](planos/F6.md#31-marco-3-o-que-ficou-pronto-e-o-que-falta)).
-- **The viewer remembers the last monitor** chosen for each computer.
 - **Smoothness:** compare with Parsec side by side and apply what the study found
   ([fluidez-parsec](estudos/fluidez-parsec.md)).
 - **F7 — Extras:** Linux host (being accessed), audio, privacy screen, session recording, HEVC/AV1, Wake-on-LAN,

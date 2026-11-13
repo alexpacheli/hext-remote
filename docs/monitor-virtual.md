@@ -135,8 +135,9 @@ Fica para a F7, com o host no Linux (ser acessado; a interface de técnico já e
 Ordem: 0 → 1 → 2 e 3 em paralelo → 4. Os roteiros manuais ficam em cada marco, abaixo; o [testes.md](roteiros/testes.md)
 aponta para eles.
 
-Fica para depois do marco 1: o visualizador lembrar o último monitor escolhido para cada computador (com o
-virtual ligado, a sessão já começa nele, o que resolve o caso dos monitores fantasmas).
+Depois do marco 1: o visualizador lembra o último monitor escolhido em cada computador (um arquivo
+`last_display` ao lado do `known_hosts`) e volta a ele quando a sessão abre. O monitor virtual não entra na conta:
+com ele ligado, a sessão já começa nele, o que resolve o caso dos monitores fantasmas.
 
 ## Marco 1: como funciona e roteiro
 
