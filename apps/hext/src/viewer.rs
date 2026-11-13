@@ -27,10 +27,10 @@ use hext_render::{
 };
 use hext_session::client::{self, ClientHandle};
 use hext_session::files::{Confirm, OwnFiles, Stage, Transfer, size_text};
-use hext_session::{NETWORK_GRACE, ResumeToken, SessionError};
+use hext_session::{Gaps, NETWORK_GRACE, ResumeToken, SessionError};
 use hext_signal::chain::BindAsk;
 use hext_signal::{DeviceId, KnownHosts};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Modifiers, MouseScrollDelta, WindowEvent};
@@ -476,6 +476,7 @@ impl Viewers {
             displays: Displays::default(),
             last_display,
             restore_display: true,
+            presented: (Gaps::default(), Instant::now()),
             display_bar: None,
             switching: None,
             picture: None,
@@ -656,6 +657,9 @@ struct Viewer {
     /// The kept display is still to be asked for, once the host tells its
     /// displays.
     restore_display: bool,
+    /// Gaps between the frames shown while the picture moves, and since
+    /// when: one line a second in the video log.
+    presented: (Gaps, Instant),
     /// The numbered buttons on screen, next to the full screen one.
     display_bar: Option<DisplayBar>,
     /// The display asked for, and when.
@@ -892,6 +896,19 @@ impl Viewer {
         let mut arrived = false;
         if let Some((frame, display)) = self.latest.take() {
             timed("upload", || renderer.upload(&frame));
+            let now = Instant::now();
+            let (gaps, since) = &mut self.presented;
+            gaps.frame(now);
+            if now.duration_since(*since) >= Duration::from_secs(1) {
+                *since = now;
+                let (gap, late) = gaps.take();
+                debug!(
+                    target: hext_net::video::LOG_TARGET,
+                    "apresentação: maior intervalo {} ms ({late} acima de {} ms)",
+                    gap.as_millis(),
+                    Gaps::LATE.as_millis(),
+                );
+            }
             arrived = self.picture.replace(display) != Some(display);
         }
         if let Err(e) = timed("render", || renderer.render()) {

@@ -14,6 +14,7 @@ use hext_codec::EncoderSettings;
 use hext_crypto::PublicKey;
 use hext_crypto::pake::Verifier;
 use hext_input::Area;
+use hext_metrics::Gaps;
 use hext_net::video::{LOG_TARGET, ResendRequest, VideoSender};
 use hext_net::{Admission, Connection, ConnectionError, NetError};
 use hext_proto::{
@@ -1143,6 +1144,47 @@ fn restart(config: &HostConfig, session: &ActiveSession, token: Option<&crate::T
     }
 }
 
+/// Paces the capture to the frame-rate cap. Each deadline follows the one
+/// before, not the moment the frame began, so the sleep's lateness does not
+/// add up: at 60 a second the capture keeps step with a 60 Hz screen, instead
+/// of drifting behind it and missing one of its frames every quarter second
+/// (the stutter when scrolling, with everything "at 60").
+struct Pace {
+    interval: Duration,
+    next: Option<Instant>,
+}
+
+impl Pace {
+    fn new(max_fps: f32) -> Self {
+        Self {
+            interval: Duration::from_secs_f32(1.0 / max_fps.max(1.0)),
+            next: None,
+        }
+    }
+
+    /// Sleeps until the next frame is due.
+    fn wait(&self) {
+        if let Some(wait) = self
+            .next
+            .map(|next| next.saturating_duration_since(Instant::now()))
+        {
+            std::thread::sleep(wait);
+        }
+    }
+
+    /// The work of a frame began at `tick`.
+    fn done(&mut self, tick: Instant) {
+        self.next = Some(match self.next {
+            // In step: a frame after the last deadline.
+            Some(next) if tick.saturating_duration_since(next) < self.interval => {
+                next + self.interval
+            }
+            // The first frame, or the first after a still screen: from now.
+            _ => tick + self.interval,
+        });
+    }
+}
+
 /// What the capture did in a second, for the log (`hext_video=debug`): when
 /// the frame rate falls and the network was not busy, this says why.
 struct CaptureReport {
@@ -1156,6 +1198,8 @@ struct CaptureReport {
     /// frames.
     longest_encode: Duration,
     network: Duration,
+    /// Gaps between the encoded images while the screen moved.
+    gaps: Gaps,
 }
 
 impl CaptureReport {
@@ -1167,6 +1211,7 @@ impl CaptureReport {
             skipped: 0,
             longest_encode: Duration::ZERO,
             network: Duration::ZERO,
+            gaps: Gaps::default(),
         }
     }
 
@@ -1174,17 +1219,25 @@ impl CaptureReport {
         if self.since.elapsed() < Duration::from_secs(1) {
             return;
         }
+        let (gap, late) = self.gaps.take();
         debug!(
             target: LOG_TARGET,
             "captura: {} imagens novas, {} codificadas (a mais lenta em {} ms), {} seguradas pelo \
-             codificador, {} ms esperando a rede",
+             codificador, {} ms esperando a rede, maior intervalo {} ms ({late} acima de {} ms)",
             self.changed,
             self.encoded,
             self.longest_encode.as_millis(),
             self.skipped,
             self.network.as_millis(),
+            gap.as_millis(),
+            Gaps::LATE.as_millis(),
         );
-        *self = Self::new();
+        // (The gaps go on from the last image.)
+        let gaps = std::mem::take(&mut self.gaps);
+        *self = Self {
+            gaps,
+            ..Self::new()
+        };
     }
 }
 
@@ -1655,8 +1708,7 @@ fn capture_loop(
     };
     info!("codificador: {}", encoder.name());
     let mut hardware = encoder.is_hardware();
-    let min_interval = Duration::from_secs_f32(1.0 / config.encoder.max_fps.max(1.0));
-    let mut last_encode: Option<Instant> = None;
+    let mut pace = Pace::new(config.encoder.max_fps);
     let mut seq = 0u64;
     let mut bitrate = config.encoder.bitrate_bps;
     // Rate control skipped the last image; it must still be sent.
@@ -1679,14 +1731,7 @@ fn capture_loop(
             black.moved();
         }
         // Respect the frame-rate cap; changes accumulate in the meantime.
-        if let Some(last) = last_encode {
-            let since = last.elapsed();
-            if since < min_interval {
-                std::thread::sleep(min_interval - since);
-            }
-        }
-
-        // The frame-rate cap counts from the start of each frame's work.
+        pace.wait();
         let tick = Instant::now();
         // Owed work (a skipped image, a keyframe) must not wait for a change.
         let owed = skipped || shared.keyframe.load(Ordering::Relaxed);
@@ -1727,6 +1772,7 @@ fn capture_loop(
                 let started = Instant::now();
                 match encoder.drain() {
                     Ok(Some(encoded)) => {
+                        report.gaps.frame(Instant::now());
                         watch_black(
                             &mut black,
                             &encoded,
@@ -1776,7 +1822,7 @@ fn capture_loop(
             Ok(None) => {
                 skipped = true;
                 report.skipped += 1;
-                last_encode = Some(tick);
+                pace.done(tick);
                 continue;
             }
             Err(e) => {
@@ -1800,7 +1846,8 @@ fn capture_loop(
         );
         report.encoded += 1;
         report.longest_encode = report.longest_encode.max(encode_time);
-        last_encode = Some(tick);
+        report.gaps.frame(Instant::now());
+        pace.done(tick);
         skipped = false;
         if hardware != encoder.is_hardware() {
             hardware = encoder.is_hardware();
@@ -1961,6 +2008,24 @@ mod tests {
     use hext_capture::Rect;
 
     use super::*;
+
+    #[test]
+    fn the_capture_keeps_step_however_late_each_frame_wakes() {
+        let mut pace = Pace::new(50.0);
+        let ms = Duration::from_millis;
+        let t0 = Instant::now();
+        pace.done(t0);
+        // Each frame begins 3 ms late; the deadlines stay 20 ms apart.
+        for n in 1..=10 {
+            let due = pace.next.unwrap();
+            assert_eq!(due, t0 + ms(20 * n));
+            pace.done(due + ms(3));
+        }
+        // After a still screen, it counts from the frame that broke it.
+        let late = pace.next.unwrap() + ms(500);
+        pace.done(late);
+        assert_eq!(pace.next, Some(late + ms(20)));
+    }
 
     #[test]
     fn the_pixels_are_looked_at_now_and_then() {
