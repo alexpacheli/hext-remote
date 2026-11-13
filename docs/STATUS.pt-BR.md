@@ -15,7 +15,7 @@ versão. **Última atualização: novembro de 2026, versão 0.8.1.**
 | F5 — Contas | Contas com 2FA, lista assinada de dispositivos, entrada sem aceite para os dispositivos do dono, compartilhamento, registro de acessos | [F5](planos/F5.md) |
 | F6 — Distribuição | `.msi`, `.exe` portátil, `.dmg` notarizado, `.deb`/`.rpm`/`.AppImage`, atualização automática assinada, acesso não assistido no Mac depois do login | [F6](planos/F6.md) |
 | Interface no Linux | O app como técnico no Linux: conta, Meus computadores, acessar outros computadores; `.deb` e `.rpm` com as bibliotecas de que precisam (WebKitGTK) (0.8.0) | [arquitetura](../ARCHITECTURE.pt-BR.md#7-plataformas) |
-| Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0` | [monitor-virtual](monitor-virtual.md) |
+| Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0`; uma tela que fica preta (monitor desligado no botão) passa para o virtual sozinha | [monitor-virtual](monitor-virtual.md) |
 
 Os nomes em "Meus computadores" seguem o nome atual de cada computador (0.7.1).
 
@@ -29,16 +29,14 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - [ ] **F5:** o roteiro das contas ([atendimento-campo-f5](roteiros/atendimento-campo-f5.md)).
 - [ ] **F6:** instalar, atualizar e desinstalar em máquinas reais ([instalacao-campo](roteiros/instalacao-campo.md)).
 - [ ] **Monitor virtual:** resolução, monitor fantasma (um que perdeu o cabo) e desinstalação em máquinas reais;
-      a tela de login só com o monitor virtual ([monitor-virtual](monitor-virtual.md)).
+      a tela de login só com o monitor virtual; um monitor desligado no botão passando sozinho para o virtual ([monitor-virtual](monitor-virtual.md)).
 - [ ] **Linux:** instalar o `.deb` num Ubuntu e o `.rpm` num Fedora, abrir pelo menu, entrar na conta e acessar
       um computador (vídeo, teclado, mouse, arquivo recebido).
 
 ## Em aberto
 
-- Um computador online mostrando tela preta com o monitor desligado: investigar (versão e título do
-  visualizador). Ideia: perceber uma captura toda preta e passar para o monitor virtual.
-- Em algumas redes domésticas sem CGNAT, a conexão ainda passa pelo relay em vez de ir direto: testar o UPnP no
-  roteador.
+- Em algumas redes domésticas sem CGNAT, a conexão ainda passa pelo relay em vez de ir direto. O app já tenta
+  abrir a porta no roteador (UPnP, NAT-PMP e PCP, pelo `iroh`): falta ligar o UPnP no roteador e testar.
 - O `.AppImage` do Linux usa o WebKitGTK do sistema (`libwebkit2gtk-4.1`): onde ele não existe, não abre.
 
 ## A seguir
