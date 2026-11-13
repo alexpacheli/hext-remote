@@ -45,8 +45,8 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 
 ## Next
 
-- **Smoothness:** compare with Parsec side by side, on the same network without Tailscale, and apply what the study
-  found ([fluidez-parsec](estudos/fluidez-parsec.md)). Already in: the capture keeps step with the screen, and the log
-  shows the longest gap between frames on both sides.
 - **F7 — Extras:** Linux host (being accessed), audio, privacy screen, session recording, HEVC/AV1, Wake-on-LAN,
   mobile and web.
+- **Smoothness, last and with care:** compare with Parsec side by side, on the same network without Tailscale, and
+  apply what the study found ([fluidez-parsec](estudos/fluidez-parsec.md)). Already in: the capture keeps step with
+  the screen, and the log shows the longest gap between frames on both sides.
