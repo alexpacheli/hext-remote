@@ -15,7 +15,7 @@ versão. **Última atualização: novembro de 2026, versão 0.8.1.**
 | F5 — Contas | Contas com 2FA, lista assinada de dispositivos, entrada sem aceite para os dispositivos do dono, compartilhamento, registro de acessos | [F5](planos/F5.md) |
 | F6 — Distribuição | `.msi`, `.exe` portátil, `.dmg` notarizado, `.deb`/`.rpm`/`.AppImage`, atualização automática assinada, acesso não assistido no Mac depois do login | [F6](planos/F6.md) |
 | Interface no Linux | O app como técnico no Linux: conta, Meus computadores, acessar outros computadores; `.deb` e `.rpm` com as bibliotecas de que precisam (WebKitGTK) (0.8.0) | [arquitetura](../ARCHITECTURE.pt-BR.md#7-plataformas) |
-| Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0`; uma tela que fica preta (monitor desligado no botão) passa para o virtual sozinha | [monitor-virtual](monitor-virtual.md) |
+| Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0`; uma tela que fica preta (monitor desligado no botão) passa para o virtual sozinha; o visualizador volta ao último monitor escolhido em cada computador | [monitor-virtual](monitor-virtual.md) |
 
 Os nomes em "Meus computadores" seguem o nome atual de cada computador (0.7.1).
 
@@ -43,7 +43,6 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 
 - **Tela de login do Mac:** um LaunchDaemon do sistema e agentes por sessão, para alcançar um Mac depois de
   reiniciar, antes de alguém entrar ([F6, seção 3.1](planos/F6.md#31-marco-3-o-que-ficou-pronto-e-o-que-falta)).
-- **O visualizador lembrar o último monitor** escolhido em cada computador.
 - **Fluidez:** comparar lado a lado com o Parsec e aplicar o que o estudo achou
   ([fluidez-parsec](estudos/fluidez-parsec.md)).
 - **F7 — Extras:** host no Linux (ser acessado), áudio, tela de privacidade, gravação de sessão, HEVC/AV1,

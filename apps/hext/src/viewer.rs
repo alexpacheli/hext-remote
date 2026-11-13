@@ -179,6 +179,58 @@ struct Route {
     id: DeviceId,
 }
 
+/// The display last chosen on a host (by ID), kept next to `known_hosts`
+/// in `last_display` (one "ID=index" line per host): its next session
+/// starts there again. Only displays chosen by hand, and not the virtual
+/// monitor, which exists only while a session keeps it.
+struct LastDisplay {
+    path: std::path::PathBuf,
+    id: DeviceId,
+}
+
+impl LastDisplay {
+    fn of(route: &Route) -> Option<Self> {
+        Some(Self {
+            path: route
+                .net
+                .known
+                .as_ref()?
+                .path()
+                .with_file_name("last_display"),
+            id: route.id,
+        })
+    }
+
+    fn read(&self) -> HashMap<DeviceId, u8> {
+        std::fs::read_to_string(&self.path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let (id, index) = line.split_once('=')?;
+                Some((id.parse().ok()?, index.trim().parse().ok()?))
+            })
+            .collect()
+    }
+
+    fn get(&self) -> Option<u8> {
+        self.read().get(&self.id).copied()
+    }
+
+    fn set(&self, index: u8) {
+        let mut all = self.read();
+        if all.insert(self.id, index) == Some(index) {
+            return;
+        }
+        let mut text = String::new();
+        for (id, index) in &all {
+            text.push_str(&format!("{id}={index}\n"));
+        }
+        if let Err(e) = std::fs::write(&self.path, text) {
+            warn!("{}: {e}", self.path.display());
+        }
+    }
+}
+
 /// A session just opened.
 struct Started {
     session: ClientHandle,
@@ -386,6 +438,7 @@ impl Viewers {
                 tell: tell.clone(),
             })
         });
+        let last_display = back.as_ref().and_then(|back| LastDisplay::of(&back.route));
         let viewer = Viewer {
             n,
             runtime,
@@ -421,6 +474,8 @@ impl Viewers {
             button_near: false,
             handle: None,
             displays: Displays::default(),
+            last_display,
+            restore_display: true,
             display_bar: None,
             switching: None,
             picture: None,
@@ -596,6 +651,11 @@ struct Viewer {
     handle: Option<VideoRect>,
     /// The host's displays, as last told (kept while coming back).
     displays: Displays,
+    /// Where the display chosen on this host is kept (by ID only).
+    last_display: Option<LastDisplay>,
+    /// The kept display is still to be asked for, once the host tells its
+    /// displays.
+    restore_display: bool,
     /// The numbered buttons on screen, next to the full screen one.
     display_bar: Option<DisplayBar>,
     /// The display asked for, and when.
@@ -718,7 +778,17 @@ impl Viewer {
         {
             session.select_display(index);
             self.switching = Some((index, Instant::now()));
+            if !self.is_virtual(index)
+                && let Some(last) = &self.last_display
+            {
+                last.set(index);
+            }
         }
+    }
+
+    /// Whether display `index` is the host's virtual monitor.
+    fn is_virtual(&self, index: u8) -> bool {
+        matches!(self.displays.virtual_display, VirtualDisplay::On { index: on, .. } if on == index)
     }
 
     /// Ctrl+Alt+0 and the "+" button: the host's virtual monitor, turned on
@@ -754,8 +824,7 @@ impl Viewer {
             .is_some_and(|bar| bar.plus && u32::from(index) + 1 == bar.count)
         {
             self.show_virtual();
-        } else if matches!(self.displays.virtual_display, VirtualDisplay::On { index: on, .. } if on == index)
-        {
+        } else if self.is_virtual(index) {
             // Shown already: its next size.
             self.show_virtual();
         } else {
@@ -792,6 +861,18 @@ impl Viewer {
         let more = |d: &Displays| d.count > 1 || d.virtual_display != VirtualDisplay::None;
         let first_time = more(&told) && !more(&self.displays);
         self.displays = told;
+        // The display chosen here last time, if the host still has it. Not
+        // when the session starts on the virtual monitor: that is where a
+        // computer with ghost or dark monitors is seen.
+        if std::mem::take(&mut self.restore_display)
+            && !self.is_virtual(told.current)
+            && let Some(index) = self.last_display.as_ref().and_then(LastDisplay::get)
+            && index < told.count
+            && !self.is_virtual(index)
+        {
+            info!("voltando ao monitor {}, o último escolhido", index + 1);
+            self.select_display(index);
+        }
         // There is more to see: let it be known once.
         if first_time {
             self.button_hint = Some(Instant::now() + BUTTON_HINT);
@@ -2209,6 +2290,35 @@ fn decoder(choice: CodecChoice) -> DecoderPreference {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_display_chosen_on_each_host_is_kept() {
+        let dir = std::env::temp_dir().join(format!("hext-last-display-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("last_display");
+        let _ = std::fs::remove_file(&path);
+        let one = LastDisplay {
+            path: path.clone(),
+            id: "123456789".parse().unwrap(),
+        };
+        let other = LastDisplay {
+            path: path.clone(),
+            id: "987654321".parse().unwrap(),
+        };
+        assert_eq!(one.get(), None, "nothing kept yet");
+        one.set(2);
+        other.set(1);
+        assert_eq!(one.get(), Some(2));
+        assert_eq!(other.get(), Some(1));
+        one.set(0);
+        assert_eq!(one.get(), Some(0));
+        assert_eq!(other.get(), Some(1), "each host its own");
+        // A damaged line is skipped, not the whole file.
+        std::fs::write(&path, "lixo\n987 654 321=3\n").unwrap();
+        assert_eq!(other.get(), Some(3));
+        assert_eq!(one.get(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn picture(width: u32) -> YuvFrame {
         YuvFrame {
