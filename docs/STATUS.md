@@ -39,12 +39,12 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 - On some home networks without CGNAT, the connection still goes through the relay instead of direct. The app
   already tries to open a port on the router (UPnP, NAT-PMP and PCP, through `iroh`): UPnP still has to be turned
   on in the router and tested.
+- On a Mac, after a restart Hext comes back only when someone signs in. Left as is on purpose
+  ([DECISIONS](DECISIONS.md#mac-no-sign-in-screen)): with FileVault on, macOS asks for a password before it loads.
 - The Linux `.AppImage` uses the system's WebKitGTK (`libwebkit2gtk-4.1`): where it is missing, it does not open.
 
 ## Next
 
-- **Mac sign-in screen:** a system LaunchDaemon plus per-session agents, so a Mac is reachable after a restart,
-  before anyone logs in ([F6, section 3.1](planos/F6.md#31-marco-3-o-que-ficou-pronto-e-o-que-falta)).
 - **Smoothness:** compare with Parsec side by side, on the same network without Tailscale, and apply what the study
   found ([fluidez-parsec](estudos/fluidez-parsec.md)). Already in: the capture keeps step with the screen, and the log
   shows the longest gap between frames on both sides.

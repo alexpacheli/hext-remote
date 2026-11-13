@@ -92,8 +92,8 @@ ui (sempre como o usuário)  aberta pelo serviço, fala com ele por um pipe que 
   Configurações, logs e auditoria ficam em `C:\ProgramData\HextRemote`, que só administradores abrem.
 
 **macOS:** o app abre no login (um LaunchAgent do usuário) e oferece o mesmo acesso não assistido (senha,
-técnicos vinculados, conta), guardado na pasta do usuário. A tela de login, antes de alguém entrar, precisa de
-um LaunchDaemon do sistema que ainda não foi feito ([STATUS](docs/STATUS.pt-BR.md)).
+técnicos vinculados, conta), guardado na pasta do usuário. Depois de reiniciar, volta quando alguém entra na
+conta: não há serviço do sistema para a tela de login ([decisões](docs/DECISIONS.pt-BR.md#mac-sem-tela-de-login)).
 
 **Linux:** a interface, só como técnico: conta, Meus computadores, recentes e acessar outros computadores, cada
 um na janela do visualizador. Ser acessado (host) vem depois.
