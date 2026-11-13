@@ -29,7 +29,8 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - [ ] **F5:** o roteiro das contas ([atendimento-campo-f5](roteiros/atendimento-campo-f5.md)).
 - [ ] **F6:** instalar, atualizar e desinstalar em máquinas reais ([instalacao-campo](roteiros/instalacao-campo.md)).
 - [ ] **Monitor virtual:** resolução, monitor fantasma (um que perdeu o cabo) e desinstalação em máquinas reais;
-      a tela de login só com o monitor virtual; um monitor desligado no botão passando sozinho para o virtual ([monitor-virtual](monitor-virtual.md)).
+      a tela de login só com o monitor virtual ([monitor-virtual](monitor-virtual.md)). Monitor desligado no botão:
+      conferido (novembro de 2026).
 - [ ] **Linux:** instalar o `.deb` num Ubuntu e o `.rpm` num Fedora, abrir pelo menu, entrar na conta e acessar
       um computador (vídeo, teclado, mouse, arquivo recebido).
 

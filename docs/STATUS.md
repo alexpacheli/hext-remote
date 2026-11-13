@@ -29,8 +29,8 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 - [ ] **F5:** the accounts checklist ([atendimento-campo-f5](roteiros/atendimento-campo-f5.md)).
 - [ ] **F6:** install, update and uninstall on real machines ([instalacao-campo](roteiros/instalacao-campo.md)).
 - [ ] **Virtual monitor:** resolution, a ghost monitor (one that lost its cable) and uninstall on real machines;
-      the sign-in screen with only the virtual monitor; a display turned off at its button moving to the virtual one by
-      itself ([monitor-virtual](monitor-virtual.md)).
+      the sign-in screen with only the virtual monitor ([monitor-virtual](monitor-virtual.md)). A display turned off at
+      its button: checked (November 2026).
 - [ ] **Linux:** install the `.deb` on Ubuntu and the `.rpm` on Fedora, open it from the menu, sign in and access
       a computer (video, keyboard, mouse, a file received).
 
