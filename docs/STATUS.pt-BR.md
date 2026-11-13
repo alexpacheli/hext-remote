@@ -3,7 +3,7 @@
 [English](STATUS.md) | **Português**
 
 Em que pé está o Hext Remote: o que está pronto, o que está em conferência e o que vem a seguir. Atualizado a cada
-versão. **Última atualização: novembro de 2026, versão 0.8.1.**
+versão. **Última atualização: novembro de 2026, versão 0.8.2.**
 
 ## Pronto
 
@@ -15,7 +15,7 @@ versão. **Última atualização: novembro de 2026, versão 0.8.1.**
 | F5 — Contas | Contas com 2FA, lista assinada de dispositivos, entrada sem aceite para os dispositivos do dono, compartilhamento, registro de acessos | [F5](planos/F5.md) |
 | F6 — Distribuição | `.msi`, `.exe` portátil, `.dmg` notarizado, `.deb`/`.rpm`/`.AppImage`, atualização automática assinada, acesso não assistido no Mac depois do login | [F6](planos/F6.md) |
 | Interface no Linux | O app como técnico no Linux: conta, Meus computadores, acessar outros computadores; `.deb` e `.rpm` com as bibliotecas de que precisam (WebKitGTK) (0.8.0) | [arquitetura](../ARCHITECTURE.pt-BR.md#7-plataformas) |
-| Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0`; uma tela que fica preta (monitor desligado no botão) passa para o virtual sozinha; o visualizador volta ao último monitor escolhido em cada computador | [monitor-virtual](monitor-virtual.md) |
+| Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0`; uma tela que fica preta (monitor desligado no botão) passa para o virtual sozinha; o visualizador volta ao último monitor escolhido em cada computador (0.8.2) | [monitor-virtual](monitor-virtual.md) |
 
 Os nomes em "Meus computadores" seguem o nome atual de cada computador (0.7.1).
 
