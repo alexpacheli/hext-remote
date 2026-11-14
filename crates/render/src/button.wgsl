@@ -1,5 +1,6 @@
-// The full screen button, drawn over the video: a dark pill with four corner
-// brackets. Twice as wide as tall; distances are in units of its height / 2.
+// The buttons drawn over the video: dark pills with an icon (the full screen
+// one: four corner brackets). Twice as wide as tall; distances are in units
+// of the height / 2.
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
@@ -70,6 +71,81 @@ fn fs_chat(in: VsOut) -> @location(0) vec4<f32> {
         segment(p, vec2<f32>(-0.45, 0.7), vec2<f32>(0.05, 0.35)),
     );
     return paint(p, min(bubble, tail));
+}
+
+// As `paint`, for a button that is on: light, with dark ink.
+fn paint_on(p: vec2<f32>, icon: f32) -> vec4<f32> {
+    let edge = fwidth(p.y);
+    let inside = 1.0 - smoothstep(-edge, edge, pill(p));
+    let line = 1.0 - smoothstep(-edge, edge, icon - 0.07);
+    return vec4<f32>(vec3<f32>(mix(0.95, 0.1, line)), inside);
+}
+
+// An eye struck through: what the person at the computer sees is hidden.
+fn hidden_eye(p: vec2<f32>) -> f32 {
+    // The lids: where two circles meet, below and above the middle.
+    let r = 0.9;
+    let k = 0.55;
+    let lids = abs(max(length(p - vec2<f32>(0.0, k)), length(p + vec2<f32>(0.0, k))) - r);
+    let pupil = abs(length(p) - 0.15);
+    let slash = segment(p, vec2<f32>(-0.55, 0.55), vec2<f32>(0.55, -0.55));
+    return min(min(lids, pupil), slash);
+}
+
+// The privacy screen, off.
+@fragment
+fn fs_privacy(in: VsOut) -> @location(0) vec4<f32> {
+    return paint(in.p, hidden_eye(in.p));
+}
+
+// The privacy screen, on: lit, as the display shown.
+@fragment
+fn fs_privacy_on(in: VsOut) -> @location(0) vec4<f32> {
+    return paint_on(in.p, hidden_eye(in.p));
+}
+
+// A loudspeaker, a little left of the middle: a box and its cone.
+fn speaker(p: vec2<f32>) -> f32 {
+    let body = abs(rounded(p - vec2<f32>(-0.5, 0.0), vec2<f32>(0.12, 0.18)));
+    let cone = min(
+        min(
+            segment(p, vec2<f32>(-0.38, -0.18), vec2<f32>(-0.05, -0.5)),
+            segment(p, vec2<f32>(-0.38, 0.18), vec2<f32>(-0.05, 0.5)),
+        ),
+        segment(p, vec2<f32>(-0.05, -0.5), vec2<f32>(-0.05, 0.5)),
+    );
+    return min(body, cone);
+}
+
+// Distance to an arc of radius `r` around `center`, `span` radians either
+// side of pointing right.
+fn arc(p: vec2<f32>, center: vec2<f32>, r: f32, span: f32) -> f32 {
+    let q = p - center;
+    if abs(atan2(q.y, q.x)) <= span {
+        return abs(length(q) - r);
+    }
+    let end = vec2<f32>(cos(span), sin(span)) * r;
+    return min(length(q - end), length(q - vec2<f32>(end.x, -end.y)));
+}
+
+// The sound, on: the loudspeaker and its waves.
+@fragment
+fn fs_sound(in: VsOut) -> @location(0) vec4<f32> {
+    let p = in.p;
+    let center = vec2<f32>(-0.05, 0.0);
+    let waves = min(arc(p, center, 0.3, 0.8), arc(p, center, 0.6, 0.8));
+    return paint(p, min(speaker(p), waves));
+}
+
+// The sound, off: the loudspeaker struck out.
+@fragment
+fn fs_muted(in: VsOut) -> @location(0) vec4<f32> {
+    let p = in.p;
+    let struck = min(
+        segment(p, vec2<f32>(0.2, -0.25), vec2<f32>(0.65, 0.25)),
+        segment(p, vec2<f32>(0.2, 0.25), vec2<f32>(0.65, -0.25)),
+    );
+    return paint(p, min(speaker(p), struck));
 }
 
 // The handle of the folded buttons: an upright dark capsule with a light

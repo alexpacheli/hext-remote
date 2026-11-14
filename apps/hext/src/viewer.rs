@@ -24,8 +24,8 @@ use hext_proto::{
     VirtualDisplay,
 };
 use hext_render::{
-    ButtonAction, DisplayBar, Renderer, VideoRect, button_rect, chat_button_rect, handle_rect,
-    letterbox,
+    ButtonAction, DisplayBar, Renderer, VideoRect, button_rect, handle_rect, letterbox,
+    row_button_rect,
 };
 use hext_session::client::{self, ClientHandle};
 use hext_session::files::{Confirm, OwnFiles, Stage, Transfer, size_text};
@@ -464,6 +464,8 @@ impl Viewers {
             picture: None,
             chat_link: self.ui,
             chat_button: None,
+            privacy_button: None,
+            sound_button: None,
             last_title: Instant::now(),
             hidden: (false, false),
             player,
@@ -652,6 +654,10 @@ struct Viewer {
     chat_link: bool,
     /// The chat button on screen.
     chat_button: Option<VideoRect>,
+    /// The privacy screen button on screen, and whether it is on.
+    privacy_button: Option<(VideoRect, bool)>,
+    /// The sound button on screen, and whether the sound is on.
+    sound_button: Option<(VideoRect, bool)>,
     last_title: Instant,
     /// Covered or minimized (macOS), and without a size (minimized on
     /// Windows): nothing is drawn.
@@ -911,8 +917,18 @@ impl Viewer {
         let mut bar = DisplayBar::new(rect, buttons, current.into(), plus, scale)
             .filter(|_| count > 1 || plus);
         let left = bar.map_or(rect.x, |bar| bar.rect.x);
-        let mut chat = chat_button_rect(left, rect, scale).filter(|_| self.chat_link);
-        let mut left = chat.map_or(left, |chat| chat.x);
+        let mut chat = row_button_rect(left, rect, scale).filter(|_| self.chat_link);
+        let left = chat.map_or(left, |chat| chat.x);
+        // Then the privacy screen and the sound, where Ctrl+Alt+P and
+        // Ctrl+Alt+S would do something.
+        let mut privacy = row_button_rect(left, rect, scale)
+            .filter(|_| self.privacy_offered())
+            .map(|r| (r, self.displays.privacy == Privacy::On));
+        let left = privacy.map_or(left, |(r, _)| r.x);
+        let mut sound = row_button_rect(left, rect, scale)
+            .filter(|_| self.displays.audio)
+            .map(|r| (r, !self.player.muted()));
+        let mut left = sound.map_or(left, |(r, _)| r.x);
         // The row, beside the handle, halfway down like it.
         let handle = handle_rect((size.width, size.height), scale);
         let dx = (handle.x + handle.width + (BUTTON_GAP * scale) as f32 - left).floor();
@@ -926,10 +942,22 @@ impl Viewer {
             bar.rect.x += dx;
             bar.rect.y += dy;
         }
-        if let Some(chat) = &mut chat {
-            chat.x += dx;
-            chat.y += dy;
+        let row = chat
+            .iter_mut()
+            .chain(privacy.iter_mut().map(|(r, _)| r))
+            .chain(sound.iter_mut().map(|(r, _)| r));
+        for r in row {
+            r.x += dx;
+            r.y += dy;
         }
+        // What the window has no room for is neither drawn nor pressed.
+        let (width, height) = (size.width as f32, size.height as f32);
+        let fits = |r: &VideoRect| r.x >= 0.0 && r.x + r.width <= width && r.y + r.height <= height;
+        let fitting = fits(&rect);
+        let bar = bar.filter(|bar| fits(&bar.rect));
+        let chat = chat.filter(fits);
+        let privacy = privacy.filter(|(r, _)| fits(r));
+        let sound = sound.filter(|(r, _)| fits(r));
         // The buttons call for each other: all up, all down.
         let called = VideoRect {
             x: left,
@@ -948,25 +976,69 @@ impl Viewer {
             ButtonAction::Enter
         };
         let shown = near || self.button_hint.is_some();
-        let button = shown.then_some((action, rect));
+        let button = (shown && fitting).then_some((action, rect));
         let bar = bar.filter(|_| shown);
         let chat = chat.filter(|_| shown);
+        let privacy = privacy.filter(|_| shown);
+        let sound = sound.filter(|_| shown);
         let handle = (!shown).then_some(handle);
         if self.button != button
             || self.display_bar != bar
             || self.chat_button != chat
+            || self.privacy_button != privacy
+            || self.sound_button != sound
             || self.handle != handle
         {
             self.button = button;
             self.display_bar = bar;
             self.chat_button = chat;
+            self.privacy_button = privacy;
+            self.sound_button = sound;
             self.handle = handle;
             self.latest.overlay(Overlay {
                 button,
                 bar,
                 chat,
+                privacy,
+                sound,
                 handle,
             });
+        }
+    }
+
+    /// Whether Ctrl+Alt+P does something: the host has the privacy screen,
+    /// and the session the control.
+    fn privacy_offered(&self) -> bool {
+        self.displays.privacy != Privacy::None
+            && self.session.as_ref().is_some_and(|s| s.permissions.control)
+    }
+
+    /// Ctrl+Alt+P: the privacy screen, on and off (the host tells when it
+    /// changed, and the title and the button follow).
+    fn toggle_privacy(&self) {
+        if let Some(session) = self.session.as_ref().filter(|_| self.privacy_offered()) {
+            session.privacy(self.displays.privacy == Privacy::Off);
+        }
+    }
+
+    /// Ctrl+Alt+S: the host's sound, off and on.
+    fn toggle_sound(&mut self) {
+        // (Coming back, nothing: the session it gets takes the window's word.)
+        let Some(session) = &self.session else { return };
+        let muted = !self.player.muted();
+        self.player.set_muted(muted);
+        session.set_audio(!muted);
+        info!("som {}", if muted { "desligado" } else { "ligado" });
+        self.last_title = Instant::now() - Duration::from_secs(1);
+        self.update_title();
+        self.update_button();
+    }
+
+    /// Whether the mouse is on `rect`, a button on screen.
+    fn on(&self, rect: Option<VideoRect>) -> bool {
+        match (rect, self.cursor) {
+            (Some(rect), Some((x, y))) => rect.contains(x, y, 0.0),
+            _ => false,
         }
     }
 
@@ -975,14 +1047,6 @@ impl Viewer {
         let (x, y) = self.cursor?;
         let index = self.display_bar?.display_at(x, y)?;
         u8::try_from(index).ok()
-    }
-
-    /// Whether the mouse is on the chat button.
-    fn on_chat_button(&self) -> bool {
-        match (self.chat_button, self.cursor) {
-            (Some(rect), Some((x, y))) => rect.contains(x, y, 0.0),
-            _ => false,
-        }
     }
 
     /// Whether the mouse is on the button.
@@ -1186,6 +1250,8 @@ impl Viewer {
                     self.coming_back = None;
                     self.last_title = Instant::now() - Duration::from_secs(1);
                     self.update_title();
+                    // The privacy button needs a session: back with it.
+                    self.update_button();
                 }
                 Err(e) => {
                     let e = e.context("não foi possível voltar à sessão");
@@ -1279,9 +1345,19 @@ impl Viewer {
                         self.press_display(index);
                         return;
                     }
-                    if pressed && self.on_chat_button() {
+                    if pressed && self.on(self.chat_button) {
                         self.button_pressed = true;
                         tell_ui(self.n, crate::ui_link::VIEWER_CHAT_OPEN);
+                        return;
+                    }
+                    if pressed && self.on(self.privacy_button.map(|(r, _)| r)) {
+                        self.button_pressed = true;
+                        self.toggle_privacy();
+                        return;
+                    }
+                    if pressed && self.on(self.sound_button.map(|(r, _)| r)) {
+                        self.button_pressed = true;
+                        self.toggle_sound();
                         return;
                     }
                     if pressed && self.on_button() {
@@ -1373,11 +1449,10 @@ impl Viewer {
                 if event.state == ElementState::Pressed
                     && code == KeyCode::KeyP
                     && self.ctrl_alt()
-                    && self.displays.privacy != Privacy::None
-                    && let Some(session) = self.session.as_ref().filter(|s| s.permissions.control)
+                    && self.privacy_offered()
                 {
                     self.local_key = Some(code);
-                    session.privacy(self.displays.privacy == Privacy::Off);
+                    self.toggle_privacy();
                     return;
                 }
                 // Ctrl+Alt+S: the host's sound, off and on, where it has
@@ -1389,14 +1464,7 @@ impl Viewer {
                     && self.session.is_some()
                 {
                     self.local_key = Some(code);
-                    let muted = !self.player.muted();
-                    self.player.set_muted(muted);
-                    if let Some(session) = &self.session {
-                        session.set_audio(!muted);
-                    }
-                    info!("som {}", if muted { "desligado" } else { "ligado" });
-                    self.last_title = Instant::now() - Duration::from_secs(1);
-                    self.update_title();
+                    self.toggle_sound();
                     return;
                 }
                 // Ctrl+Alt+1..9: another display of the host. (With no such

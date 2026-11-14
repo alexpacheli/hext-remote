@@ -32,6 +32,10 @@ pub struct Overlay {
     pub button: Option<(ButtonAction, VideoRect)>,
     pub bar: Option<DisplayBar>,
     pub chat: Option<VideoRect>,
+    /// The privacy screen button, and whether it is on.
+    pub privacy: Option<(VideoRect, bool)>,
+    /// The sound button, and whether the sound is on.
+    pub sound: Option<(VideoRect, bool)>,
     pub handle: Option<VideoRect>,
 }
 
@@ -208,6 +212,8 @@ fn draw(screen: &Screen, pending: Pending, news: &impl Fn(News)) {
             renderer.set_button(overlay.button);
             renderer.set_display_bar(overlay.bar);
             renderer.set_chat_button(overlay.chat);
+            renderer.set_privacy_button(overlay.privacy);
+            renderer.set_sound_button(overlay.sound);
             renderer.set_handle(overlay.handle);
         }
         if let Some((frame, display)) = work.frame {

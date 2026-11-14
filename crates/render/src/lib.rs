@@ -90,9 +90,10 @@ pub fn handle_rect(window: (u32, u32), scale: f64) -> VideoRect {
     }
 }
 
-/// Where the chat button goes, left of what starts at `left` on the row of
-/// the full screen `button`; `None` when the window has no room for it.
-pub fn chat_button_rect(left: f32, button: VideoRect, scale: f64) -> Option<VideoRect> {
+/// Where a button of the row (chat, privacy screen, sound) goes, left of what
+/// starts at `left` on the row of the full screen `button`; `None` when the
+/// window has no room for it.
+pub fn row_button_rect(left: f32, button: VideoRect, scale: f64) -> Option<VideoRect> {
     let x = left - (BAR_GAP * scale) as f32 - button.width;
     (x >= 0.0).then_some(VideoRect { x, ..button })
 }
@@ -257,6 +258,14 @@ pub struct Renderer {
     chat_pipeline: wgpu::RenderPipeline,
     /// The chat button on screen, if any.
     chat_button: Option<VideoRect>,
+    privacy_off: wgpu::RenderPipeline,
+    privacy_on: wgpu::RenderPipeline,
+    /// The privacy screen button on screen, if any, and whether it is on.
+    privacy_button: Option<(VideoRect, bool)>,
+    sound_on: wgpu::RenderPipeline,
+    sound_off: wgpu::RenderPipeline,
+    /// The sound button on screen, if any, and whether the sound is on.
+    sound_button: Option<(VideoRect, bool)>,
     handle_pipeline: wgpu::RenderPipeline,
     /// The handle on screen, if any.
     handle: Option<VideoRect>,
@@ -444,6 +453,10 @@ impl Renderer {
         let button_leave = button_pipeline("fs_leave");
         let bar_pipeline = button_pipeline("fs_bar");
         let chat_pipeline = button_pipeline("fs_chat");
+        let privacy_off = button_pipeline("fs_privacy");
+        let privacy_on = button_pipeline("fs_privacy_on");
+        let sound_on = button_pipeline("fs_sound");
+        let sound_off = button_pipeline("fs_muted");
         let handle_pipeline = button_pipeline("fs_handle");
         let bar_displays = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("display bar"),
@@ -486,6 +499,12 @@ impl Renderer {
             bar: None,
             chat_pipeline,
             chat_button: None,
+            privacy_off,
+            privacy_on,
+            privacy_button: None,
+            sound_on,
+            sound_off,
+            sound_button: None,
             handle_pipeline,
             handle: None,
         })
@@ -520,6 +539,18 @@ impl Renderer {
     /// Shows the chat button, or hides it, from the next render.
     pub fn set_chat_button(&mut self, rect: Option<VideoRect>) {
         self.chat_button = rect;
+    }
+
+    /// Shows the privacy screen button (and whether it is on), or hides it,
+    /// from the next render.
+    pub fn set_privacy_button(&mut self, button: Option<(VideoRect, bool)>) {
+        self.privacy_button = button;
+    }
+
+    /// Shows the sound button (and whether the sound is on), or hides it,
+    /// from the next render.
+    pub fn set_sound_button(&mut self, button: Option<(VideoRect, bool)>) {
+        self.sound_button = button;
     }
 
     /// Shows the handle, or hides it, from the next render.
@@ -649,6 +680,28 @@ impl Renderer {
             {
                 pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
                 pass.set_pipeline(&self.chat_pipeline);
+                pass.draw(0..3, 0..1);
+            }
+            if let Some((rect, on)) = self.privacy_button
+                && rect.x >= 0.0
+                && rect.x + rect.width <= width
+                && rect.y + rect.height <= height
+            {
+                pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
+                pass.set_pipeline(if on {
+                    &self.privacy_on
+                } else {
+                    &self.privacy_off
+                });
+                pass.draw(0..3, 0..1);
+            }
+            if let Some((rect, on)) = self.sound_button
+                && rect.x >= 0.0
+                && rect.x + rect.width <= width
+                && rect.y + rect.height <= height
+            {
+                pass.set_viewport(rect.x, rect.y, rect.width, rect.height, 0.0, 1.0);
+                pass.set_pipeline(if on { &self.sound_on } else { &self.sound_off });
                 pass.draw(0..3, 0..1);
             }
             if let Some(rect) = self.handle
@@ -817,6 +870,24 @@ mod tests {
                 .validate(&module)
                 .unwrap();
         }
+        // Each button's pipeline has its entry point.
+        let module = naga::front::wgsl::parse_str(BUTTON_SHADER).unwrap();
+        for entry in [
+            "fs_enter",
+            "fs_leave",
+            "fs_bar",
+            "fs_chat",
+            "fs_handle",
+            "fs_privacy",
+            "fs_privacy_on",
+            "fs_sound",
+            "fs_muted",
+        ] {
+            assert!(
+                module.entry_points.iter().any(|e| e.name == entry),
+                "{entry}"
+            );
+        }
     }
 
     #[test]
@@ -845,10 +916,28 @@ mod tests {
     #[test]
     fn the_chat_button_sits_left_of_what_is_there() {
         let button = button_rect((1000, 800), 1.0);
-        let chat = chat_button_rect(button.x, button, 1.0).unwrap();
+        let chat = row_button_rect(button.x, button, 1.0).unwrap();
         assert_eq!(chat.x + chat.width + 8.0, button.x);
         assert_eq!((chat.y, chat.height), (button.y, button.height));
-        assert!(chat_button_rect(10.0, button, 1.0).is_none());
+        assert!(row_button_rect(10.0, button, 1.0).is_none());
+    }
+
+    #[test]
+    fn the_privacy_and_sound_buttons_go_on_left_while_there_is_room() {
+        let button = button_rect((1000, 800), 1.0);
+        let chat = row_button_rect(button.x, button, 1.0).unwrap();
+        let privacy = row_button_rect(chat.x, button, 1.0).unwrap();
+        let sound = row_button_rect(privacy.x, button, 1.0).unwrap();
+        assert_eq!(privacy.x + privacy.width + 8.0, chat.x);
+        assert_eq!(sound.x + sound.width + 8.0, privacy.x);
+        assert_eq!((sound.y, sound.width), (button.y, button.width));
+        // Each where it is drawn, and only there.
+        let y = f64::from(sound.y) + 2.0;
+        assert!(sound.contains(f64::from(sound.x) + 1.0, y, 0.0));
+        assert!(!sound.contains(f64::from(privacy.x) + 1.0, y, 0.0));
+        assert!(!privacy.contains(f64::from(sound.x) + 1.0, y, 0.0));
+        // No room for the last one: left out.
+        assert!(row_button_rect(sound.width, button, 1.0).is_none());
     }
 
     #[test]
