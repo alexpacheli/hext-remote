@@ -23,6 +23,8 @@ const IDLE_CLOSE: Duration = Duration::from_secs(5);
 const RETRY: Duration = Duration::from_secs(3);
 /// How often the thread looks up when nothing arrives.
 const TICK: Duration = Duration::from_millis(500);
+/// How often to check whether the default output device changed.
+const DEVICE_CHECK: Duration = Duration::from_secs(2);
 
 /// Plays a session's sound. Dropping it stops the thread.
 pub struct Player {
@@ -80,9 +82,25 @@ struct Output {
     rate: u32,
     channels: usize,
     resampler: Resampler,
+    /// The default device it opened, and when that was last checked.
+    device: Option<cpal::DeviceId>,
+    checked: Instant,
 }
 
 impl Output {
+    /// Another device is the default now (headphones plugged in, another
+    /// one chosen): the sound should go there. Checked every few seconds.
+    fn moved(&mut self) -> bool {
+        if self.checked.elapsed() < DEVICE_CHECK {
+            return false;
+        }
+        self.checked = Instant::now();
+        let now = cpal::default_host()
+            .default_output_device()
+            .and_then(|d| d.id().ok());
+        now.is_some() && now != self.device
+    }
+
     fn open() -> Result<Self, String> {
         let host = cpal::default_host();
         let device = host
@@ -113,6 +131,8 @@ impl Output {
             rate,
             channels,
             resampler: Resampler::new(SAMPLE_RATE, rate, 2),
+            device: device.id().ok(),
+            checked: Instant::now(),
         })
     }
 
@@ -186,6 +206,9 @@ fn run(packets: &Receiver<AudioPacket>, muted: &AtomicBool) {
             info!("som: o dispositivo de saída parou; abrindo de novo");
             output = None;
             failed_at = Some(now);
+        } else if output.as_mut().is_some_and(Output::moved) {
+            info!("som: outro dispositivo de saída é o padrão; passando para ele");
+            output = None;
         }
         let Some(packet) = packet.filter(|_| !muted.load(Ordering::Relaxed)) else {
             if output.is_some() && now.duration_since(last) > IDLE_CLOSE {
@@ -226,13 +249,17 @@ fn run(packets: &Receiver<AudioPacket>, muted: &AtomicBool) {
             out.play(&pcm, &mut scratch, &mut mapped);
             if report.elapsed() >= Duration::from_secs(5) {
                 report = now;
-                let queue = out.queue.lock().expect("lock");
+                // (Copied out: the device's thread must not wait on the log.)
+                let (delay, underruns, dropped) = {
+                    let queue = out.queue.lock().expect("lock");
+                    (queue.delay(out.rate), queue.underruns, queue.dropped)
+                };
                 debug!(
                     target: LOG_TARGET,
                     "som: fila {} ms, {} vezes vazia, {} ms descartados | {} refeitos, {} disfarçados, {} atrasados",
-                    queue.delay(out.rate).as_millis(),
-                    queue.underruns,
-                    queue.dropped / out.channels as u64 * 1000 / u64::from(out.rate.max(1)),
+                    delay.as_millis(),
+                    underruns,
+                    dropped / out.channels as u64 * 1000 / u64::from(out.rate.max(1)),
                     depacketizer.recovered,
                     depacketizer.concealed,
                     depacketizer.late,

@@ -10,12 +10,19 @@ use crate::{AudioError, CHANNELS, FRAME, SAMPLE_RATE};
 /// Lost packets in a row concealed by Opus; a longer gap is the network
 /// gone for a moment, and what comes after it starts over.
 const MAX_CONCEAL: u32 = 4;
+/// A packet this far behind, or this many late in a row, is not the network
+/// reordering: the host started over (a new agent, a session resumed), and
+/// its numbers with it.
+const RESTART_BEHIND: u32 = 50;
+const RESTART_LATE: u32 = 4;
 
 /// Decodes packets in the order they arrive, making up for lost ones.
 pub struct Depacketizer {
     opus: opus::Decoder,
     /// The number expected next.
     next: Option<u32>,
+    /// Packets dropped as late in a row.
+    late_run: u32,
     pcm: Vec<f32>,
     /// Frames rebuilt from the copy in the next packet, concealed, and
     /// packets dropped as late.
@@ -29,6 +36,7 @@ impl Depacketizer {
         Ok(Self {
             opus: opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo)?,
             next: None,
+            late_run: 0,
             pcm: vec![0.0; FRAME * CHANNELS],
             recovered: 0,
             concealed: 0,
@@ -42,17 +50,25 @@ impl Depacketizer {
         if let Some(next) = self.next {
             let ahead = packet.seq.wrapping_sub(next) as i32;
             if ahead < 0 {
-                // Overtaken, or a copy: its time is past.
-                self.late += 1;
-                return;
+                self.late_run += 1;
+                if ahead.unsigned_abs() <= RESTART_BEHIND && self.late_run < RESTART_LATE {
+                    // Overtaken, or a copy: its time is past.
+                    self.late += 1;
+                    return;
+                }
+                // The host's numbers started over: so does this side.
+                self.reset();
             }
-            let missing = ahead as u32;
+        }
+        self.late_run = 0;
+        if let Some(next) = self.next {
+            let missing = packet.seq.wrapping_sub(next);
             if missing > MAX_CONCEAL {
                 let _ = self.opus.reset_state();
             } else {
                 for i in 0..missing {
                     if i + 1 == missing && !packet.prev.is_empty() {
-                        self.decode(&packet.prev.clone(), out);
+                        self.decode(&packet.prev, out);
                         self.recovered += 1;
                     } else {
                         // Opus makes up a frame from the ones before.
@@ -76,6 +92,7 @@ impl Depacketizer {
     /// Nothing came for a while: the next packet starts over.
     pub fn reset(&mut self) {
         self.next = None;
+        self.late_run = 0;
         let _ = self.opus.reset_state();
     }
 }
@@ -140,6 +157,15 @@ impl Playout {
     /// Fills `out` (the device's buffer): silence until the queue holds
     /// [`TARGET`], and again from where it runs dry.
     pub fn pull(&mut self, out: &mut [f32]) {
+        // A device asking for about the target at a time (some Linux ones)
+        // would find the queue short at every call: it waits for one call
+        // and a half instead.
+        let wanted = out.len() + out.len() / 2;
+        if wanted > self.target {
+            let margin = self.high - self.target;
+            self.target = wanted - wanted % self.channels;
+            self.high = self.target + margin;
+        }
         if !self.playing && self.samples.len() >= self.target {
             self.playing = true;
         }
@@ -244,13 +270,34 @@ mod tests {
     }
 
     #[test]
+    fn a_device_asking_for_a_lot_at_once_never_runs_dry() {
+        let mut playout = Playout::new(RATE, 2);
+        // 50 ms a call, sound arriving 10 ms at a time.
+        let mut out = vec![0.0; TEN_MS * 5];
+        let mut played = 0;
+        for round in 0..200 {
+            playout.push(&[0.5; TEN_MS]);
+            if round % 5 == 4 {
+                playout.pull(&mut out);
+                played += usize::from(out.iter().all(|&s| s == 0.5));
+            }
+        }
+        assert_eq!(playout.underruns, 0);
+        assert_eq!(playout.dropped, 0);
+        assert!(played >= 38, "{played}");
+    }
+
+    #[test]
     fn a_short_pull_is_padded_with_silence() {
         let mut playout = Playout::new(RATE, 2);
         playout.push(&[0.5; TEN_MS * 4 + 2]);
-        let mut out = vec![1.0; TEN_MS * 5];
+        let mut out = vec![1.0; TEN_MS * 2];
         playout.pull(&mut out);
-        assert!(out[..TEN_MS * 4 + 2].iter().all(|&s| s == 0.5));
-        assert!(out[TEN_MS * 4 + 2..].iter().all(|&s| s == 0.0));
+        assert!(out.iter().all(|&s| s == 0.5));
+        let mut out = vec![1.0; TEN_MS * 3];
+        playout.pull(&mut out);
+        assert!(out[..TEN_MS * 2 + 2].iter().all(|&s| s == 0.5));
+        assert!(out[TEN_MS * 2 + 2..].iter().all(|&s| s == 0.0));
     }
 
     fn packets(n: usize) -> Vec<AudioPacket> {
@@ -286,6 +333,34 @@ mod tests {
         depacketizer.push(&sent[3], &mut pcm);
         assert_eq!(depacketizer.late, 1);
         assert_eq!(pcm.len(), 20 * FRAME * CHANNELS);
+    }
+
+    #[test]
+    fn a_host_starting_over_is_heard_again() {
+        let sent = packets(100);
+        let mut depacketizer = Depacketizer::new().unwrap();
+        let mut pcm = Vec::new();
+        for packet in &sent[..90] {
+            depacketizer.push(packet, &mut pcm);
+        }
+        // A new agent numbers from 0 again, with no pause.
+        let restarted = packets(10);
+        let before = pcm.len();
+        for packet in &restarted {
+            depacketizer.push(packet, &mut pcm);
+        }
+        assert_eq!(pcm.len() - before, 10 * FRAME * CHANNELS);
+        // Close behind (a short first session): a few lost, then heard.
+        let mut depacketizer = Depacketizer::new().unwrap();
+        for packet in &sent[..20] {
+            depacketizer.push(packet, &mut pcm);
+        }
+        let before = pcm.len();
+        for packet in &restarted {
+            depacketizer.push(packet, &mut pcm);
+        }
+        let heard = (pcm.len() - before) / (FRAME * CHANNELS);
+        assert_eq!(heard, 10 - (RESTART_LATE as usize - 1));
     }
 
     #[test]

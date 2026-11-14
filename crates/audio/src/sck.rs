@@ -7,14 +7,15 @@
 //! has (Gravação de Tela).
 
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
 use block2::RcBlock;
-use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
+use objc2::{AllocAnyThread, DefinedClass};
 use objc2_core_graphics::CGPreflightScreenCaptureAccess;
 use objc2_core_media::{CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer, CMTime};
 use objc2_foundation::{NSArray, NSError, NSProcessInfo};
@@ -52,6 +53,8 @@ pub(crate) struct Sink {
     chunks: SyncSender<Vec<f32>>,
     /// For a rate other than the one asked for (never seen, but cheap).
     resampler: Mutex<Option<(u32, Resampler)>>,
+    /// The system stopped the stream.
+    stopped: AtomicBool,
 }
 
 impl Sink {
@@ -120,11 +123,16 @@ impl Sink {
 
 #[allow(unsafe_code)] // An Objective-C class: ScreenCaptureKit's delegate.
 mod output {
+    use std::sync::atomic::Ordering;
+
     use objc2::rc::Retained;
     use objc2::runtime::{NSObject, NSObjectProtocol};
     use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
     use objc2_core_media::CMSampleBuffer;
-    use objc2_screen_capture_kit::{SCStream, SCStreamOutput, SCStreamOutputType};
+    use objc2_foundation::NSError;
+    use objc2_screen_capture_kit::{
+        SCStream, SCStreamDelegate, SCStreamOutput, SCStreamOutputType,
+    };
 
     use super::Sink;
 
@@ -154,6 +162,19 @@ mod output {
                 if kind == SCStreamOutputType::Audio {
                     self.ivars().sink.store(sample);
                 }
+            }
+        }
+
+        unsafe impl SCStreamDelegate for AudioOutput {
+            // The system stopped the stream (a display gone, the permission
+            // taken away): the capture opens another.
+            #[unsafe(method(stream:didStopWithError:))]
+            fn did_stop(&self, _stream: &SCStream, error: &NSError) {
+                tracing::debug!(
+                    "som: o ScreenCaptureKit parou: {}",
+                    error.localizedDescription()
+                );
+                self.ivars().sink.stopped.store(true, Ordering::Relaxed);
             }
         }
     );
@@ -189,6 +210,7 @@ impl Loopback {
         let output = AudioOutput::new(Sink {
             chunks: tx,
             resampler: Mutex::new(None),
+            stopped: AtomicBool::new(false),
         });
         let stream = unsafe {
             let filter = SCContentFilter::initWithDisplay_excludingWindows(
@@ -210,7 +232,8 @@ impl Loopback {
                 SCStream::alloc(),
                 &filter,
                 &config,
-                None,
+                // (Held weakly by the stream; `Loopback` keeps it alive.)
+                Some(ProtocolObject::from_ref(&*output)),
             );
             for kind in [SCStreamOutputType::Audio, SCStreamOutputType::Screen] {
                 stream
@@ -229,9 +252,10 @@ impl Loopback {
         Ok((loopback, rx))
     }
 
-    /// ScreenCaptureKit follows the device by itself.
+    /// ScreenCaptureKit follows the device by itself; only a stream the
+    /// system stopped is opened again.
     pub fn needs_reopen(&mut self) -> bool {
-        false
+        self.output.ivars().sink.stopped.load(Ordering::Relaxed)
     }
 }
 
