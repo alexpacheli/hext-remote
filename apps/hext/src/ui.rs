@@ -300,6 +300,12 @@ async fn install_here(app: AppHandle) -> Result<(), String> {
             return Err("Termine a sessão antes de instalar.".to_owned());
         }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        // An AppImage's program lives in a mount that goes away when this
+        // closes: the image itself is run again instead.
+        #[cfg(target_os = "linux")]
+        let exe = std::env::var_os("APPIMAGE")
+            .filter(|v| !v.is_empty())
+            .map_or(exe, std::path::PathBuf::from);
         std::process::Command::new("/bin/sh")
             .args(["-c", r#"sleep 2; exec "$0" service install"#])
             .arg(&exe)

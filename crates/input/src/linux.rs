@@ -25,6 +25,10 @@ use crate::{Area, Injector};
 /// monitor plugged in or rearranged moves it).
 const ORIGIN_FRESH: Duration = Duration::from_secs(3);
 
+/// How long after a failed connection the next one is tried (no X server,
+/// after logout: not once per mouse move, nor a warning each time).
+const RECONNECT: Duration = Duration::from_secs(2);
+
 /// The X11 key code for a PC set-1 scancode.
 pub(crate) fn x11_keycode(scancode: u16) -> Option<u8> {
     evdev_keycode(scancode).and_then(|code| u8::try_from(code + 8).ok())
@@ -89,6 +93,8 @@ impl X11 {
 #[derive(Default)]
 pub struct XTestInjector {
     x11: Option<X11>,
+    /// When the last connection failed.
+    failed_at: Option<Instant>,
     keys_down: HashSet<u8>,
     buttons_down: HashSet<u8>,
     /// Sub-notch scroll left over from trackpads.
@@ -98,8 +104,9 @@ pub struct XTestInjector {
 
 impl XTestInjector {
     fn x11(&mut self) -> Option<&X11> {
-        if self.x11.is_none() {
+        if self.x11.is_none() && self.failed_at.is_none_or(|at| at.elapsed() >= RECONNECT) {
             self.x11 = X11::connect();
+            self.failed_at = self.x11.is_none().then(Instant::now);
         }
         self.x11.as_ref()
     }
