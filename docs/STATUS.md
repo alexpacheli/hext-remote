@@ -33,9 +33,9 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
       its button: checked (November 2026).
 - [ ] **Linux:** install the `.deb` on Ubuntu and the `.rpm` on Fedora, open it from the menu, sign in and access
       a computer (video, keyboard, mouse, a file received).
-- [ ] **Session window:** each session draws on a thread of its own. On a Mac, a window minimized for a long
-      while comes back without freezing; opening another computer no longer stalls the open windows
-      ([janela-travada](estudos/janela-travada.md#roteiro-de-campo)).
+- [x] **Session window:** each session draws on a thread of its own. On a Mac, a minimized window comes back
+      without freezing; opening another computer no longer stalls the open windows
+      ([janela-travada](estudos/janela-travada.md#roteiro-de-campo)). Checked on a Mac (November 2026).
 
 ## Open issues
 
