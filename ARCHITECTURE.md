@@ -89,8 +89,8 @@ ui (always as the user)  started by the service, talks to it over a pipe only th
   logs and the audit log are in `C:\ProgramData\HextRemote`, which only administrators open.
 
 **macOS:** the app opens at login (a per-user LaunchAgent) and offers the same unattended access (password,
-bound technicians, account), stored in the user's folder. The sign-in screen, before anyone logs in, needs a
-system LaunchDaemon that is not built yet ([STATUS](docs/STATUS.md)).
+bound technicians, account), stored in the user's folder. After a restart it comes back when someone signs
+in: there is no system service for the sign-in screen ([DECISIONS](docs/DECISIONS.md#mac-no-sign-in-screen)).
 
 **Linux:** the interface, as a technician only: account, My computers, recent ones and opening other computers,
 each in the viewer's window. Being accessed (a host) comes later.

@@ -29,7 +29,8 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - [ ] **F5:** o roteiro das contas ([atendimento-campo-f5](roteiros/atendimento-campo-f5.md)).
 - [ ] **F6:** instalar, atualizar e desinstalar em máquinas reais ([instalacao-campo](roteiros/instalacao-campo.md)).
 - [ ] **Monitor virtual:** resolução, monitor fantasma (um que perdeu o cabo) e desinstalação em máquinas reais;
-      a tela de login só com o monitor virtual; um monitor desligado no botão passando sozinho para o virtual ([monitor-virtual](monitor-virtual.md)).
+      a tela de login só com o monitor virtual ([monitor-virtual](monitor-virtual.md)). Monitor desligado no botão:
+      conferido (novembro de 2026).
 - [ ] **Linux:** instalar o `.deb` num Ubuntu e o `.rpm` num Fedora, abrir pelo menu, entrar na conta e acessar
       um computador (vídeo, teclado, mouse, arquivo recebido).
 
@@ -37,14 +38,14 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 
 - Em algumas redes domésticas sem CGNAT, a conexão ainda passa pelo relay em vez de ir direto. O app já tenta
   abrir a porta no roteador (UPnP, NAT-PMP e PCP, pelo `iroh`): falta ligar o UPnP no roteador e testar.
+- No Mac, depois de reiniciar, o Hext só volta quando alguém entra na conta. Fica assim de propósito
+  ([decisões](DECISIONS.pt-BR.md#mac-sem-tela-de-login)): com o FileVault ligado, o macOS pede uma senha antes de carregar.
 - O `.AppImage` do Linux usa o WebKitGTK do sistema (`libwebkit2gtk-4.1`): onde ele não existe, não abre.
 
 ## A seguir
 
-- **Tela de login do Mac:** um LaunchDaemon do sistema e agentes por sessão, para alcançar um Mac depois de
-  reiniciar, antes de alguém entrar ([F6, seção 3.1](planos/F6.md#31-marco-3-o-que-ficou-pronto-e-o-que-falta)).
-- **Fluidez:** comparar lado a lado com o Parsec, na mesma rede e sem Tailscale, e aplicar o que o estudo achou
-  ([fluidez-parsec](estudos/fluidez-parsec.md)). Já entrou: a captura acompanha a cadência da tela, e o log mostra o
-  maior intervalo entre quadros nos dois lados.
 - **F7 — Extras:** host no Linux (ser acessado), áudio, tela de privacidade, gravação de sessão, HEVC/AV1,
   Wake-on-LAN, mobile e web.
+- **Fluidez, por último e com calma:** comparar lado a lado com o Parsec, na mesma rede e sem Tailscale, e aplicar o
+  que o estudo achou ([fluidez-parsec](estudos/fluidez-parsec.md)). Já entrou: a captura acompanha a cadência da tela,
+  e o log mostra o maior intervalo entre quadros nos dois lados.

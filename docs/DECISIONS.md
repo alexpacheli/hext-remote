@@ -51,6 +51,14 @@ crashed on the Windows runner of CI, and under page heap every run stopped insid
 value; nothing else in it changed. *Why:* the bug was in how the dependency used COM, and setting COM up
 ourselves did not stop it. To drop the copy, `netwatch` must stop using WMI upstream (0.20.0 still does).
 
+<a id="mac-no-sign-in-screen"></a>**Mac: no sign-in screen** (November 2026, 0.8.2). On a Mac, Hext runs in the
+user's account (a LaunchAgent): after a restart it comes back when someone signs in. A system LaunchDaemon with
+per-session agents would reach the user list before that, but with FileVault on (the macOS default) the Mac first
+stops at a password asked before macOS loads, where no program runs. Someone on site types it either way. *Why:*
+a lot of native code that only builds and runs on a Mac, for a gain FileVault mostly cancels. Updates are not
+affected: after one, macOS signs back in by itself once and locks the screen, and Hext is there. The design stays in
+[F6](planos/F6.md#31-marco-3-o-que-ficou-pronto-e-o-que-falta), in case Macs without FileVault call for it.
+
 ## App
 
 **Rust, one native executable.** No runtime, .NET or Java. *Why:* small downloads for a quick support session,

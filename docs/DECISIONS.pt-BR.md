@@ -54,6 +54,15 @@ consultas. A cópia em `vendor/netwatch` (por `[patch.crates-io]`) lê a tabela 
 mesmo valor; nada mais nela mudou. *Por quê:* o defeito estava no uso do COM pela dependência, e preparar o COM
 por fora não o resolveu. Para largar a cópia, o `netwatch` precisa deixar o WMI de vez (a 0.20.0 ainda usa).
 
+<a id="mac-sem-tela-de-login"></a>**Mac: sem tela de login** (novembro de 2026, 0.8.2). No Mac, o Hext roda na
+conta do usuário (um LaunchAgent): depois de reiniciar, volta quando alguém entra na conta. Um LaunchDaemon do
+sistema com agentes por sessão alcançaria antes a lista de usuários, mas com o FileVault ligado (o padrão do macOS)
+o Mac para antes numa senha pedida antes de o macOS carregar, onde nenhum programa roda. Alguém no local digita
+essa senha de qualquer jeito. *Por quê:* muito código nativo, que só compila e roda num Mac, para um ganho que o
+FileVault quase anula. As atualizações não são afetadas: depois de uma, o macOS entra sozinho na conta uma vez e
+bloqueia a tela, e o Hext está lá. O desenho fica no [F6](planos/F6.md#31-marco-3-o-que-ficou-pronto-e-o-que-falta),
+caso Macs sem FileVault peçam.
+
 ## App
 
 **Rust, um executável nativo.** Sem runtime, .NET ou Java. *Por quê:* download pequeno para um atendimento rápido,
