@@ -58,15 +58,15 @@ jobs:
         with:
           target: ${{ matrix.targets }}
 
-      # The interface on Linux: WebKitGTK, to build with. For the host's
-      # tests: a virtual X server, xkbcomp (the Brazilian keymap), libva's
-      # and libpipewire's headers (the structures written by hand), and a
-      # PipeWire with a test video source.
+      # The interface on Linux: WebKitGTK, to build with; the sound: ALSA. For
+      # the host's tests: a virtual X server, xkbcomp (the Brazilian keymap),
+      # libva's and libpipewire's headers (the structures written by hand),
+      # and a PipeWire with a test video source.
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev xvfb x11-xkb-utils libva-dev \
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev xvfb x11-xkb-utils libva-dev \
             libpipewire-0.3-dev pipewire pipewire-bin wireplumber dbus \
             gstreamer1.0-pipewire gstreamer1.0-tools gstreamer1.0-plugins-base
 
