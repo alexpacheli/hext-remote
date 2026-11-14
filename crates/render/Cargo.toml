@@ -17,6 +17,10 @@ tracing.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# One property of the Metal layer (see `configure`).
+objc2.workspace = true
+
 [dev-dependencies]
 # The version wgpu uses: shaders are checked without a GPU.
 naga = { version = "30", features = ["wgsl-in"] }

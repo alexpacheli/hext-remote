@@ -55,6 +55,44 @@ intervalo. Isso fica para outro PR.
 - **Qualquer chamada acima de 100 ms vai para o log**, mesmo sem `HEXT_LOOP_TRACE`:
   `janela presa por X ms em <o quê>`.
 
+## A segunda parte: o Mac que travava depois de minimizado
+
+O sintoma: com a janela da sessão minimizada no Mac por um tempo, ao abrir de novo ela não responde mais (a
+bolinha colorida gira), e só fechando à força.
+
+A causa está no wgpu para Metal. Ele configura a camada da janela (`CAMetalLayer`) com
+`allowsNextDrawableTimeout = false`: o `nextDrawable()`, que entrega a próxima imagem para desenhar, espera
+**para sempre** se nenhuma voltar. O wgpu pula o desenho quando a janela está coberta naquele instante, mas
+uma imagem enviada logo antes de minimizar pode ficar presa esperando a tela
+([gfx-rs/wgpu#8309](https://github.com/gfx-rs/wgpu/issues/8309)). Com a camada configurada para guardar duas
+imagens, basta isso acontecer duas vezes. Ao abrir a janela, o primeiro desenho fica preso na thread da janela,
+e todas as janelas do visualizador param de vez.
+
+Não há um Mac aqui para reproduzir. A causa vem da leitura do código do wgpu 30 (`metal/surface.rs`): é a
+única espera sem fim no caminho do desenho, e encaixa com o sintoma (só depois de minimizar, sem volta).
+
+### A correção
+
+- **Cada sessão desenha numa thread própria** (`apps/hext/src/screen.rs`). O decodificador deixa o quadro mais
+  novo e acorda essa thread direto (um `Condvar`): os quadros nem passam mais pela thread da janela. A janela só
+  informa o tamanho, os botões por cima do vídeo, se está à vista e quando o sistema pede para repintar.
+- **A GPU é criada nessa thread.** A superfície continua sendo feita na thread da janela (no Mac, o AppKit só
+  responde lá), e o resto (`Pending::finish`: placa, dispositivo, pipelines), que leva quase um segundo, fica
+  na thread de desenho. Abrir outro computador não para mais as janelas abertas.
+- **No Mac, uma imagem espera a tela por no máximo 1 s.** Depois de cada `configure`, o
+  `allowsNextDrawableTimeout` volta a `true`. Se a imagem não vier, o quadro é pulado (`Timeout`) e a thread
+  tenta de novo em 250 ms, mesmo sem quadro novo. Com a tela do host parada, nada mais chegaria, e a janela
+  ficaria com a imagem velha.
+- **Minimizada ou coberta, a janela não desenha.** O `Occluded` do winit (Mac) e o tamanho zero (Windows
+  minimizado) param o desenho. Ao voltar, o quadro mais novo é desenhado na hora.
+- **Sem atraso no Mac.** A primeira correção desenhava no `RedrawRequested`, que no Mac espera a próxima pintura
+  da janela. Agora a thread de desenho desenha assim que o quadro chega, nos dois sistemas.
+- Um desenho acima de 100 ms vai para o log como `quadro preso por X ms no render (as janelas seguem
+  respondendo)`.
+
+Mesmo que uma imagem ainda fique presa, o pior caso agora é o vídeo parar por um segundo. A janela continua
+movendo, fechando e respondendo.
+
 ## Roteiro de campo
 
 No notebook, com o executável do PR. Feche a interface e rode o visualizador direto, para ver o
@@ -62,7 +100,7 @@ log:
 
 ```powershell
 $env:HEXT_LOOP_TRACE='1'
-.\hext.exe view <ID do Windows> 2>&1 | Tee-Object janela.log
+.\HextRemote.exe view <ID do Windows> 2>&1 | Tee-Object janela.log
 ```
 
 1. Com a sessão aberta, deixe um vídeo rodando em tela cheia no computador remoto, para chegar quadro o tempo
@@ -72,17 +110,28 @@ $env:HEXT_LOOP_TRACE='1'
 3. Maximize e restaure pelo botão da barra de título, cinco vezes seguidas. Cada clique deve responder na hora.
 4. Faça a rede oscilar: troque o Wi-Fi para o roteador do celular, ou afaste o notebook do roteador até o título
    mostrar perda (fps caindo), e repita os passos 2 e 3.
-5. Repita com o Mac, e depois com os dois abertos ao mesmo tempo (marco 11), mexendo numa janela
-   enquanto a outra recebe vídeo.
+5. Com uma sessão aberta, abra outro computador: a primeira janela deve continuar movendo enquanto a segunda
+   aparece.
 6. Depois, pela interface (sem o PowerShell), repita os passos 2 a 4 uma vez: é o uso de verdade.
 
-Passou se a janela nunca parou. No log, procure:
+No Mac, como técnico, com o app instalado. Feche a interface e rode o visualizador pelo Terminal, para ver o
+log (aberto pela interface, ele não guarda log):
 
-- `janela presa por …`: qualquer linha fora da abertura da sessão (`sessão aberta`) é um problema novo. Anote o
-  que vem depois do `em`.
-- `fila (quadro): esperou X ms pela janela`: um aviso de quadro ficou X ms na fila. É o mesmo problema de
-  antes, se aparecer sem um `janela presa` logo antes.
-- `fila (quadro)` nas linhas `loop da janela`: o máximo deve ficar perto do `render` do mesmo segundo, nunca
-  centenas de ms.
+```sh
+HEXT_LOOP_TRACE=1 "/Applications/Hext Remote.app/Contents/MacOS/HextRemote" view <ID> 2>&1 | tee janela.log
+```
 
-Se travar, mande o `janela.log`. Lembre que o `Tee-Object` grava em UTF-16.
+1. Abra uma sessão com vídeo rodando do outro lado e minimize a janela por 10 minutos. Abra de novo: a janela
+   responde na hora e o vídeo volta em até 1 s.
+2. Repita deixando minimizada por mais tempo (uma hora, ou com o Mac em repouso no meio).
+3. Cubra a janela da sessão com outra janela por inteiro por alguns minutos e volte para ela.
+4. Com a janela à vista, confira que o vídeo não ficou mais atrasado que antes (mexa o mouse no computador
+   remoto e compare com a versão anterior).
+
+Passou se nenhuma janela parou e não foi preciso fechar nada à força. No log, procure:
+
+- `janela presa por …`: qualquer linha é um problema. Anote o que vem depois do `em`.
+- `quadro preso por X ms no render`: o vídeo parou X ms, mas a janela seguiu. No Mac, perto de 1000 ms ao
+  voltar de minimizada é a espera limitada fazendo o trabalho. Anote quantas vezes aparece.
+
+Se travar, mande o `janela.log`. No Windows, lembre que o `Tee-Object` grava em UTF-16.

@@ -34,6 +34,9 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
       its button: checked (November 2026).
 - [ ] **Linux:** install the `.deb` on Ubuntu and the `.rpm` on Fedora, open it from the menu, sign in and access
       a computer (video, keyboard, mouse, a file received).
+- [x] **Session window:** each session draws on a thread of its own. On a Mac, a minimized window comes back
+      without freezing; opening another computer no longer stalls the open windows
+      ([janela-travada](estudos/janela-travada.md#roteiro-de-campo)). Checked on a Mac (November 2026).
 - [ ] **Privacy screen:** the F7 milestone 1 checklist ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)).
 
 ## Open issues

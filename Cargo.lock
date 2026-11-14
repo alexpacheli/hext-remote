@@ -2638,6 +2638,7 @@ dependencies = [
  "bytemuck",
  "hext-codec",
  "naga",
+ "objc2 0.6.5",
  "pollster",
  "thiserror 2.0.21",
  "tracing",

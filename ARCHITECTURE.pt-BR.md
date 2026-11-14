@@ -26,7 +26,9 @@ Como o Hext Remote funciona hoje (versão 0.8). Os porquês das principais escol
   - `ui`: a interface (Tauri 2; HTML, CSS e JavaScript simples em `apps/hext/ui`). Mostra o ID, os pedidos, a
     barra de sessão, a conta e as listas de computadores.
   - `view`: a janela da sessão, num processo nativo separado (`winit` + `wgpu`). O vídeo nunca passa por um
-    webview, e um visualizador travado não derruba a interface.
+    webview, e um visualizador travado não derruba a interface. As janelas dividem a thread do event loop;
+    cada sessão desenha numa thread própria, que o decodificador acorda direto, e nada que espere a GPU ou a
+    tela roda onde as janelas se movem ([janela-travada](docs/estudos/janela-travada.md)).
   - `host`: compartilha este computador, dentro do processo da interface no modo portátil.
   - `service`: instala e roda o modo não assistido (seção 4).
 - **O servidor** (`apps/hext-server`, `axum` + `tokio`): distribui os IDs de 9 dígitos, sabe quem está online,
