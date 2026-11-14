@@ -237,9 +237,77 @@ fn watch_updates(app: AppHandle) {
     });
 }
 
+/// How often the Linux app looks whether its package was updated.
+#[cfg(target_os = "linux")]
+const REPLACED_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Linux: `apt` and `dnf` put the new program in place of the old one,
+/// which goes on running from a deleted file (still the old version, saying
+/// a new one is out). Between sessions, it opens again as the new one: under
+/// systemd (the unit of `service install`) by exiting with a failure, for
+/// `Restart=on-failure`; otherwise by starting the new program itself.
+#[cfg(target_os = "linux")]
+fn watch_replaced(app: AppHandle) {
+    // (An AppImage runs from a mount of its own: replacing it is the
+    // person's doing, and the notice of a new version says when.)
+    if std::env::var_os("APPIMAGE").is_some_and(|v| !v.is_empty()) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let mut said = false;
+        loop {
+            tokio::time::sleep(REPLACED_CHECK).await;
+            let Some(path) = replaced() else { continue };
+            if !idle(&app) {
+                if !std::mem::replace(&mut said, true) {
+                    tracing::info!("o pacote foi atualizado: reabrindo depois da sessão");
+                }
+                continue;
+            }
+            tracing::info!("o pacote foi atualizado: reabrindo ({})", path.display());
+            if std::env::var_os("INVOCATION_ID").is_none() {
+                // Once this one is gone: the new one would find it and give
+                // way to it.
+                let started = std::process::Command::new("/bin/sh")
+                    .args(["-c", r#"sleep 2; exec "$0" "$@""#])
+                    .arg(&path)
+                    .args(std::env::args_os().skip(1))
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                if let Err(e) = started {
+                    warn!("reabrir: {e}");
+                    return;
+                }
+                std::process::exit(0);
+            }
+            std::process::exit(1);
+        }
+    });
+}
+
+/// The program this process runs, when it was replaced by another (an
+/// update); not when it was just removed (an uninstall: this one goes on).
+#[cfg(target_os = "linux")]
+fn replaced() -> Option<std::path::PathBuf> {
+    let link = std::fs::read_link("/proc/self/exe").ok()?;
+    replaced_path(link.to_str()?, |path| path.is_file())
+}
+
+/// `/proc/self/exe` of a program whose file is gone reads "<path> (deleted)".
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn replaced_path(
+    link: &str,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(link.strip_suffix(" (deleted)")?);
+    exists(&path).then_some(path)
+}
+
 /// Nothing going on that an update would cut: no session on this computer,
 /// no computer open from here.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn idle(app: &AppHandle) -> bool {
     let shared = app.state::<Shared>();
     // (One lock at a time.)
@@ -2053,6 +2121,8 @@ pub fn run(link: Link) -> Result<()> {
             }
             watch_presence(handle.clone());
             watch_updates(handle.clone());
+            #[cfg(target_os = "linux")]
+            watch_replaced(handle.clone());
             show_account(handle.clone());
             connect_to_host(handle, link, outgoing);
             Ok(())
@@ -2091,7 +2161,22 @@ pub fn run(link: Link) -> Result<()> {
 mod tests {
     use std::collections::HashMap;
 
-    use super::{Computer, SHARED, quote_arg, rename_all};
+    use super::{Computer, SHARED, quote_arg, rename_all, replaced_path};
+
+    #[test]
+    fn an_updated_package_is_told_from_a_removed_one() {
+        let there = |_: &std::path::Path| true;
+        let gone = |_: &std::path::Path| false;
+        let updated = replaced_path("/usr/bin/hext-remote (deleted)", there);
+        assert_eq!(
+            updated.as_deref(),
+            Some(std::path::Path::new("/usr/bin/hext-remote"))
+        );
+        // Uninstalled: nothing to open again.
+        assert_eq!(replaced_path("/usr/bin/hext-remote (deleted)", gone), None);
+        // Still the same file.
+        assert_eq!(replaced_path("/usr/bin/hext-remote", there), None);
+    }
 
     #[test]
     fn the_lists_show_the_name_of_now() {
