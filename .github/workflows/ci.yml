@@ -165,13 +165,14 @@ jobs:
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg" "ubuntu:$VERSION_ID" \
             bash /src/installer/linux/package-test.sh "/pkg/$(basename pkg/*.deb)" /pkg/shots
 
-      # The .rpm too (x86_64 here; the release builds both), on Fedora.
+      # The .rpm too (x86_64 here; the release builds both), on a Fedora whose
+      # glibc is not older than the runner's Ubuntu (26.04: 2.43, Fedora 44).
       - name: Interface (Linux, from the .rpm)
         if: runner.os == 'Linux' && matrix.targets == 'x86_64-unknown-linux-gnu'
         run: |
           cargo install cargo-generate-rpm --locked
           cargo generate-rpm -p apps/hext --target ${{ matrix.targets }} --output pkg/
-          docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg" fedora:43 \
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg" fedora:44 \
             bash /src/installer/linux/package-test.sh "/pkg/$(basename pkg/*.rpm)" /pkg/shots-fedora
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
