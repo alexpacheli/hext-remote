@@ -26,7 +26,9 @@ Portuguese).
   - `ui`: the interface (Tauri 2; plain HTML, CSS and JavaScript in `apps/hext/ui`). It shows the ID, the
     requests, the session bar, the account and the computer lists.
   - `view`: the session window, a separate native process (`winit` + `wgpu`). Video never goes through a
-    webview, and a stuck viewer does not take the interface down.
+    webview, and a stuck viewer does not take the interface down. The windows share the event loop's
+    thread; each session draws on a thread of its own, which the decoder wakes directly, so nothing that
+    waits on the GPU or the screen runs where the windows move ([janela-travada](docs/estudos/janela-travada.md)).
   - `host`: shares this computer, inside the interface's process on a portable run.
   - `service`: installs and runs the unattended mode (section 4).
 - **The server** (`apps/hext-server`, `axum` + `tokio`): hands out the 9-digit IDs, knows who is online, passes

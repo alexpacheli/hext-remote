@@ -34,6 +34,9 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
       conferido (novembro de 2026).
 - [ ] **Linux:** instalar o `.deb` num Ubuntu e o `.rpm` num Fedora, abrir pelo menu, entrar na conta e acessar
       um computador (vídeo, teclado, mouse, arquivo recebido).
+- [x] **Janela da sessão:** cada sessão desenha numa thread própria. No Mac, uma janela minimizada volta sem
+      travar; abrir outro computador não para mais as janelas abertas
+      ([janela-travada](estudos/janela-travada.md#roteiro-de-campo)). Conferido no Mac (novembro de 2026).
 - [ ] **Tela de privacidade:** o roteiro do marco 1 da F7 ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)).
 
 ## Em aberto

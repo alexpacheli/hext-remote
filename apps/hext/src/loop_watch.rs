@@ -33,15 +33,6 @@ pub fn timed<R>(what: &'static str, f: impl FnOnce() -> R) -> R {
     result
 }
 
-/// Counts a wait for the window's thread measured elsewhere (a message in
-/// its queue): what the mouse waited, at least.
-pub fn note(what: &'static str, took: Duration) {
-    if took >= STALL {
-        warn!("{what}: esperou {} ms pela janela", took.as_millis());
-    }
-    count(what, took);
-}
-
 fn count(what: &'static str, took: Duration) {
     let summary = WATCH.with(|watch| watch.borrow_mut().record(what, took, Instant::now()));
     if let Some(summary) = summary {

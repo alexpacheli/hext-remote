@@ -176,9 +176,12 @@ fn preferred_backends() -> Option<wgpu::Backends> {
     (cfg!(windows) && std::env::var_os("WGPU_BACKEND").is_none()).then_some(wgpu::Backends::DX12)
 }
 
-/// A surface on `window` and the GPU to draw it with, on `backends` (`None`:
-/// any, even a software one; with a choice, the others may do better).
-fn open_gpu(window: &Arc<Window>, backends: Option<wgpu::Backends>) -> Result<Gpu, RenderError> {
+/// A surface on `window`, on `backends` (`None`: any). On macOS, only on the
+/// window's thread: AppKit answers nowhere else.
+fn make_surface(
+    window: &Arc<Window>,
+    backends: Option<wgpu::Backends>,
+) -> Result<(wgpu::Instance, wgpu::Surface<'static>), RenderError> {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
     if let Some(backends) = backends {
         descriptor.backends = backends;
@@ -187,6 +190,17 @@ fn open_gpu(window: &Arc<Window>, backends: Option<wgpu::Backends>) -> Result<Gp
     let surface = instance
         .create_surface(window.clone())
         .map_err(|e| RenderError::Surface(e.to_string()))?;
+    Ok((instance, surface))
+}
+
+/// The GPU to draw `surface` with, on `backends` (`None`: any, even a
+/// software one; with a choice, the others may do better). Slow (most of a
+/// second): never on the window's thread.
+fn open_gpu(
+    instance: &wgpu::Instance,
+    surface: wgpu::Surface<'static>,
+    backends: Option<wgpu::Backends>,
+) -> Result<Gpu, RenderError> {
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: Some(&surface),
@@ -248,21 +262,81 @@ pub struct Renderer {
     handle: Option<VideoRect>,
 }
 
+/// Sets `surface` up. On macOS, a frame waits at most a second for the
+/// screen: wgpu would have it wait forever, and a drawable left showing
+/// while the window was minimized can stay stuck there (gfx-rs/wgpu#8309),
+/// with the thread drawing never to come back.
+#[cfg_attr(target_os = "macos", allow(unsafe_code))] // one property of the Metal layer
+fn configure(surface: &wgpu::Surface, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
+    surface.configure(device, config);
+    #[cfg(target_os = "macos")]
+    // SAFETY: one property of the layer, which wgpu sets on every configure
+    // and reads nowhere; the layer itself is left as it is.
+    unsafe {
+        if let Some(surface) = surface.as_hal::<wgpu::hal::api::Metal>() {
+            let layer = surface.render_layer().lock();
+            let () = objc2::msg_send![&**layer, setAllowsNextDrawableTimeout: true];
+        }
+    }
+}
+
+/// The first half of making a [`Renderer`], on the window's thread: the
+/// surface. [`Pending::finish`] does the rest, anywhere.
+pub struct Pending {
+    window: Arc<Window>,
+    size: (u32, u32),
+    backends: Option<wgpu::Backends>,
+    first: Result<(wgpu::Instance, wgpu::Surface<'static>), RenderError>,
+}
+
+impl Pending {
+    /// The GPU and all it draws with: most of a second, on any thread.
+    pub fn finish(self) -> Result<Renderer, RenderError> {
+        let Pending {
+            window,
+            size,
+            backends,
+            first,
+        } = self;
+        let opened = first.and_then(|(instance, surface)| open_gpu(&instance, surface, backends));
+        let gpu = match (opened, backends) {
+            (Ok(gpu), _) => gpu,
+            // (Only where a backend is preferred: Windows, where a surface
+            // can be made on any thread.)
+            (Err(e), Some(backends)) => {
+                tracing::warn!("{backends:?}: {e}");
+                let (instance, surface) = make_surface(&window, None)?;
+                open_gpu(&instance, surface, None)?
+            }
+            (Err(e), None) => return Err(e),
+        };
+        Renderer::build(gpu, size)
+    }
+}
+
 impl Renderer {
-    pub fn new(window: Arc<Window>) -> Result<Self, RenderError> {
+    /// Starts a renderer for `window`, on the window's thread; the GPU comes
+    /// with [`Pending::finish`], anywhere else.
+    pub fn prepare(window: Arc<Window>) -> Pending {
         let size = window.inner_size();
+        let backends = preferred_backends();
+        let first = make_surface(&window, backends);
+        Pending {
+            window,
+            size: (size.width, size.height),
+            backends,
+            first,
+        }
+    }
+
+    fn build(gpu: Gpu, size: (u32, u32)) -> Result<Self, RenderError> {
         let Gpu {
             surface,
             adapter,
             device,
             queue,
-        } = match preferred_backends() {
-            Some(backends) => open_gpu(&window, Some(backends)).or_else(|e| {
-                tracing::warn!("{backends:?}: {e}");
-                open_gpu(&window, None)
-            })?,
-            None => open_gpu(&window, None)?,
-        };
+        } = gpu;
+        let size = winit::dpi::PhysicalSize::new(size.0, size.1);
 
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -279,7 +353,7 @@ impl Renderer {
             .find(|m| modes.contains(m))
             .unwrap_or(wgpu::PresentMode::Fifo);
         config.desired_maximum_frame_latency = 1;
-        surface.configure(&device, &config);
+        configure(&surface, &device, &config);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("yuv"),
@@ -423,7 +497,7 @@ impl Renderer {
         }
         self.config.width = width;
         self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+        configure(&self.surface, &self.device, &self.config);
     }
 
     /// Shows the full screen button, or hides it, from the next render.
@@ -451,6 +525,11 @@ impl Renderer {
     /// Shows the handle, or hides it, from the next render.
     pub fn set_handle(&mut self, rect: Option<VideoRect>) {
         self.handle = rect;
+    }
+
+    /// The size of the current video, once a frame was uploaded.
+    pub fn video_size(&self) -> Option<(u32, u32)> {
+        self.planes.as_ref().map(|p| (p.width, p.height))
     }
 
     /// Where the current video sits in the window, once a frame was uploaded.
@@ -489,21 +568,23 @@ impl Renderer {
         self.write_plane(&planes.v, &frame.v, w / 2, h / 2);
     }
 
-    pub fn render(&mut self) -> Result<(), RenderError> {
+    /// Draws the current picture; `false`: the screen had no room for it
+    /// now (minimized, covered, busy), to try again.
+    pub fn render(&mut self) -> Result<bool, RenderError> {
         let mut texture = self.surface.get_current_texture();
         if matches!(
             texture,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost
         ) {
             // Once more, set up again: a still screen sends no next frame.
-            self.surface.configure(&self.device, &self.config);
+            configure(&self.surface, &self.device, &self.config);
             texture = self.surface.get_current_texture();
         }
         let texture = match texture {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             // Minimized or busy: skip this frame.
-            _ => return Ok(()),
+            _ => return Ok(false),
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.view_format),
@@ -582,7 +663,7 @@ impl Renderer {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(texture);
-        Ok(())
+        Ok(true)
     }
 
     fn create_planes(&self, width: u32, height: u32) -> Planes {
