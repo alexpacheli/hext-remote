@@ -6,7 +6,7 @@
 //! starts this in the user's session ([`Link::Service`]) and only trades
 //! messages with it (see [`crate::ui_link`]). Portable, the host runs in
 //! this same process ([`Link::Portable`]), with the same messages. Installed
-//! on macOS, it is that same host, started at login with no window
+//! on macOS or Linux, it is that same host, started at login with no window
 //! ([`Link::Login`]).
 //!
 //! Windows are made when needed: this stays running in every session of
@@ -70,7 +70,7 @@ pub enum Link {
     #[cfg(windows)]
     Service(String),
     /// This process, started at login (macOS, installed).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     Login,
 }
 
@@ -154,15 +154,16 @@ struct View {
     update: Option<UpdateView>,
     /// The portable app on Windows: it can install itself here.
     installable: bool,
-    /// Others can access this computer. Not on Linux yet: there the app only
-    /// opens other computers.
+    /// Others can access this computer (on a system with no host, the app
+    /// only opens other computers).
     receives: bool,
     /// This app's version, shown in the sidebar.
     version: &'static str,
 }
 
-/// Whether this system's computer can be accessed (Windows and macOS).
-const RECEIVES: bool = cfg!(any(windows, target_os = "macos"));
+/// Whether this system's computer can be accessed (Windows, macOS and,
+/// since F7, Linux).
+const RECEIVES: bool = cfg!(any(windows, target_os = "macos", target_os = "linux"));
 
 #[derive(Debug, Clone, Serialize)]
 struct UpdateView {
@@ -279,13 +280,14 @@ async fn install_here(app: AppHandle) -> Result<(), String> {
         });
         Ok(())
     }
-    // The Mac's is the user's own (a LaunchAgent): no administrator. Done
-    // after this window closes, since the installed copy gives way to one
-    // already open; it then opens in its place.
-    #[cfg(target_os = "macos")]
+    // The Mac's and Linux's are the user's own (a LaunchAgent, a systemd
+    // user unit): no administrator. Done after this window closes, since the
+    // installed copy gives way to one already open; it then opens in its
+    // place.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         if crate::service::installed() {
-            return Err("O Hext Remote já está instalado neste Mac.".to_owned());
+            return Err("O Hext Remote já está instalado neste computador.".to_owned());
         }
         if app
             .state::<Shared>()
@@ -298,6 +300,12 @@ async fn install_here(app: AppHandle) -> Result<(), String> {
             return Err("Termine a sessão antes de instalar.".to_owned());
         }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        // An AppImage's program lives in a mount that goes away when this
+        // closes: the image itself is run again instead.
+        #[cfg(target_os = "linux")]
+        let exe = std::env::var_os("APPIMAGE")
+            .filter(|v| !v.is_empty())
+            .map_or(exe, std::path::PathBuf::from);
         std::process::Command::new("/bin/sh")
             .args(["-c", r#"sleep 2; exec "$0" service install"#])
             .arg(&exe)
@@ -313,7 +321,7 @@ async fn install_here(app: AppHandle) -> Result<(), String> {
         });
         Ok(())
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = app;
         Err("Só no Windows e no Mac.".to_owned())
@@ -731,7 +739,7 @@ fn received(app: &AppHandle, msg: ToUi) {
             view.notice = Some(notice);
             // Started at login with no window: something to be seen (a
             // permission missing, say).
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             if app.get_webview_window("main").is_none() {
                 open_home(app);
             }
@@ -873,7 +881,7 @@ fn connect_to_host(app: AppHandle, link: Link, outgoing: mpsc::UnboundedReceiver
         runtime.block_on(async move {
             match link {
                 Link::Portable => own_host(&app, outgoing, false).await,
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 Link::Login => own_host(&app, outgoing, true).await,
                 #[cfg(windows)]
                 Link::Service(pipe) => {
@@ -1428,13 +1436,13 @@ fn account_bind(shared: State<'_, Shared>, chain: String) -> Result<(), String> 
         );
     }
     let _ = shared;
-    // (The Mac's access is its user's: no administrator.)
-    #[cfg(target_os = "macos")]
+    // (The Mac's and Linux's access is its user's: no administrator.)
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     if crate::service::installed() {
         return crate::service::account_from_app(Some(chain.as_str()))
             .map_err(|e| format!("{e:#}"));
     }
-    Err("Só com o serviço instalado (HextRemote service install).".to_owned())
+    Err("Só com o serviço instalado (`service install`).".to_owned())
 }
 
 /// Sets (or changes) the unattended password typed in the Segurança tab
@@ -1927,15 +1935,12 @@ pub fn run(link: Link) -> Result<()> {
         let service = matches!(link, Link::Service(_));
         (service, service, service)
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let (hidden, stays, can_restart) = {
         let installed = crate::service::installed();
         let login = matches!(link, Link::Login);
         (login, login || installed, installed)
     };
-    // Linux: the window that opens other computers, and nothing more.
-    #[cfg(target_os = "linux")]
-    let (hidden, stays, can_restart) = (false, false, false);
     let (to_host, outgoing) = mpsc::unbounded_channel();
 
     let app = tauri::Builder::default()
@@ -1946,7 +1951,7 @@ pub fn run(link: Link) -> Result<()> {
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().any(|arg| arg == "ui") {
                 open_home(app);
-            } else if cfg!(target_os = "macos") {
+            } else if cfg!(any(target_os = "macos", target_os = "linux")) {
                 // The login's: this one takes its place, and stays.
                 app.state::<Shared>().managed.store(true, Ordering::Relaxed);
             }

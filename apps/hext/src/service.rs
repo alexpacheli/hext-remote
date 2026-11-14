@@ -1,7 +1,9 @@
 //! The installed host. On Windows (F4, milestone 1): a service, online with
 //! the computer's own ID from boot, and an agent in the user's session (see
 //! [`crate::agent`]). On macOS (milestone 9): a LaunchAgent that opens the
-//! app at login, with no window.
+//! app at login, with no window; on Linux (F7, milestone 4), the same with a
+//! systemd user unit. Both of these keep the unattended access in the
+//! user's folder (`user`).
 
 use std::sync::Arc;
 
@@ -11,14 +13,17 @@ use hext_session::host::Restart;
 
 use crate::ServiceAction;
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 mod access;
 #[cfg(windows)]
 mod banner;
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 mod kept;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod user;
 #[cfg(windows)]
 mod windows;
 
@@ -26,6 +31,12 @@ mod windows;
 pub use banner::Banner;
 #[cfg(target_os = "macos")]
 pub use macos::{updatable_app, update_app};
+
+/// The installed app of one user, where it is that (macOS and Linux).
+#[cfg(target_os = "linux")]
+use linux as os;
+#[cfg(target_os = "macos")]
+use macos as os;
 
 /// Above this size a log starts over (the previous one kept as `.old`).
 const MAX_LOG: u64 = 4 << 20;
@@ -56,35 +67,29 @@ fn log_in(dir: &std::path::Path, name: &str) -> Option<std::fs::File> {
         .ok()
 }
 
-/// Whether this computer has the service (on macOS, the LaunchAgent)
-/// installed.
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+/// Whether this computer has the service (on macOS, the LaunchAgent; on
+/// Linux, the user unit) installed.
 pub fn installed() -> bool {
     #[cfg(windows)]
     {
         windows::installed()
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        macos::installed()
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        false
+        os::installed()
     }
 }
 
 /// For the app's own host: what restarts this computer, with the token
 /// kept before the last restart taken back into `resumes`. Only installed on
-/// macOS: on Windows, the service restarts it, and the portable app cannot
-/// come back by itself.
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+/// macOS and Linux: on Windows, the service restarts it, and the portable
+/// app cannot come back by itself.
 pub fn own_restart(resumes: &ResumeTokens) -> Option<Arc<dyn Restart>> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        macos::own_restart(resumes)
+        user::own_restart(resumes)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
         let _ = resumes;
         None
@@ -92,14 +97,13 @@ pub fn own_restart(resumes: &ResumeTokens) -> Option<Arc<dyn Restart>> {
 }
 
 /// Notes this computer's ID for `service status`, where the app's own host
-/// is the installed one (macOS).
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+/// is the installed one (macOS and Linux).
 pub fn remember_id(id: &str) {
-    #[cfg(target_os = "macos")]
-    if macos::installed() {
-        macos::remember_id(id);
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if os::installed() {
+        os::remember_id(id);
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     let _ = id;
 }
 
@@ -121,7 +125,7 @@ fn apply_name(dir: &std::path::Path, change: NameChange) -> Result<bool> {
 }
 
 /// The name of the app opened by hand (and of the viewer): the user's.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg(windows)]
 fn user_name(change: NameChange) -> Result<()> {
     let dir = hext_crypto::config_dir()?;
     let changed = apply_name(&dir, change)?;
@@ -146,10 +150,8 @@ pub fn command(action: ServiceAction) -> Result<()> {
             };
             #[cfg(windows)]
             return windows::name(change);
-            #[cfg(target_os = "macos")]
-            return macos::name(change);
-            #[cfg(not(any(windows, target_os = "macos")))]
-            return user_name(change);
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            return os::name(change);
         }
         ServiceAction::Install { name: Some(name) } => ServiceAction::Install {
             name: Some(crate::name::clean(&name)?),
@@ -172,34 +174,33 @@ pub fn command(action: ServiceAction) -> Result<()> {
             ServiceAction::Name { .. } => unreachable!("answered above"),
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         match action {
-            ServiceAction::Install { name } => macos::install(name),
-            ServiceAction::Uninstall { purge } => macos::uninstall(purge),
-            ServiceAction::Status => macos::status(),
-            ServiceAction::Password { off, .. } => macos::password(off),
+            ServiceAction::Install { name } => os::install(name),
+            ServiceAction::Uninstall { purge } => os::uninstall(purge),
+            ServiceAction::Status => os::status(),
+            ServiceAction::Password { off, .. } => user::password(off),
             ServiceAction::Technicians { revoke, revoke_all } => {
-                macos::technicians(revoke.as_deref(), revoke_all)
+                user::technicians(revoke.as_deref(), revoke_all)
             }
-            ServiceAction::Account { chain, off } => macos::account(chain.as_deref(), off),
-            ServiceAction::VirtualDisplay { .. } => {
-                anyhow::bail!("no Mac, o monitor virtual não precisa de instalação")
-            }
-            ServiceAction::Run => anyhow::bail!("no Mac, quem inicia o Hext Remote é o login"),
+            ServiceAction::Account { chain, off } => user::account(chain.as_deref(), off),
+            ServiceAction::VirtualDisplay { .. } => anyhow::bail!(
+                "{}, o monitor virtual não precisa de instalação",
+                os::ON_THIS_SYSTEM
+            ),
+            ServiceAction::Run => anyhow::bail!(
+                "{}, quem inicia o Hext Remote é o login",
+                os::ON_THIS_SYSTEM
+            ),
             ServiceAction::Name { .. } => unreachable!("answered above"),
         }
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        let _ = action;
-        anyhow::bail!("o serviço por enquanto só existe no Windows e no macOS")
     }
 }
 
 /// What the host of the app opened at login takes to let people in without
-/// anyone accepting (macOS, F6 marco 3): the password, the technicians and
-/// the account.
+/// anyone accepting (macOS, F6 marco 3; Linux, F7 marco 4): the password,
+/// the technicians and the account.
 pub struct LoginAccess {
     pub unattended: hext_session::host::UnattendedAccess,
     pub owners: Arc<dyn hext_session::host::Owners>,
@@ -207,18 +208,17 @@ pub struct LoginAccess {
     pub ask: Box<dyn crate::signaling::Ask>,
 }
 
-/// The unattended access of the installed app on macOS (`None` elsewhere,
-/// or not installed). Keeps `hub` up to date with it.
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+/// The unattended access of the installed app on macOS and Linux (`None`
+/// elsewhere, or not installed). Keeps `hub` up to date with it.
 pub fn login_access(
     key: &Arc<hext_crypto::DeviceKey>,
     hub: &crate::ui_link::UiHub,
 ) -> Option<LoginAccess> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        macos::login_access(key, hub)
+        user::login_access(key, hub)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
         let _ = (key, hub);
         None
@@ -227,8 +227,6 @@ pub fn login_access(
 
 /// Sets the password typed in the app's screen (`Some`), or turns it off
 /// (`None`). On Windows, it takes an administrator: Windows asks.
-// (Linux has no app window: only the CLI.)
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub async fn set_password_from_app(password: Option<String>) -> Result<()> {
     let password = password.map(zeroize::Zeroizing::new);
     #[cfg(windows)]
@@ -238,32 +236,27 @@ pub async fn set_password_from_app(password: Option<String>) -> Result<()> {
             None => windows::password_off_from_app().await,
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         tokio::task::spawn_blocking(move || {
-            macos::set_password_from_app(password.as_deref().map(|p| p.as_str()))
+            user::set_password_from_app(password.as_deref().map(|p| p.as_str()))
         })
         .await?
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        let _ = password;
-        anyhow::bail!("só no Windows e no Mac")
-    }
 }
 
-/// Binds (`Some`) or unbinds the account from the app (macOS: no
+/// Binds (`Some`) or unbinds the account from the app (macOS and Linux: no
 /// administrator, the access is the user's).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(windows, allow(dead_code))]
 pub fn account_from_app(chain: Option<&str>) -> Result<()> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        macos::account(chain, chain.is_none())
+        user::account(chain, chain.is_none())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
         let _ = chain;
-        anyhow::bail!("só no Mac")
+        anyhow::bail!("só no Mac e no Linux")
     }
 }
 

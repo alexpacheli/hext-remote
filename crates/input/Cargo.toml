@@ -1,6 +1,6 @@
 [package]
 name = "hext-input"
-description = "Hext Remote input injection (SendInput on Windows) and key mapping"
+description = "Hext Remote input injection (SendInput, CGEvent, XTest) and key mapping"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -45,6 +45,11 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 objc2-core-foundation.workspace = true
 objc2-core-graphics.workspace = true
 objc2-foundation.workspace = true
+
+# XTest in pure Rust (no libxcb or libXtst to build or run with).
+[target.'cfg(target_os = "linux")'.dependencies]
+hext-capture.workspace = true
+x11rb = { version = "0.13", features = ["xtest"] }
 
 [lints]
 workspace = true

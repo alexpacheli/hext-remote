@@ -4,7 +4,8 @@
 //! - [`SoftwareEncoder`]: OpenH264, identical on every OS;
 //! - a hardware encoder on Windows (a Media Foundation transform from the
 //!   GPU vendor: NVIDIA, AMD or Intel);
-//! - a hardware encoder on macOS (VideoToolbox, on the Mac's media engine).
+//! - a hardware encoder on macOS (VideoToolbox, on the Mac's media engine);
+//! - a hardware encoder on Linux (VA-API, opened at run time: Intel, AMD).
 //!
 //! [`open_encoder`] picks one; in `Auto` mode a failing hardware encoder is
 //! replaced by the software one on the fly. Hardware encoders are configured
@@ -27,6 +28,8 @@ mod mf;
 mod mf_decode;
 mod nv12;
 mod software;
+#[cfg(target_os = "linux")]
+mod vaapi;
 #[cfg(target_os = "macos")]
 mod vt;
 #[cfg(target_os = "macos")]
@@ -217,7 +220,11 @@ fn hardware(settings: EncoderSettings) -> Result<Box<dyn VideoEncoder>, CodecErr
     {
         Ok(Box::new(vt::VtEncoder::new(settings)?))
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Box::new(vaapi::VaapiEncoder::new(settings)?))
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = settings;
         Err(CodecError::NoHardware)
@@ -286,7 +293,7 @@ impl VideoEncoder for AutoEncoder {
 }
 
 /// Error for a hardware encoder whose output the viewer cannot decode.
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub(crate) fn profile_error(profile: u8) -> CodecError {
     CodecError::Hardware(format!(
         "produz perfil H.264 {profile}, o visualizador precisa de Baseline ({})",
@@ -659,7 +666,7 @@ pub(crate) mod tests {
     #[test]
     fn auto_without_hardware_is_software() {
         let encoder = open_encoder(EncoderSettings::default()).unwrap();
-        if !cfg!(any(windows, target_os = "macos")) {
+        if !cfg!(any(windows, target_os = "macos", target_os = "linux")) {
             assert!(!encoder.is_hardware());
         }
         // Without a hardware encoder (or on a machine whose one failed to
@@ -678,14 +685,16 @@ pub(crate) mod tests {
         match open_encoder(settings) {
             // Only where a hardware encoder can exist, and then it is one.
             Ok(encoder) => assert!(
-                cfg!(any(windows, target_os = "macos")) && encoder.is_hardware(),
+                cfg!(any(windows, target_os = "macos", target_os = "linux"))
+                    && encoder.is_hardware(),
                 "{}",
                 encoder.name()
             ),
             Err(CodecError::NoHardware) => {}
             // Platforms with hardware encoders may also report why it failed.
             Err(e) => assert!(
-                cfg!(any(windows, target_os = "macos")) && matches!(e, CodecError::Hardware(_)),
+                cfg!(any(windows, target_os = "macos", target_os = "linux"))
+                    && matches!(e, CodecError::Hardware(_)),
                 "{e}"
             ),
         }

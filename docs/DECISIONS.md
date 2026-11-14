@@ -59,6 +59,17 @@ a lot of native code that only builds and runs on a Mac, for a gain FileVault mo
 affected: after one, macOS signs back in by itself once and locks the screen, and Hext is there. The design stays in
 [F6](planos/F6.md#31-marco-3-o-que-ficou-pronto-e-o-que-falta), in case Macs without FileVault call for it.
 
+<a id="linux-user-unit-no-sign-in-screen"></a>**Linux: a user unit, no sign-in screen** (November 2026, F7
+milestone 4). On Linux, Hext runs as the user, like on the Mac: the `.deb` and `.rpm` ship a systemd *user* unit
+(`/usr/lib/systemd/user/hext-remote.service`, tied to `graphical-session.target`), and `service install`, run by
+each user without `sudo`, turns it on for that user (with an XDG autostart entry for desktops whose session does
+not reach that target). Nothing runs as root, and before someone signs in there is no access; after a restart it
+comes back at the next login. *Why:* capturing the sign-in screen (GDM, SDDM) means running inside the greeter's
+own session, as its user, with a different display server and rules on each distribution and desktop; a system
+service that reaches into it would put a root process next to the screen and the input, against the rule that
+the interface never runs with system rights. The unattended access (password, technicians, account) is the user's,
+in their own folder, as on the Mac.
+
 ## App
 
 **Rust, one native executable.** No runtime, .NET or Java. *Why:* small downloads for a quick support session,

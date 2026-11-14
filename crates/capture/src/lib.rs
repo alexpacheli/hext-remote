@@ -1,8 +1,9 @@
 //! Screen capture.
 //!
 //! [`displays`] lists the displays and [`open`] returns a [`Capturer`] for
-//! one: DXGI Desktop Duplication on Windows, ScreenCaptureKit on macOS, or a
-//! synthetic [`TestPattern`] (any OS) for development and tests.
+//! one: DXGI Desktop Duplication on Windows, ScreenCaptureKit on macOS, X11
+//! (XShm) on Linux, or a synthetic [`TestPattern`] (any OS) for development
+//! and tests.
 
 use std::time::Duration;
 
@@ -11,6 +12,8 @@ mod awake;
 mod desktop;
 #[cfg(windows)]
 mod gpu_nv12;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 mod test_pattern;
@@ -163,7 +166,11 @@ pub fn displays(test_pattern: bool) -> Result<Vec<Display>, CaptureError> {
     {
         macos::displays().map(numbered)
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_displays().map(numbered)
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         Err(CaptureError::Unsupported)
     }
@@ -209,10 +216,51 @@ pub fn open_display(
             max_fps,
         )?))
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        if linux::is_wayland() {
+            return Err(wayland_unsupported());
+        }
+        Ok(Box::new(linux::X11Capturer::new(&display.id, max_fps)?))
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = max_fps;
         Err(CaptureError::Unsupported)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_displays() -> Result<Vec<Display>, CaptureError> {
+    if linux::is_wayland() {
+        return Err(wayland_unsupported());
+    }
+    linux::displays()
+}
+
+#[cfg(target_os = "linux")]
+fn wayland_unsupported() -> CaptureError {
+    CaptureError::Platform(
+        "sessão Wayland: por enquanto, o Hext Remote captura só sessões X11 (na tela de login, \
+         escolha \"Ubuntu em Xorg\")"
+            .into(),
+    )
+}
+
+/// Where the main display is in the system's own coordinates, for input:
+/// X11 counts from the top-left corner of all the monitors, sessions from
+/// the main one. (0, 0) elsewhere.
+pub fn desktop_origin() -> (i32, i32) {
+    #[cfg(target_os = "linux")]
+    {
+        if linux::is_wayland() {
+            return (0, 0);
+        }
+        linux::origin()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (0, 0)
     }
 }
 

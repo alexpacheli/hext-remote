@@ -170,7 +170,6 @@ pub async fn run(args: HostArgs) -> Result<()> {
 /// The portable app's host: by ID only (no access code), asking through the
 /// interface and showing it the session (`hub`), this user's screen. Runs for
 /// as long as the app does.
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub async fn portable(hub: UiHub) -> Result<()> {
     let key = Arc::new(crate::device_key(None)?);
     hub.set_key(&key.public_key());

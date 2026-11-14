@@ -1,7 +1,8 @@
 #!/bin/bash
 # Opens the interface on a virtual screen and checks that its window shows
-# up; then the viewer, with video from the test pattern host on this same
-# machine (by IP, no server). Leaves pictures of both in the folder given:
+# up; then the viewer, with video from a host on this same machine (by IP,
+# no server) capturing this virtual screen. Leaves pictures of both in the
+# folder given:
 #
 #   installer/linux/ui-smoke.sh dist/hext-remote shots
 #
@@ -59,7 +60,20 @@ kill -0 "$app" || { echo "a interface fechou:"; cat "$out/ui.log"; exit 1; }
 echo "interface: janela $window ($(xprop -id "$window" WM_CLASS 2>/dev/null || true))"
 kill "$app"; wait "$app" 2>/dev/null || true
 
-# ---- The viewer, with video ----
+# ---- The viewer, with video: this screen, captured by the host (X11) ----
+# Something moving on it: a still screen sends a single frame, and the
+# viewer's title (with the frame rate) waits for more.
+# (A small ImageMagick window, two colors in turn: each one opens on top of
+# everything, the viewer's window included, which covers the screen.)
+while true; do
+  for color in navy teal; do
+    display -geometry 64x64+0+0 -size 64x64 "xc:$color" >/dev/null 2>&1 &
+    shown=$!
+    sleep 0.5
+    kill "$shown" 2>/dev/null || true
+  done
+done &
+pids+=($!)
 "$program" host --server off --relay off --code 424242 --listen 127.0.0.1:7420 \
   --device-key "$home/host.key" >"$out/host.log" 2>&1 &
 host=$!
@@ -83,3 +97,6 @@ fi
 sleep 2
 import -window root "$out/video.png"
 echo "visualizador: $(xdotool getwindowname "$window") ($(xprop -id "$window" WM_CLASS 2>/dev/null || true))"
+# The screen itself, not the test pattern.
+grep -q 'capturando o monitor' "$out/host.log" || { echo "o host não capturou a tela:"; cat "$out/host.log"; exit 1; }
+grep 'capturando o monitor' "$out/host.log"

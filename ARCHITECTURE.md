@@ -54,17 +54,17 @@ Portuguese).
 capture (GPU) → NV12 → H.264 encode → packets + FEC → QUIC datagrams → decode → wgpu render
 ```
 
-| Step | Windows | macOS | Fallback |
-|---|---|---|---|
-| Capture | DXGI Desktop Duplication (also the sign-in screen and UAC, from the service) | ScreenCaptureKit, at the screen's logical size | — |
-| Encode | Media Foundation (graphics card), zero-copy from the capture | VideoToolbox | OpenH264 (CPU) |
-| Decode | Media Foundation with Direct3D 11 | VideoToolbox | OpenH264 |
+| Step | Windows | macOS | Linux | Fallback |
+|---|---|---|---|---|
+| Capture | DXGI Desktop Duplication (also the sign-in screen and UAC, from the service) | ScreenCaptureKit, at the screen's logical size | X11: XShm, with Damage so a still screen sends nothing | — |
+| Encode | Media Foundation (graphics card), zero-copy from the capture | VideoToolbox | VA-API (graphics card, loaded at run time) | OpenH264 (CPU) |
+| Decode | Media Foundation with Direct3D 11 | VideoToolbox | OpenH264 | OpenH264 |
 
 - H.264 only, low-latency settings, no B-frames. Keyframes on demand (start, loss, monitor switch).
 - Video travels as **QUIC datagrams**: a lost packet blocks nothing. Each frame is split into blocks of up to 64
   packets with Reed-Solomon parity (20%, 40% on keyframes), interleaved, and sent with **pacing** (at most 4× the
   bitrate) so a keyframe does not leave as a burst. The bitrate adapts to the path.
-- The **cursor** is not in the video: the host sends its shape and position, and the viewer draws it locally.
+- The **cursor** is not in the video, and the host does not send it: the viewer shows its own pointer, with no delay.
 - **Several monitors:** the viewer switches with `Ctrl+Alt+1..9` or the numbered buttons on its left edge.
 - **Virtual monitor:** with no monitor attached, the host creates one for the session and removes it at the end
   (MttVDD driver on Windows, optional in the installer; `CGVirtualDisplay` on macOS). `Ctrl+Alt+0` turns it on
@@ -75,7 +75,7 @@ capture (GPU) → NV12 → H.264 encode → packets + FEC → QUIC datagrams →
   `Ctrl+Alt+S` mutes it. Details: [docs/planos/F7.md](docs/planos/F7.md) (in Portuguese).
 
 Other channels, on reliable QUIC streams: keyboard by scancode (works across layouts) and mouse (`SendInput`,
-`CGEvent`), clipboard text, files (drag to the window; they land in Downloads), chat, remote restart with
+`CGEvent`, XTest), clipboard text, files (drag to the window; they land in Downloads), chat, remote restart with
 automatic reconnection, and `Ctrl+Alt+Del` (`Ctrl+Alt+End`) through the Windows service.
 
 ## 4. Unattended mode
@@ -98,8 +98,12 @@ ui (always as the user)  started by the service, talks to it over a pipe only th
 bound technicians, account), stored in the user's folder. After a restart it comes back when someone signs
 in: there is no system service for the sign-in screen ([DECISIONS](docs/DECISIONS.md#mac-no-sign-in-screen)).
 
-**Linux:** the interface, as a technician only: account, My computers, recent ones and opening other computers,
-each in the viewer's window. Being accessed (a host) comes later.
+**Linux:** as on the Mac, the app opens at login, through a systemd user unit (`hext-remote.service`, shipped in
+the `.deb` and `.rpm`; `service install`, without `sudo`, turns it on for whoever runs it), with the same
+unattended access stored in the user's folder. There is no system service: no access before login
+([DECISIONS](docs/DECISIONS.md#linux-user-unit-no-sign-in-screen)). Host on an X11 session (XShm capture, XTest
+mouse and keyboard, several monitors through XRandR); on Wayland the host does not capture yet and says to pick
+the "Ubuntu on Xorg" session. No virtual monitor and no privacy screen on Linux.
 
 ## 5. Who gets in
 
@@ -138,8 +142,8 @@ them in SQLite, and an unconfirmed account is deleted in 24 hours.
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | Technician (viewer) | ✅ | ✅ | ✅ (interface) |
-| Customer (host) | ✅, including sign-in screen and UAC | ✅, after login | test pattern only |
-| Unattended | ✅ service | ✅ after login | — |
+| Customer (host) | ✅, including sign-in screen and UAC | ✅, after login | ✅ on X11, after login |
+| Unattended | ✅ service | ✅ after login | ✅ after login (systemd user unit) |
 | Virtual monitor | ✅ (optional driver) | ✅ | — |
 
 ## 8. Code

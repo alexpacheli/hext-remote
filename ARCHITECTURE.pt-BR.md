@@ -55,18 +55,18 @@ Como o Hext Remote funciona hoje (versão 0.8). Os porquês das principais escol
 captura (GPU) → NV12 → codificação H.264 → pacotes + FEC → datagramas QUIC → decodificação → render wgpu
 ```
 
-| Etapa | Windows | macOS | Reserva |
-|---|---|---|---|
-| Captura | DXGI Desktop Duplication (também a tela de login e o UAC, pelo serviço) | ScreenCaptureKit, no tamanho lógico da tela | — |
-| Codificação | Media Foundation (placa de vídeo), sem cópia desde a captura | VideoToolbox | OpenH264 (processador) |
-| Decodificação | Media Foundation com Direct3D 11 | VideoToolbox | OpenH264 |
+| Etapa | Windows | macOS | Linux | Reserva |
+|---|---|---|---|---|
+| Captura | DXGI Desktop Duplication (também a tela de login e o UAC, pelo serviço) | ScreenCaptureKit, no tamanho lógico da tela | X11: XShm, com Damage para não mandar quadro parado | — |
+| Codificação | Media Foundation (placa de vídeo), sem cópia desde a captura | VideoToolbox | VA-API (placa de vídeo, carregado em tempo de execução) | OpenH264 (processador) |
+| Decodificação | Media Foundation com Direct3D 11 | VideoToolbox | OpenH264 | OpenH264 |
 
 - Só H.264, com configuração de baixa latência e sem B-frames. Keyframes sob demanda (início, perda, troca de
   monitor).
 - O vídeo viaja em **datagramas QUIC**: um pacote perdido não trava nada. Cada quadro vira blocos de até 64
   pacotes com paridade Reed-Solomon (20%, 40% nos keyframes), intercalados e enviados com **pacing** (no máximo
   4× o bitrate), para um keyframe não sair numa rajada. O bitrate se adapta ao caminho.
-- O **cursor** não vai no vídeo: o host manda a forma e a posição, e o visualizador desenha localmente.
+- O **cursor** não vai no vídeo, e o host não o manda: o visualizador mostra o seu próprio ponteiro, sem atraso.
 - **Vários monitores:** o visualizador troca com `Ctrl+Alt+1..9` ou com os botões numerados da borda esquerda.
 - **Monitor virtual:** sem monitor ligado, o host cria um para a sessão e o remove no fim (driver MttVDD no
   Windows, opcional no instalador; `CGVirtualDisplay` no macOS). `Ctrl+Alt+0` liga e troca a resolução.
@@ -77,7 +77,7 @@ captura (GPU) → NV12 → codificação H.264 → pacotes + FEC → datagramas 
   Detalhes: [docs/planos/F7.md](docs/planos/F7.md).
 
 Os outros canais, em streams QUIC confiáveis: teclado por scancode (funciona entre layouts diferentes) e mouse
-(`SendInput`, `CGEvent`), texto da área de transferência, arquivos (arrastar para a janela; chegam em Downloads),
+(`SendInput`, `CGEvent`, XTest), texto da área de transferência, arquivos (arrastar para a janela; chegam em Downloads),
 chat, reinício remoto com reconexão sozinha e `Ctrl+Alt+Del` (`Ctrl+Alt+End`) pelo serviço do Windows.
 
 ## 4. Modo não assistido
@@ -101,8 +101,12 @@ ui (sempre como o usuário)  aberta pelo serviço, fala com ele por um pipe que 
 técnicos vinculados, conta), guardado na pasta do usuário. Depois de reiniciar, volta quando alguém entra na
 conta: não há serviço do sistema para a tela de login ([decisões](docs/DECISIONS.pt-BR.md#mac-sem-tela-de-login)).
 
-**Linux:** a interface, só como técnico: conta, Meus computadores, recentes e acessar outros computadores, cada
-um na janela do visualizador. Ser acessado (host) vem depois.
+**Linux:** como no Mac, o app abre no login, por uma unidade de usuário do `systemd` (`hext-remote.service`, que o
+`.deb` e o `.rpm` trazem; `service install`, sem `sudo`, a liga para quem roda), com o mesmo acesso não assistido
+guardado na pasta do usuário. Não há serviço do sistema: antes do login não há acesso
+([decisões](docs/DECISIONS.pt-BR.md#linux-unidade-de-usuario-sem-tela-de-login)). Host numa sessão X11 (captura
+pelo XShm, mouse e teclado pelo XTest, vários monitores pelo XRandR); no Wayland, o host ainda não captura e diz
+para escolher a sessão "Ubuntu em Xorg". Sem monitor virtual e sem tela de privacidade no Linux.
 
 ## 5. Quem entra
 
@@ -141,8 +145,8 @@ guarda em SQLite, e uma conta não confirmada é apagada em 24 horas.
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | Técnico (visualizador) | ✅ | ✅ | ✅ (interface) |
-| Cliente (host) | ✅, inclusive tela de login e UAC | ✅, depois do login | só imagem de teste |
-| Não assistido | ✅ serviço | ✅ depois do login | — |
+| Cliente (host) | ✅, inclusive tela de login e UAC | ✅, depois do login | ✅ no X11, depois do login |
+| Não assistido | ✅ serviço | ✅ depois do login | ✅ depois do login (unidade de usuário do `systemd`) |
 | Monitor virtual | ✅ (driver opcional) | ✅ | — |
 
 ## 8. Código

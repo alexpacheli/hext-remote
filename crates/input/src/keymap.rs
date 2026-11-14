@@ -292,6 +292,70 @@ pub fn mac_keycode(scancode: u16) -> Option<u16> {
     Some(code)
 }
 
+/// Linux key code (`KEY_*` of `input-event-codes.h`, what evdev reports) for
+/// a PC set-1 scancode, for hosts on Linux. The X11 key code is this plus 8;
+/// the Wayland portal takes it as it is. The keyboard layout of the host
+/// (ABNT2, US...) then decides the character, as on Windows.
+pub fn evdev_keycode(scancode: u16) -> Option<u16> {
+    let code = match scancode {
+        // Set 1 and evdev agree from Escape to F10, the keypad included
+        // (the set-1 table is where evdev's numbers came from).
+        0x01..=0x44 => scancode,
+        0x45 | 0xE045 => 69, // Num Lock
+        0x46 => 70,          // Scroll Lock
+        0x47..=0x53 => scancode,
+        0x56 => 86,    // ISO key next to left Shift (KEY_102ND)
+        0x57 => 87,    // F11
+        0x58 => 88,    // F12
+        0x59 => 117,   // Keypad = (KEY_KPEQUAL)
+        0x64 => 183,   // F13
+        0x65 => 184,   // F14
+        0x66 => 185,   // F15
+        0x67 => 186,   // F16
+        0x68 => 187,   // F17
+        0x69 => 188,   // F18
+        0x6A => 189,   // F19
+        0x6B => 190,   // F20
+        0x6C => 191,   // F21
+        0x6D => 192,   // F22
+        0x6E => 193,   // F23
+        0x70 => 93,    // Kana (KEY_KATAKANAHIRAGANA)
+        0x73 => 89,    // ABNT2 "/?" (KEY_RO)
+        0x76 => 194,   // F24
+        0x79 => 92,    // Henkan
+        0x7B => 94,    // Muhenkan
+        0x7D => 124,   // Yen
+        0x7E => 121,   // ABNT2 keypad "." (KEY_KPCOMMA)
+        0xE010 => 165, // Previous track
+        0xE019 => 163, // Next track
+        0xE01C => 96,  // Keypad Enter
+        0xE01D => 97,  // Right Control
+        0xE020 => 113, // Mute
+        0xE022 => 164, // Play/Pause
+        0xE024 => 166, // Stop
+        0xE02E => 114, // Volume down
+        0xE030 => 115, // Volume up
+        0xE035 => 98,  // Keypad /
+        0xE037 => 99,  // Print Screen (KEY_SYSRQ)
+        0xE038 => 100, // Right Alt (AltGr)
+        0xE047 => 102, // Home
+        0xE048 => 103, // Up
+        0xE049 => 104, // Page Up
+        0xE04B => 105, // Left
+        0xE04D => 106, // Right
+        0xE04F => 107, // End
+        0xE050 => 108, // Down
+        0xE051 => 109, // Page Down
+        0xE052 => 110, // Insert
+        0xE053 => 111, // Delete
+        0xE05B => 125, // Left Windows (KEY_LEFTMETA)
+        0xE05C => 126, // Right Windows
+        0xE05D => 127, // Menu (KEY_COMPOSE)
+        _ => return None,
+    };
+    Some(code)
+}
+
 /// Whether a Mac key (`kVK_*`) is one a real keyboard marks as on the numeric
 /// pad (the keypad and the arrows): the one flag an injected key carries of
 /// its own.
@@ -409,6 +473,176 @@ mod tests {
                 panic!("{code:#06x} and {other:#06x} both map to {mac:#04x}");
             }
         }
+    }
+
+    #[test]
+    fn linux_keycodes() {
+        assert_eq!(evdev_keycode(0x1E), Some(30)); // A (KEY_A)
+        assert_eq!(evdev_keycode(0x1C), Some(28)); // Enter
+        assert_eq!(evdev_keycode(0x39), Some(57)); // Space
+        assert_eq!(evdev_keycode(0x53), Some(83)); // Keypad , on ABNT2 (KEY_KPDOT)
+        assert_eq!(evdev_keycode(0xE04B), Some(105)); // Left
+        assert_eq!(evdev_keycode(0xE038), Some(100)); // AltGr
+        assert_eq!(evdev_keycode(0xE05B), Some(125)); // Win -> Super
+        assert_eq!(evdev_keycode(0x54), None);
+        // The ABNT2 keys: "ç" and the accents sit where the US keyboard has
+        // ";" "'" "[" and "]", and two keys the US one lacks.
+        assert_eq!(evdev_keycode(0x27), Some(39)); // ç (KEY_SEMICOLON)
+        assert_eq!(evdev_keycode(0x28), Some(40)); // ~ ^ (KEY_APOSTROPHE)
+        assert_eq!(evdev_keycode(0x1A), Some(26)); // ´ ` (KEY_LEFTBRACE)
+        assert_eq!(evdev_keycode(0x1B), Some(27)); // [ { (KEY_RIGHTBRACE)
+        assert_eq!(evdev_keycode(0x2B), Some(43)); // ] } (KEY_BACKSLASH)
+        assert_eq!(evdev_keycode(0x56), Some(86)); // \ | (KEY_102ND)
+        assert_eq!(evdev_keycode(0x73), Some(89)); // / ? (KEY_RO)
+        assert_eq!(evdev_keycode(0x7E), Some(121)); // keypad . (KEY_KPCOMMA)
+        // Every key the viewer can send reaches a Linux key, each its own.
+        let mut seen = std::collections::HashMap::new();
+        for code in all_viewer_keys() {
+            let sc = scancode(code, CommandKey::Win).unwrap();
+            let linux = evdev_keycode(sc).unwrap_or_else(|| panic!("{code:?} ({sc:#06x})"));
+            assert!(linux + 8 <= 255, "{code:?}: X11 key codes stop at 255");
+            if let Some(other) = seen.insert(linux, sc) {
+                panic!("{sc:#06x} and {other:#06x} both map to {linux}");
+            }
+        }
+    }
+
+    /// The keys the viewer sends (every one `scancode` maps).
+    fn all_viewer_keys() -> Vec<KeyCode> {
+        use KeyCode::*;
+        [
+            Escape,
+            Digit1,
+            Digit2,
+            Digit3,
+            Digit4,
+            Digit5,
+            Digit6,
+            Digit7,
+            Digit8,
+            Digit9,
+            Digit0,
+            Minus,
+            Equal,
+            Backspace,
+            Tab,
+            KeyQ,
+            KeyW,
+            KeyE,
+            KeyR,
+            KeyT,
+            KeyY,
+            KeyU,
+            KeyI,
+            KeyO,
+            KeyP,
+            BracketLeft,
+            BracketRight,
+            Enter,
+            ControlLeft,
+            KeyA,
+            KeyS,
+            KeyD,
+            KeyF,
+            KeyG,
+            KeyH,
+            KeyJ,
+            KeyK,
+            KeyL,
+            Semicolon,
+            Quote,
+            Backquote,
+            ShiftLeft,
+            Backslash,
+            KeyZ,
+            KeyX,
+            KeyC,
+            KeyV,
+            KeyB,
+            KeyN,
+            KeyM,
+            Comma,
+            Period,
+            Slash,
+            ShiftRight,
+            NumpadMultiply,
+            AltLeft,
+            Space,
+            CapsLock,
+            F1,
+            F2,
+            F3,
+            F4,
+            F5,
+            F6,
+            F7,
+            F8,
+            F9,
+            F10,
+            ScrollLock,
+            Numpad7,
+            Numpad8,
+            Numpad9,
+            NumpadSubtract,
+            Numpad4,
+            Numpad5,
+            Numpad6,
+            NumpadAdd,
+            Numpad1,
+            Numpad2,
+            Numpad3,
+            Numpad0,
+            NumpadDecimal,
+            IntlBackslash,
+            F11,
+            F12,
+            NumpadEqual,
+            F13,
+            F14,
+            F15,
+            F16,
+            F17,
+            F18,
+            F19,
+            F20,
+            F21,
+            F22,
+            F23,
+            KanaMode,
+            IntlRo,
+            F24,
+            Convert,
+            NonConvert,
+            IntlYen,
+            NumpadComma,
+            MediaTrackPrevious,
+            MediaTrackNext,
+            NumpadEnter,
+            ControlRight,
+            AudioVolumeMute,
+            MediaPlayPause,
+            MediaStop,
+            AudioVolumeDown,
+            AudioVolumeUp,
+            NumpadDivide,
+            PrintScreen,
+            AltRight,
+            NumLock,
+            Home,
+            ArrowUp,
+            PageUp,
+            ArrowLeft,
+            ArrowRight,
+            End,
+            ArrowDown,
+            PageDown,
+            Insert,
+            Delete,
+            SuperLeft,
+            SuperRight,
+            ContextMenu,
+        ]
+        .into()
     }
 
     #[test]

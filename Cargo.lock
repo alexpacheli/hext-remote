@@ -2633,6 +2633,7 @@ name = "hext-capture"
 version = "0.8.2"
 dependencies = [
  "block2 0.6.2",
+ "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -2643,6 +2644,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "windows",
+ "x11rb",
 ]
 
 [[package]]
@@ -2661,6 +2663,8 @@ dependencies = [
 name = "hext-codec"
 version = "0.8.2"
 dependencies = [
+ "bytemuck",
+ "libloading 0.8.9",
  "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",
@@ -2701,6 +2705,7 @@ dependencies = [
  "tracing",
  "windows",
  "winit",
+ "x11rb",
 ]
 
 [[package]]

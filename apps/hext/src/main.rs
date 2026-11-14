@@ -137,7 +137,7 @@ enum Command {
         pipe: String,
     },
     /// (Interno) A interface na sessão do usuário, iniciada pelo serviço
-    /// (Windows) ou pelo login (macOS, sem --pipe).
+    /// (Windows) ou pelo login (macOS e Linux, sem --pipe).
     #[command(hide = true)]
     Ui {
         #[arg(long)]
@@ -267,8 +267,8 @@ struct HostArgs {
     /// Monitor a compartilhar (0 = principal).
     #[arg(long, default_value_t = 0)]
     display: usize,
-    /// Transmite uma imagem de teste em vez da tela (padrão no Linux por enquanto).
-    #[arg(long, default_value_t = !cfg!(any(windows, target_os = "macos")))]
+    /// Transmite uma imagem de teste em vez da tela.
+    #[arg(long)]
     test_pattern: bool,
     /// Taxa de bits do vídeo, em Mbps.
     #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u32).range(1..=200))]
@@ -419,7 +419,7 @@ fn main() -> Result<()> {
         Some(Command::Agent { pipe }) => service::agent(&pipe),
         #[cfg(windows)]
         Some(Command::Ui { pipe: Some(pipe) }) => ui::run(ui::Link::Service(pipe)),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         Some(Command::Ui { pipe: None }) => ui::run(ui::Link::Login),
         Some(Command::Ui { .. }) => {
             anyhow::bail!("comando interno: o Hext Remote abre sem comando")

@@ -3,11 +3,13 @@
 //! - The viewer turns window events into [`InputEvent`]s; [`keymap`] maps
 //!   physical keys to PC set-1 scancodes, the wire format for keys.
 //! - The host replays them with an [`Injector`]: `SendInput` on Windows,
-//!   CGEvent on macOS, a logger elsewhere.
+//!   CGEvent on macOS, XTest on Linux (X11), a logger elsewhere.
 
 use hext_proto::InputEvent;
 
 pub mod keymap;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod privacy;
@@ -64,7 +66,11 @@ pub fn injector() -> Box<dyn Injector> {
     {
         Box::new(macos::CgEventInjector::default())
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(linux::XTestInjector::default())
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         Box::new(LogInjector)
     }
@@ -98,5 +104,14 @@ mod tests {
         assert_eq!(area.to_pixel(0.5, 0.5), (-960, 540));
         // Out-of-range input is clamped to the display.
         assert_eq!(area.to_pixel(-3.0, 9.0), (-1920, 1079));
+    }
+
+    /// The Linux host has no privacy screen (yet): the viewer is told it is
+    /// not there, and never offers it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_offers_no_privacy_screen() {
+        assert!(!privacy::Privacy::available());
+        assert!(privacy::Privacy::start("x").is_err());
     }
 }
