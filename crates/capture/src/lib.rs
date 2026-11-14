@@ -2,8 +2,8 @@
 //!
 //! [`displays`] lists the displays and [`open`] returns a [`Capturer`] for
 //! one: DXGI Desktop Duplication on Windows, ScreenCaptureKit on macOS, X11
-//! (XShm) or the Wayland portal (PipeWire) on Linux, or a synthetic [`TestPattern`] (any OS) for development
-//! and tests.
+//! (XShm) or the Wayland portal (PipeWire) on Linux, or a synthetic
+//! [`TestPattern`] (any OS) for development and tests.
 
 use std::time::Duration;
 

@@ -77,6 +77,10 @@ struct Portal {
 static PORTAL: Mutex<Option<Portal>> = Mutex::new(None);
 /// Captures open now: the session closes when none is left for a while.
 static CAPTURES: AtomicUsize = AtomicUsize::new(0);
+/// The person at the computer stopped the sharing while captures were open:
+/// no new question until they are all gone (the session that was stopped
+/// ends), or the monitor checks would ask again every few seconds.
+static STOPPED: AtomicBool = AtomicBool::new(false);
 
 /// The screens the person at the computer shared, as displays; opens the
 /// session first if none is open (which may mean waiting for their answer).
@@ -130,6 +134,12 @@ fn with_portal<T>(f: impl FnOnce(&Portal) -> T) -> Result<T, CaptureError> {
         .as_ref()
         .is_some_and(|p| p.alive.load(Ordering::Acquire))
     {
+        if STOPPED.load(Ordering::Acquire) && CAPTURES.load(Ordering::Acquire) > 0 {
+            return Err(CaptureError::PermissionDenied(
+                "o compartilhamento da tela foi encerrado neste computador".into(),
+            ));
+        }
+        STOPPED.store(false, Ordering::Release);
         *guard = Some(start()?);
     }
     Ok(f(guard.as_ref().expect("just opened")))
@@ -229,6 +239,7 @@ async fn run(
                 // Stopped by the person at the computer: the next session
                 // asks again, never comes back on its own with the token.
                 forget_token();
+                STOPPED.store(true, Ordering::Release);
                 alive.store(false, Ordering::Release);
                 return;
             }

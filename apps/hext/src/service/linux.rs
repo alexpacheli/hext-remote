@@ -262,6 +262,8 @@ pub fn uninstall(purge: bool) -> Result<()> {
     let dir = data_dir()?;
     super::kept::revoke(&dir);
     let _ = std::fs::remove_file(id_file()?);
+    // Nor the Wayland portal's answer: the next host asks the person again.
+    let _ = std::fs::remove_file(dir.join("portal-token"));
     // Unattended access does not come back with a later install.
     let _ = hext_crypto::pake::Verifier::remove(&access()?.password_file());
     if purge {
