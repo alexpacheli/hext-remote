@@ -950,6 +950,14 @@ impl Viewer {
             r.x += dx;
             r.y += dy;
         }
+        // What the window has no room for is neither drawn nor pressed.
+        let (width, height) = (size.width as f32, size.height as f32);
+        let fits = |r: &VideoRect| r.x >= 0.0 && r.x + r.width <= width && r.y + r.height <= height;
+        let fitting = fits(&rect);
+        let bar = bar.filter(|bar| fits(&bar.rect));
+        let chat = chat.filter(fits);
+        let privacy = privacy.filter(|(r, _)| fits(r));
+        let sound = sound.filter(|(r, _)| fits(r));
         // The buttons call for each other: all up, all down.
         let called = VideoRect {
             x: left,
@@ -968,7 +976,7 @@ impl Viewer {
             ButtonAction::Enter
         };
         let shown = near || self.button_hint.is_some();
-        let button = shown.then_some((action, rect));
+        let button = (shown && fitting).then_some((action, rect));
         let bar = bar.filter(|_| shown);
         let chat = chat.filter(|_| shown);
         let privacy = privacy.filter(|_| shown);
@@ -1015,11 +1023,11 @@ impl Viewer {
 
     /// Ctrl+Alt+S: the host's sound, off and on.
     fn toggle_sound(&mut self) {
+        // (Coming back, nothing: the session it gets takes the window's word.)
+        let Some(session) = &self.session else { return };
         let muted = !self.player.muted();
         self.player.set_muted(muted);
-        if let Some(session) = &self.session {
-            session.set_audio(!muted);
-        }
+        session.set_audio(!muted);
         info!("som {}", if muted { "desligado" } else { "ligado" });
         self.last_title = Instant::now() - Duration::from_secs(1);
         self.update_title();
@@ -1242,6 +1250,8 @@ impl Viewer {
                     self.coming_back = None;
                     self.last_title = Instant::now() - Duration::from_secs(1);
                     self.update_title();
+                    // The privacy button needs a session: back with it.
+                    self.update_button();
                 }
                 Err(e) => {
                     let e = e.context("não foi possível voltar à sessão");
@@ -1347,9 +1357,7 @@ impl Viewer {
                     }
                     if pressed && self.on(self.sound_button.map(|(r, _)| r)) {
                         self.button_pressed = true;
-                        if self.session.is_some() {
-                            self.toggle_sound();
-                        }
+                        self.toggle_sound();
                         return;
                     }
                     if pressed && self.on_button() {
