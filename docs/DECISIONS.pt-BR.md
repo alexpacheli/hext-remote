@@ -104,6 +104,13 @@ Ed25519 guardada como segredo do repositório, e o app só aceita essa assinatur
 e uma pessoa as publica. *Por quê:* o GitHub só entrega os arquivos; trocar um deles não passa da conferência.
 Funciona igual com ou sem assinatura de código nos instaladores.
 
+**No Linux com Wayland, a interface pelo XWayland** (0.9.1). O processo da interface (Tauri, GTK) prefere o X11
+(`gdk_set_allowed_backends`) quando a sessão é Wayland e o XWayland existe; o que ele abre e a captura seguem no
+Wayland. *Por quê:* o Wayland não
+deixa uma janela escolher onde fica nem ficar por cima das outras, e a barra da sessão (o aviso de que o computador
+está sendo acessado) precisa das duas coisas. O preço: com escala fracionada, a janela do app pode ficar menos
+nítida.
+
 **Monitor virtual por um driver de código aberto, só quando pedido** (0.7.0). O Windows usa o driver MttVDD
 (licença MIT), uma opção desmarcada no instalador (ou `service virtual-display install`). Os arquivos dele vão
 dentro do `.msi`, fixados pelo SHA-256, e o certificado do driver é conferido pela impressão digital. O macOS
