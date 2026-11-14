@@ -434,11 +434,11 @@ fn main() -> Result<()> {
 /// On Wayland no window may place itself or stay above the others (GNOME,
 /// KDE): the session bar would open in the middle of the screen, behind
 /// whatever is in front, and could not fold to the top edge. The interface
-/// runs through XWayland instead, where both work. The viewer, a process of
-/// its own (winit), stays on Wayland, and so does the capture (it goes by
-/// `XDG_SESSION_TYPE`). Someone who chose a backend keeps it.
+/// runs through XWayland instead, where both work (Wayland still, if X fails
+/// to open). Only this process: nothing goes in the environment, so what it
+/// opens (the browser, the viewer, its dialogs) stays on Wayland, and so does
+/// the capture. Someone who chose a backend keeps it.
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)] // set_var
 fn interface_on_x11() {
     if wants_x11(
         std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
@@ -446,8 +446,8 @@ fn interface_on_x11() {
         std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty()),
         std::env::var_os("GDK_BACKEND").is_some(),
     ) {
-        // SAFETY: first thing in main, before any other thread exists.
-        unsafe { std::env::set_var("GDK_BACKEND", "x11") };
+        // (Before Tauri opens GTK.)
+        gdk::set_allowed_backends("x11,wayland");
     }
 }
 

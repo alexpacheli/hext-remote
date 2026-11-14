@@ -100,8 +100,9 @@ repository secret, and the app accepts only that signature. Releases start as dr
 *Why:* GitHub only serves the files; replacing one does not get past the check. It works the same whether or not
 the installers are code-signed.
 
-**On Linux with Wayland, the interface through XWayland** (0.9.1). The app (Tauri, GTK) runs with `GDK_BACKEND=x11`
-when the session is Wayland and XWayland is there; the viewer and the capture stay on Wayland. *Why:* Wayland
+**On Linux with Wayland, the interface through XWayland** (0.9.1). The interface process (Tauri, GTK) prefers X11
+(`gdk_set_allowed_backends`) when the session is Wayland and XWayland is there; what it opens and the capture stay
+on Wayland. *Why:* Wayland
 lets no window choose where it goes or stay above the others, and the session bar (the notice that the computer
 is being accessed) needs both. The cost: with fractional scaling, the app window may look less sharp.
 

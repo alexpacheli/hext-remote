@@ -71,6 +71,8 @@ windows = { workspace = true, features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 # The question before taking a file: GTK, already there for the interface.
 rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
+# The interface through XWayland on Wayland (main.rs, `interface_on_x11`).
+gdk = "0.18"
 
 [lints]
 workspace = true
