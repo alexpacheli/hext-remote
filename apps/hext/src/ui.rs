@@ -650,7 +650,11 @@ fn open_bar(app: &AppHandle) {
                 .shadow(false)
                 .inner_size(WIDTH, BAR_OPEN.1)
                 .decorations(false)
-                .resizable(false)
+                // On Linux a GTK window that cannot be resized takes the size its
+                // content asks for, not the one given (about 200 px tall), and
+                // ignores being folded. Without a frame, nobody can resize it
+                // anyway.
+                .resizable(cfg!(target_os = "linux"))
                 .maximizable(false)
                 .minimizable(false)
                 .always_on_top(true)
