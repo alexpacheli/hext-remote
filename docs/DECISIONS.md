@@ -68,7 +68,9 @@ comes back at the next login. *Why:* capturing the sign-in screen (GDM, SDDM) me
 own session, as its user, with a different display server and rules on each distribution and desktop; a system
 service that reaches into it would put a root process next to the screen and the input, against the rule that
 the interface never runs with system rights. The unattended access (password, technicians, account) is the user's,
-in their own folder, as on the Mac.
+in their own folder, as on the Mac. On Wayland (F7 milestone 5), GNOME's only way to the sign-in screen is the
+"remote login" of `gnome-remote-desktop`: a system service, over RDP, built on a private GDM API; left out for the
+same reason ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro), in Portuguese).
 
 ## App
 

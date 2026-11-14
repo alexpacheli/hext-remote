@@ -57,7 +57,7 @@ captura (GPU) → NV12 → codificação H.264 → pacotes + FEC → datagramas 
 
 | Etapa | Windows | macOS | Linux | Reserva |
 |---|---|---|---|---|
-| Captura | DXGI Desktop Duplication (também a tela de login e o UAC, pelo serviço) | ScreenCaptureKit, no tamanho lógico da tela | X11: XShm, com Damage para não mandar quadro parado | — |
+| Captura | DXGI Desktop Duplication (também a tela de login e o UAC, pelo serviço) | ScreenCaptureKit, no tamanho lógico da tela | X11: XShm, com Damage para não mandar quadro parado. Wayland: o portal ScreenCast e o PipeWire | — |
 | Codificação | Media Foundation (placa de vídeo), sem cópia desde a captura | VideoToolbox | VA-API (placa de vídeo, carregado em tempo de execução) | OpenH264 (processador) |
 | Decodificação | Media Foundation com Direct3D 11 | VideoToolbox | OpenH264 | OpenH264 |
 
@@ -101,8 +101,11 @@ conta: não há serviço do sistema para a tela de login ([decisões](docs/DECIS
 `.deb` e o `.rpm` trazem; `service install`, sem `sudo`, a liga para quem roda), com o mesmo acesso não assistido
 guardado na pasta do usuário. Não há serviço do sistema: antes do login não há acesso
 ([decisões](docs/DECISIONS.pt-BR.md#linux-unidade-de-usuario-sem-tela-de-login)). Host numa sessão X11 (captura
-pelo XShm, mouse e teclado pelo XTest, vários monitores pelo XRandR); no Wayland, o host ainda não captura e diz
-para escolher a sessão "Ubuntu em Xorg". Sem monitor virtual e sem tela de privacidade no Linux.
+pelo XShm, mouse e teclado pelo XTest, vários monitores pelo XRandR). No Wayland, tudo passa pelo portal do
+sistema, por D-Bus: uma sessão RemoteDesktop com as telas do ScreenCast junto, então o sistema pergunta uma vez a
+quem está no computador (e um token de restauração dispensa a pergunta da próxima vez); a imagem pelo PipeWire
+(carregado em tempo de execução), mouse e teclado em códigos do `evdev`. Sem monitor virtual, sem tela de
+privacidade e sem tela de login (GDM) no Linux.
 
 ## 5. Quem entra
 
@@ -141,7 +144,7 @@ guarda em SQLite, e uma conta não confirmada é apagada em 24 horas.
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | Técnico (visualizador) | ✅ | ✅ | ✅ (interface) |
-| Cliente (host) | ✅, inclusive tela de login e UAC | ✅, depois do login | ✅ no X11, depois do login |
+| Cliente (host) | ✅, inclusive tela de login e UAC | ✅, depois do login | ✅ no X11 e no Wayland (pelo portal), depois do login |
 | Não assistido | ✅ serviço | ✅ depois do login | ✅ depois do login (unidade de usuário do `systemd`) |
 | Monitor virtual | ✅ (driver opcional) | ✅ | — |
 

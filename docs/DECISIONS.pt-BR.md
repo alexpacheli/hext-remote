@@ -72,7 +72,9 @@ acesso; depois de reiniciar, volta no próximo login. *Por quê:* capturar a tel
 da sessão do próprio greeter, como o usuário dele, com outro servidor gráfico e regras diferentes em cada
 distribuição e ambiente; um serviço do sistema que entra nela poria um processo root junto da tela e do teclado,
 contra a regra de a interface nunca rodar com direitos do sistema. O acesso não assistido (senha, técnicos, conta) é
-do usuário, na pasta dele, como no Mac.
+do usuário, na pasta dele, como no Mac. No Wayland (F7 marco 5), o único caminho do GNOME para a tela de login é o
+"login remoto" do `gnome-remote-desktop`: um serviço do sistema, por RDP, que usa uma API privada do GDM; ficou de
+fora pelo mesmo motivo ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)).
 
 ## App
 

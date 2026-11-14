@@ -18,6 +18,7 @@ versão. **Última atualização: novembro de 2026, versão 0.8.2.**
 | Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0`; uma tela que fica preta (monitor desligado no botão) passa para o virtual sozinha; o visualizador volta ao último monitor escolhido em cada computador (0.8.2) | [monitor-virtual](monitor-virtual.md) |
 | Tela de privacidade (Windows) | `Ctrl+Alt+P` no visualizador: quem está no computador vê uma tela preta com um aviso e o mouse e o teclado dele não fazem nada, enquanto o técnico vê e controla tudo; `Ctrl+Alt+Del` lá desliga | [F7](planos/F7.md#marco-1-como-funciona-e-roteiro) |
 | Host no Linux (X11) | O Linux também é acessado, numa sessão X11: captura (XShm, vários monitores pelo XRandR), mouse e teclado (XTest, ABNT2 por scancode), área de transferência e arquivos; codificação pelo VA-API onde houver, OpenH264 onde não; `service install` (sem `sudo`) o abre no login por uma unidade de usuário do `systemd` que vem no `.deb`/`.rpm`. Sem acesso antes do login, sem monitor virtual, sem tela de privacidade | [F7](planos/F7.md#marco-4-como-funciona-e-roteiro) |
+| Host no Linux (Wayland) | O mesmo no Wayland, pelo portal do sistema: o sistema pergunta uma vez a quem está no computador o que compartilhar (um token de restauração dispensa a pergunta da próxima vez), a imagem pelo PipeWire, mouse e teclado pelo portal RemoteDesktop. A tela de login (GDM) fica de fora | [F7](planos/F7.md#marco-5-como-funciona-e-roteiro) |
 
 Os nomes em "Meus computadores" seguem o nome atual de cada computador (0.7.1).
 
@@ -41,6 +42,9 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - [ ] **Tela de privacidade:** o roteiro do marco 1 da F7 ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)).
 - [ ] **Host no Linux (X11):** o roteiro do marco 4 da F7 num Ubuntu LTS com GNOME no Xorg
       ([F7](planos/F7.md#marco-4-como-funciona-e-roteiro)). Até aqui, conferido só num servidor X virtual no CI.
+- [ ] **Host no Linux (Wayland):** o roteiro do marco 5 da F7 num Ubuntu LTS com GNOME (Wayland)
+      ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). No CI, só o fluxo do PipeWire, com uma fonte de teste; o
+      portal (a pergunta do sistema, o token, mouse e teclado) ainda não foi conferido.
 
 ## Em aberto
 
@@ -52,7 +56,7 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 
 ## A seguir
 
-- **F7 — Extras** ([plano](planos/F7.md)): tela de privacidade no Mac, áudio e host no Linux no Wayland;
+- **F7 — Extras** ([plano](planos/F7.md)): tela de privacidade no Mac e áudio;
   Wake-on-LAN, gravação de sessão, HEVC/AV1, vários técnicos, mobile e web quando houver demanda.
 - **Fluidez, por último e com calma:** comparar lado a lado com o Parsec, na mesma rede e sem Tailscale, e aplicar o
   que o estudo achou ([fluidez-parsec](estudos/fluidez-parsec.md)). Já entrou: a captura acompanha a cadência da tela,

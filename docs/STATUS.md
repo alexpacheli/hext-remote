@@ -18,6 +18,7 @@ Where Hext Remote stands: what is done, what is being checked and what comes nex
 | Virtual monitor | Session on a computer with no monitor (Windows driver as an installer option, macOS built in), resolution with `Ctrl+Alt+0`; a screen that stays black (a display turned off at its button) moves to the virtual one by itself; the viewer goes back to the last monitor chosen for each computer (0.8.2) | [monitor-virtual](monitor-virtual.md) |
 | Privacy screen (Windows) | `Ctrl+Alt+P` in the viewer: the person at the computer sees a black screen with a notice and their mouse and keyboard do nothing, while the technician sees and controls everything; `Ctrl+Alt+Del` there ends it | [F7](planos/F7.md#marco-1-como-funciona-e-roteiro) |
 | Linux host (X11) | Linux is accessed too, on an X11 session: capture (XShm, several monitors through XRandR), mouse and keyboard (XTest, ABNT2 by scancode), clipboard and files; VA-API encoding where there is one, OpenH264 otherwise; `service install` (no `sudo`) opens it at login through a systemd user unit shipped in the `.deb`/`.rpm`. No access before login, no virtual monitor, no privacy screen | [F7](planos/F7.md#marco-4-como-funciona-e-roteiro) |
+| Linux host (Wayland) | The same on Wayland, through the desktop's portal: the desktop asks the person at the computer once what to share (a restore token skips it next time), frames by PipeWire, input through the RemoteDesktop portal. The sign-in screen (GDM) stays out | [F7](planos/F7.md#marco-5-como-funciona-e-roteiro) |
 
 Names in "My computers" follow the computer's current name (0.7.1).
 
@@ -41,6 +42,9 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 - [ ] **Privacy screen:** the F7 milestone 1 checklist ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)).
 - [ ] **Linux host (X11):** the F7 milestone 4 checklist on Ubuntu LTS with GNOME on Xorg
       ([F7](planos/F7.md#marco-4-como-funciona-e-roteiro)). Checked so far only on a virtual X server in CI.
+- [ ] **Linux host (Wayland):** the F7 milestone 5 checklist on Ubuntu LTS with GNOME (Wayland)
+      ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). In CI only the PipeWire stream, from a test source; the
+      portal (the desktop's question, the restore token, input) is not checked yet.
 
 ## Open issues
 
@@ -53,8 +57,8 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 
 ## Next
 
-- **F7 — Extras** ([plan](planos/F7.md), in Portuguese): privacy screen on the Mac, audio and the Linux host
-  on Wayland; Wake-on-LAN, session recording, HEVC/AV1, several technicians, mobile and web when there is demand.
+- **F7 — Extras** ([plan](planos/F7.md), in Portuguese): privacy screen on the Mac and audio;
+  Wake-on-LAN, session recording, HEVC/AV1, several technicians, mobile and web when there is demand.
 - **Smoothness, last and with care:** compare with Parsec side by side, on the same network without Tailscale, and
   apply what the study found ([fluidez-parsec](estudos/fluidez-parsec.md)). Already in: the capture keeps step with
   the screen, and the log shows the longest gap between frames on both sides.
