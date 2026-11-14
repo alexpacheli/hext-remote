@@ -61,6 +61,14 @@ echo "interface: janela $window ($(xprop -id "$window" WM_CLASS 2>/dev/null || t
 kill "$app"; wait "$app" 2>/dev/null || true
 
 # ---- The viewer, with video: this screen, captured by the host (X11) ----
+# Something moving on it: a still screen sends a single frame, and the
+# viewer's title (with the frame rate) waits for more.
+if command -v animate >/dev/null; then
+  animate -delay 20 rose: logo: >/dev/null 2>&1 &
+else
+  magick animate -delay 20 rose: logo: >/dev/null 2>&1 &
+fi
+pids+=($!)
 "$program" host --server off --relay off --code 424242 --listen 127.0.0.1:7420 \
   --device-key "$home/host.key" >"$out/host.log" 2>&1 &
 host=$!
