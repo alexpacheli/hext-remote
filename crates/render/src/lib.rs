@@ -266,6 +266,7 @@ pub struct Renderer {
 /// screen: wgpu would have it wait forever, and a drawable left showing
 /// while the window was minimized can stay stuck there (gfx-rs/wgpu#8309),
 /// with the thread drawing never to come back.
+#[cfg_attr(target_os = "macos", allow(unsafe_code))] // one property of the Metal layer
 fn configure(surface: &wgpu::Surface, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
     surface.configure(device, config);
     #[cfg(target_os = "macos")]
