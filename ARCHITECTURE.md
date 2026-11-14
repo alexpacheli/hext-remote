@@ -64,7 +64,7 @@ capture (GPU) → NV12 → H.264 encode → packets + FEC → QUIC datagrams →
 - Video travels as **QUIC datagrams**: a lost packet blocks nothing. Each frame is split into blocks of up to 64
   packets with Reed-Solomon parity (20%, 40% on keyframes), interleaved, and sent with **pacing** (at most 4× the
   bitrate) so a keyframe does not leave as a burst. The bitrate adapts to the path.
-- The **cursor** is not in the video: the host sends its shape and position, and the viewer draws it locally.
+- The **cursor** is not in the video, and the host does not send it: the viewer shows its own pointer, with no delay.
 - **Several monitors:** the viewer switches with `Ctrl+Alt+1..9` or the numbered buttons on its left edge.
 - **Virtual monitor:** with no monitor attached, the host creates one for the session and removes it at the end
   (MttVDD driver on Windows, optional in the installer; `CGVirtualDisplay` on macOS). `Ctrl+Alt+0` turns it on

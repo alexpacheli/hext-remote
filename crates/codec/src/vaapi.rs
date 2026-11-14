@@ -880,7 +880,11 @@ impl VaapiEncoder {
         let bitrate = self.settings.bitrate_bps.max(100_000);
         let fps = (self.settings.max_fps.round() as u32).clamp(1, 240);
         let mut buffers = Vec::new();
-        if idr || self.rate_changed {
+        // The sequence only with an IDR: one in the middle of the stream
+        // makes some drivers write a new SPS there, and the viewer's decoder
+        // then waits for an IDR that, at 2^15 pictures apart, never comes. A
+        // new bitrate goes in the rate control alone.
+        if idr {
             let mut seq = SequenceH264::zeroed();
             seq.level_idc = 51;
             seq.intra_period = IDR_EVERY as u32;
@@ -897,6 +901,8 @@ impl VaapiEncoder {
                 seq.frame_crop_bottom_offset = crop_bottom;
             }
             buffers.push(va.buffer(session.context, BUFFER_SEQUENCE, raw(&seq))?);
+        }
+        if idr || self.rate_changed {
             let rate = MiscRateControl {
                 bits_per_second: bitrate,
                 target_percentage: 100,

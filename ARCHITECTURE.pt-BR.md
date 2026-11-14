@@ -66,7 +66,7 @@ captura (GPU) → NV12 → codificação H.264 → pacotes + FEC → datagramas 
 - O vídeo viaja em **datagramas QUIC**: um pacote perdido não trava nada. Cada quadro vira blocos de até 64
   pacotes com paridade Reed-Solomon (20%, 40% nos keyframes), intercalados e enviados com **pacing** (no máximo
   4× o bitrate), para um keyframe não sair numa rajada. O bitrate se adapta ao caminho.
-- O **cursor** não vai no vídeo: o host manda a forma e a posição, e o visualizador desenha localmente.
+- O **cursor** não vai no vídeo, e o host não o manda: o visualizador mostra o seu próprio ponteiro, sem atraso.
 - **Vários monitores:** o visualizador troca com `Ctrl+Alt+1..9` ou com os botões numerados da borda esquerda.
 - **Monitor virtual:** sem monitor ligado, o host cria um para a sessão e o remove no fim (driver MttVDD no
   Windows, opcional no instalador; `CGVirtualDisplay` no macOS). `Ctrl+Alt+0` liga e troca a resolução.
