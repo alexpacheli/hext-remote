@@ -800,6 +800,7 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
     // The viewer chose these: shown on the indicator and written in the log,
     // so nothing in them may hide or fake what is around them.
     let wants_audio = hello.audio;
+    let audio_muted = hello.audio_muted;
     let mut client = hello.peer;
     client.device_name = crate::shown_name(&client.device_name);
     client.app_version = crate::shown_name(&client.app_version);
@@ -874,9 +875,10 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
         Ok(mut screen) => {
             // The sound goes with the picture: no permission of its own.
             // Only to a viewer that plays it (an older one would not know
-            // the datagrams).
+            // the datagrams). Offered either way; on from the start unless
+            // the viewer starts muted (it turns it on with Control::Audio).
             let audio = screen.audio().filter(|_| wants_audio);
-            if audio.is_some() {
+            if audio.is_some() && !audio_muted {
                 screen.set_audio(true);
             }
             let mut displays = screen.displays();

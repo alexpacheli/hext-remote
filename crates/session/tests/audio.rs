@@ -1,5 +1,6 @@
 //! The host's sound reaches a viewer that asked for it, stops when muted,
-//! and an older viewer (which asks nothing) gets none.
+//! starts off for a viewer that starts muted, and an older viewer (which
+//! asks nothing) gets none.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -77,7 +78,7 @@ struct Running {
     _endpoints: (hext_net::Endpoint, hext_net::Endpoint),
 }
 
-async fn session(audio: bool) -> Running {
+async fn session(audio: bool, audio_muted: bool) -> Running {
     let accept = EndpointConfig {
         accept: true,
         ..Default::default()
@@ -126,6 +127,7 @@ async fn session(audio: bool) -> Running {
             resume: None,
             asks: Default::default(),
             audio,
+            audio_muted,
         },
         None,
         DecoderPreference::Software,
@@ -164,7 +166,7 @@ async fn told(session: &client::ClientHandle) -> Displays {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_sound_reaches_the_viewer_that_asked() {
-    let mut running = session(true).await;
+    let mut running = session(true, false).await;
     let shown = told(&running.session).await;
     assert!(shown.audio, "the host says it has sound");
     assert_eq!(*running.asked.lock().unwrap(), [true], "on from the start");
@@ -183,7 +185,7 @@ async fn the_sound_reaches_the_viewer_that_asked() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn muting_tells_the_host_to_stop() {
-    let running = session(true).await;
+    let running = session(true, false).await;
     told(&running.session).await;
     running.session.set_audio(false);
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -199,7 +201,7 @@ async fn muting_tells_the_host_to_stop() {
 async fn a_viewer_that_asks_nothing_gets_no_sound() {
     // A viewer of 0.8 sends no `audio` (false): the host keeps it off, and
     // sends no datagram it would not know.
-    let mut running = session(false).await;
+    let mut running = session(false, false).await;
     assert!(!told(&running.session).await.audio);
     assert!(running.asked.lock().unwrap().is_empty());
     let _ = running.play.try_send(packet(0));
@@ -214,9 +216,28 @@ async fn a_viewer_that_asks_nothing_gets_no_sound() {
 #[tokio::test(flavor = "multi_thread")]
 async fn muted_before_the_host_tells_is_told_once_it_does() {
     // Coming back muted: the Hello asked for sound, the window is muted.
-    let running = session(true).await;
+    let running = session(true, false).await;
     running.session.set_audio(false);
     told(&running.session).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(*running.asked.lock().unwrap(), [true, false]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_started_muted_records_nothing_until_turned_on() {
+    let mut running = session(true, true).await;
+    assert!(told(&running.session).await.audio, "offered all the same");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Never on; told off once more (what a host of 0.9 needs).
+    assert_eq!(*running.asked.lock().unwrap(), [false]);
+    running.session.set_audio(true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(*running.asked.lock().unwrap(), [false, true]);
+    let mut heard = running.session.audio().unwrap();
+    running.play.send(packet(0)).await.unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(5), heard.recv())
+        .await
+        .expect("sound")
+        .unwrap();
+    assert_eq!(got, packet(0));
 }

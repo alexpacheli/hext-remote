@@ -78,6 +78,7 @@ async fn streams_and_decodes_video() {
             resume: None,
             asks: Default::default(),
             audio: false,
+            audio_muted: false,
         },
         None,
         // Hardware where the machine has it (CI Macs may), else OpenH264.
@@ -125,6 +126,7 @@ async fn another_display_comes_through_at_its_own_size() {
             resume: None,
             asks: Default::default(),
             audio: false,
+            audio_muted: false,
         },
         None,
         DecoderPreference::Auto,
@@ -201,6 +203,7 @@ async fn host_ending_the_session_is_not_an_error() {
             resume: None,
             asks: Default::default(),
             audio: false,
+            audio_muted: false,
         },
         None,
         DecoderPreference::Software,

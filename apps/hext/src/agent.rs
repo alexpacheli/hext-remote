@@ -16,13 +16,17 @@ use hext_session::SessionError;
 use hext_session::host::{BoxFuture, Desktop, LocalDesktop, Screen, next_displays};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 use tracing::{info, warn};
 
 /// More than any message (a keyframe of a 4K screen is a few MB).
 const MAX_MESSAGE: usize = 64 << 20;
 /// How long a session waits for an agent to start streaming.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
+/// Frames an agent may have sent that the network has not taken yet: the
+/// capture waits beyond that (backpressure), while the pipe carries the
+/// sound on.
+const FRAMES_IN_FLIGHT: usize = 2;
 
 /// Service → agent.
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,6 +58,10 @@ pub enum ToAgent {
     Privacy(bool),
     /// Record the computer's sound (for the viewer), or stop.
     Audio(bool),
+    /// The network took a frame of stream `id`: room for another.
+    FrameDone {
+        id: u64,
+    },
 }
 
 /// The session, as the agent shows it.
@@ -196,6 +204,9 @@ impl AgentHub {
     pub async fn attach<P: AsyncRead + AsyncWrite + Send + 'static>(&self, pipe: P) {
         let (mut reader, mut writer) = tokio::io::split(pipe);
         let (tx, mut rx) = mpsc::unbounded_channel::<ToAgent>();
+        // Acks go to this agent only: a replaced one's cannot add to the
+        // credit of the one after it.
+        let done = tx.clone();
         let agent = {
             let mut state = self.state.lock().expect("lock");
             let agent = state.next_agent;
@@ -229,6 +240,19 @@ impl AgentHub {
                 }
             }
         }));
+        // Frames wait for the network here, in order, while the pipe is read
+        // on: the sound must not wait behind the video. (Bounded by the
+        // agent's credit.)
+        let (queue, mut queued) = mpsc::unbounded_channel::<QueuedFrame>();
+        let acks = done.clone();
+        let _forwarding = Task(tokio::spawn(async move {
+            while let Some((id, frames, frame)) = queued.recv().await {
+                // Waits while the network is busy: backpressure on the agent
+                // through its credit.
+                let _ = frames.send(frame).await;
+                let _ = acks.send(ToAgent::FrameDone { id });
+            }
+        }));
         loop {
             match read_msg::<_, FromAgent>(&mut reader).await {
                 Ok(Some(FromAgent::Started { id, result })) => {
@@ -244,16 +268,25 @@ impl AgentHub {
                 Ok(Some(FromAgent::Frame { id, mut frame })) => {
                     let frames = {
                         let mut state = self.state.lock().expect("lock");
-                        let Some(session) = state.session.as_mut().filter(|s| s.id == id) else {
-                            continue;
-                        };
-                        frame.seq = session.seq;
-                        session.seq += 1;
-                        session.frames.clone()
+                        state
+                            .session
+                            .as_mut()
+                            .filter(|s| s.id == id)
+                            .map(|session| {
+                                frame.seq = session.seq;
+                                session.seq += 1;
+                                session.frames.clone()
+                            })
                     };
-                    // Waits while the network is busy: backpressure on the
-                    // agent through the pipe.
-                    let _ = frames.send(frame).await;
+                    match frames {
+                        Some(frames) => {
+                            let _ = queue.send((id, frames, frame));
+                        }
+                        // Dropped, and done with.
+                        None => {
+                            let _ = done.send(ToAgent::FrameDone { id });
+                        }
+                    }
                 }
                 Ok(Some(FromAgent::Clipboard { id, text })) => {
                     let state = self.state.lock().expect("lock");
@@ -335,6 +368,9 @@ impl AgentHub {
         }
     }
 }
+
+/// A frame of stream `id` on its way to the network.
+type QueuedFrame = (u64, mpsc::Sender<VideoFrame>, VideoFrame);
 
 /// An agent's connection to the hub, until dropped.
 struct Attached {
@@ -509,7 +545,10 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
         }
         Ok::<_, std::io::Error>(())
     }));
-    let mut screen: Option<(Box<dyn Screen>, Task<()>)> = None;
+    let mut screen: Option<Streaming> = None;
+    // The frames the network has room for (FRAMES_IN_FLIGHT, each given
+    // back by FrameDone), new with each stream.
+    let mut credit: Option<(u64, Arc<Semaphore>)> = None;
     let mut indicator = None;
     let result = loop {
         let msg = match read_msg::<_, ToAgent>(&mut reader).await {
@@ -524,6 +563,10 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
                 clipboard,
             } => {
                 stop(&mut screen).await;
+                // (The service starts a stream once per agent, so the acks
+                // of an older one, by id, are not counted here.)
+                let credits = Arc::new(Semaphore::new(FRAMES_IN_FLIGHT));
+                credit = Some((id, credits.clone()));
                 let (frames_tx, mut frames_rx) = mpsc::channel::<VideoFrame>(1);
                 let (copied_tx, mut copied_rx) = mpsc::channel::<String>(4);
                 let copied_tx = clipboard.then_some(copied_tx);
@@ -537,16 +580,31 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
                         if let Some(displays) = &mut displays {
                             displays.mark_changed();
                         }
-                        let forward = Task(tokio::spawn(async move {
+                        // Frames on a task of their own: one waiting for
+                        // credit holds nothing else up.
+                        let frames_out = out.clone();
+                        let frames = Task(tokio::spawn(async move {
+                            loop {
+                                // Credit first: the capture waits meanwhile.
+                                let Ok(permit) = credits.acquire().await else {
+                                    break;
+                                };
+                                let Some(frame) = frames_rx.recv().await else {
+                                    break;
+                                };
+                                permit.forget();
+                                let msg = FromAgent::Frame { id, frame };
+                                if frames_out.send(msg).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }));
+                        let rest = Task(tokio::spawn(async move {
                             loop {
                                 let msg = tokio::select! {
                                     shown = next_displays(&mut displays) => {
                                         FromAgent::Displays { id, displays: shown }
                                     }
-                                    frame = frames_rx.recv() => match frame {
-                                        Some(frame) => FromAgent::Frame { id, frame },
-                                        None => break,
-                                    },
                                     Some(text) = copied_rx.recv() => {
                                         FromAgent::Clipboard { id, text }
                                     }
@@ -559,7 +617,7 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
                                 }
                             }
                         }));
-                        screen = Some((opened, forward));
+                        screen = Some((opened, [frames, rest]));
                         Ok(())
                     }
                     Err(e) => {
@@ -615,7 +673,15 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
                     screen.set_audio(on);
                 }
             }
-            ToAgent::Stop => stop(&mut screen).await,
+            ToAgent::FrameDone { id } => {
+                if let Some((_, credits)) = credit.as_ref().filter(|(current, _)| *current == id) {
+                    credits.add_permits(1);
+                }
+            }
+            ToAgent::Stop => {
+                credit = None;
+                stop(&mut screen).await;
+            }
             ToAgent::Indicator(shown) => {
                 // (Not here: it waits for its window, and input does not.)
                 let old = indicator.take();
@@ -659,8 +725,15 @@ async fn next_audio(audio: &mut Option<mpsc::Receiver<AudioPacket>>) -> AudioPac
     std::future::pending().await
 }
 
-async fn stop(screen: &mut Option<(Box<dyn Screen>, Task<()>)>) {
-    if let Some((screen, _forward)) = screen.take() {
+/// The screen streaming, and the tasks forwarding what it gives (frames,
+/// and the rest).
+type Streaming = (Box<dyn Screen>, [Task<()>; 2]);
+
+async fn stop(screen: &mut Option<Streaming>) {
+    if let Some((screen, forward)) = screen.take() {
+        // The forwarding first: a capture waiting for room among the frames
+        // (no credit) would never stop.
+        drop(forward);
         screen.close().await;
         info!("transmissão encerrada");
     }
@@ -878,6 +951,139 @@ mod tests {
             read_msg(&mut reader).await.unwrap(),
             Some(ToAgent::Audio(true))
         ));
+    }
+
+    fn test_frame(data: u8) -> VideoFrame {
+        VideoFrame {
+            seq: 0,
+            display: 0,
+            width: 2,
+            height: 2,
+            keyframe: true,
+            capture_micros: 0,
+            encode_micros: 0,
+            hardware: false,
+            data: vec![data],
+        }
+    }
+
+    #[tokio::test]
+    async fn the_sound_does_not_wait_for_the_video() {
+        let hub = AgentHub::default();
+        let (service_end, agent_end) = tokio::io::duplex(1 << 20);
+        let attached = hub.clone();
+        tokio::spawn(async move { attached.attach(service_end).await });
+        let desktop = hub.desktop(test_stream());
+        // The network takes no frames for now.
+        let (tx, mut frames) = mpsc::channel(1);
+        let opening = tokio::spawn(async move { desktop.open(tx, None).await });
+
+        let (mut reader, mut writer) = tokio::io::split(agent_end);
+        let Some(ToAgent::Start { id, .. }) = read_msg(&mut reader).await.unwrap() else {
+            panic!("expected Start");
+        };
+        let started = FromAgent::Started { id, result: Ok(()) };
+        write_msg(&mut writer, &started).await.unwrap();
+        let mut screen = opening.await.unwrap().unwrap();
+        let mut heard = screen.audio().expect("the agent has sound");
+        for data in 0..3 {
+            let frame = FromAgent::Frame {
+                id,
+                frame: test_frame(data),
+            };
+            write_msg(&mut writer, &frame).await.unwrap();
+        }
+        let packet = AudioPacket {
+            seq: 1,
+            data: vec![1; 8],
+            prev: Vec::new(),
+        };
+        let sound = FromAgent::Audio {
+            id,
+            packet: packet.clone(),
+        };
+        write_msg(&mut writer, &sound).await.unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(5), heard.recv())
+            .await
+            .expect("the sound, with the video held up");
+        assert_eq!(got, Some(packet));
+
+        // The frames go on in order, each acked once the network took it.
+        for data in 0..3 {
+            let frame = next(&mut frames).await;
+            assert_eq!((frame.seq, frame.data), (u64::from(data), vec![data]));
+        }
+        for _ in 0..3 {
+            assert!(matches!(
+                read_msg(&mut reader).await.unwrap(),
+                Some(ToAgent::FrameDone { id: done }) if done == id
+            ));
+        }
+    }
+
+    /// The next frame the agent sends, if any within `wait`.
+    async fn frame_within(
+        reader: &mut (impl AsyncRead + Unpin),
+        wait: Duration,
+    ) -> Option<VideoFrame> {
+        let started = tokio::time::Instant::now();
+        loop {
+            let left = wait.checked_sub(started.elapsed())?;
+            match tokio::time::timeout(left, read_msg(reader)).await {
+                Ok(Ok(Some(FromAgent::Frame { frame, .. }))) => return Some(frame),
+                Ok(Ok(Some(_))) => {}
+                Ok(other) => panic!("the agent went: {other:?}"),
+                Err(_) => return None,
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_agent_sends_frames_only_on_credit() {
+        let (service_end, agent_end) = tokio::io::duplex(1 << 20);
+        tokio::spawn(async move {
+            let _ = serve(agent_end).await;
+        });
+        let (mut reader, mut writer) = tokio::io::split(service_end);
+        let start = ToAgent::Start {
+            id: 3,
+            stream: test_stream(),
+            clipboard: false,
+        };
+        write_msg(&mut writer, &start).await.unwrap();
+        let wait = Duration::from_secs(5);
+        for _ in 0..FRAMES_IN_FLIGHT {
+            assert!(frame_within(&mut reader, wait).await.is_some());
+        }
+        let quiet = Duration::from_millis(300);
+        assert!(
+            frame_within(&mut reader, quiet).await.is_none(),
+            "no credit"
+        );
+
+        // An older stream's ack gives none.
+        write_msg(&mut writer, &ToAgent::FrameDone { id: 2 })
+            .await
+            .unwrap();
+        assert!(frame_within(&mut reader, quiet).await.is_none());
+        write_msg(&mut writer, &ToAgent::FrameDone { id: 3 })
+            .await
+            .unwrap();
+        assert!(frame_within(&mut reader, wait).await.is_some());
+        assert!(frame_within(&mut reader, quiet).await.is_none());
+
+        // A new stream starts with all its credit.
+        write_msg(&mut writer, &ToAgent::Stop).await.unwrap();
+        let start = ToAgent::Start {
+            id: 4,
+            stream: test_stream(),
+            clipboard: false,
+        };
+        write_msg(&mut writer, &start).await.unwrap();
+        for _ in 0..FRAMES_IN_FLIGHT {
+            assert!(frame_within(&mut reader, wait).await.is_some());
+        }
+        assert!(frame_within(&mut reader, quiet).await.is_none());
     }
 
     #[tokio::test]

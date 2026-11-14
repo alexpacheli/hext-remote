@@ -72,7 +72,7 @@ capture (GPU) → NV12 → H.264 encode → packets + FEC → QUIC datagrams →
 - **Sound:** what the host plays (WASAPI loopback on Windows, ScreenCaptureKit on macOS 13+) goes as Opus, 48 kHz,
   10 ms per datagram (each also carrying the previous one), beside the video's pacing and FEC, and nothing while
   silent; the viewer keeps about 40 ms in a queue that never grows past 70 ms and plays it with `cpal`.
-  `Ctrl+Alt+S` mutes it. Details: [docs/planos/F7.md](docs/planos/F7.md) (in Portuguese).
+  Sessions start without it; `Ctrl+Alt+S` turns it on and off. Details: [docs/planos/F7.md](docs/planos/F7.md) (in Portuguese).
 
 Other channels, on reliable QUIC streams: keyboard by scancode (works across layouts) and mouse (`SendInput`,
 `CGEvent`, XTest), clipboard text, files (drag to the window; they land in Downloads), chat, remote restart with
