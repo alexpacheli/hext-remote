@@ -19,7 +19,7 @@ use hext_input::keymap::{self, CommandKey};
 use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::Os;
 use hext_proto::{
-    ChatText, Displays, Hello, HelloAsks, InputEvent, MouseButton, PeerInfo, RejectReason,
+    ChatText, Displays, Hello, HelloAsks, InputEvent, MouseButton, PeerInfo, Privacy, RejectReason,
     VirtualDisplay,
 };
 use hext_render::{
@@ -1082,6 +1082,7 @@ impl Viewer {
             count,
             current,
             virtual_display,
+            privacy,
         } = self.displays;
         let on_virtual = match virtual_display {
             VirtualDisplay::On {
@@ -1106,6 +1107,9 @@ impl Viewer {
             }
         } else if let Some(label) = &on_virtual {
             title += &format!(" — monitor {label}");
+        }
+        if privacy == Privacy::On {
+            title += " — tela do cliente escondida (Ctrl+Alt+P mostra)";
         }
         if let Some(snapshot) = stats.snapshot() {
             title += &format!(
@@ -1387,6 +1391,17 @@ impl Viewer {
                 {
                     self.local_key = Some(code);
                     self.show_virtual();
+                    return;
+                }
+                // Ctrl+Alt+P: the privacy screen, on and off.
+                if event.state == ElementState::Pressed
+                    && code == KeyCode::KeyP
+                    && self.ctrl_alt()
+                    && self.displays.privacy != Privacy::None
+                    && let Some(session) = self.session.as_ref().filter(|s| s.permissions.control)
+                {
+                    self.local_key = Some(code);
+                    session.privacy(self.displays.privacy == Privacy::Off);
                     return;
                 }
                 // Ctrl+Alt+1..9: another display of the host. (With no such

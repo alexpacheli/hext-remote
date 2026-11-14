@@ -2590,6 +2590,7 @@ dependencies = [
 name = "hext-input"
 version = "0.8.2"
 dependencies = [
+ "hext-capture",
  "hext-proto",
  "objc2-core-foundation",
  "objc2-core-graphics",

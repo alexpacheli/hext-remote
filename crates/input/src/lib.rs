@@ -10,6 +10,7 @@ use hext_proto::InputEvent;
 pub mod keymap;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod privacy;
 #[cfg(windows)]
 mod windows;
 

@@ -49,6 +49,9 @@ pub enum ToAgent {
     VirtualDisplay(bool),
     /// The virtual monitor's next size.
     NextVirtualSize,
+    /// The privacy screen on or off (it goes off with the agent: a new one
+    /// starts without it, and the viewer is told).
+    Privacy(bool),
 }
 
 /// The session, as the agent shows it.
@@ -441,6 +444,10 @@ impl Screen for AgentScreen {
         self.hub.send(ToAgent::NextVirtualSize);
     }
 
+    fn set_privacy(&self, on: bool) {
+        self.hub.send(ToAgent::Privacy(on));
+    }
+
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         Some(self.displays.clone())
     }
@@ -556,6 +563,11 @@ pub async fn serve<P: AsyncRead + AsyncWrite + Send + 'static>(pipe: P) -> std::
             ToAgent::NextVirtualSize => {
                 if let Some((screen, _)) = &screen {
                     screen.next_virtual_size();
+                }
+            }
+            ToAgent::Privacy(on) => {
+                if let Some((screen, _)) = &screen {
+                    screen.set_privacy(on);
                 }
             }
             ToAgent::Stop => stop(&mut screen).await,

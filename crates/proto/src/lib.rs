@@ -265,6 +265,10 @@ pub enum Control {
     /// ones the host offers. Only when it says it is `resizable`
     /// ([`VirtualDisplay::On`]).
     NextVirtualSize,
+    /// Client → host: the privacy screen on or off (takes
+    /// [`Permissions::control`]). Only to a host that offers it
+    /// ([`Displays::privacy`]): an older host does not know this message.
+    Privacy { on: bool },
 }
 
 /// A message of the chat. It comes from the other computer, so what cannot be
@@ -333,6 +337,24 @@ pub struct Displays {
     /// and an older viewer ignores it.
     #[serde(default, deserialize_with = "absent_is_default")]
     pub virtual_display: VirtualDisplay,
+    /// Whether the host can hide its screen from the person there while the
+    /// technician works. After `virtual_display`, last for the same reason.
+    #[serde(default, deserialize_with = "absent_is_default")]
+    pub privacy: Privacy,
+}
+
+/// The privacy screen of a host (docs/planos/F7.md): the person at the
+/// computer sees a black screen with a notice, and their mouse and keyboard
+/// are blocked; the technician sees and controls everything.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Privacy {
+    /// The host has none (an older one, another system, an older Windows).
+    #[default]
+    None,
+    /// It can turn it on ([`Control::Privacy`]).
+    Off,
+    /// It is on.
+    On,
 }
 
 /// The virtual monitor of a host (docs/monitor-virtual.md): a monitor that
@@ -550,10 +572,12 @@ mod tests {
                     height: 1080,
                     resizable: true,
                 },
+                privacy: Privacy::On,
             }),
             Control::SelectDisplay { index: 2 },
             Control::VirtualDisplay { on: true },
             Control::NextVirtualSize,
+            Control::Privacy { on: true },
             Control::Chat {
                 text: ChatText::new("Pode reiniciar?").unwrap(),
             },
@@ -601,7 +625,24 @@ mod tests {
         .unwrap();
         let displays: Displays = decode(&old).unwrap();
         assert_eq!(displays.virtual_display, VirtualDisplay::None);
+        assert_eq!(displays.privacy, Privacy::None);
         assert_eq!((displays.count, displays.current), (2, 1));
+        // From a host with the virtual monitor and no privacy screen (0.8).
+        #[derive(Serialize, Deserialize)]
+        struct DisplaysOf08 {
+            count: u8,
+            current: u8,
+            virtual_display: VirtualDisplay,
+        }
+        let of_08 = encode(&DisplaysOf08 {
+            count: 1,
+            current: 0,
+            virtual_display: VirtualDisplay::Off,
+        })
+        .unwrap();
+        let displays: Displays = decode(&of_08).unwrap();
+        assert_eq!(displays.virtual_display, VirtualDisplay::Off);
+        assert_eq!(displays.privacy, Privacy::None);
         // To an older viewer: what it knows, the rest ignored.
         let new = encode(&Displays {
             count: 3,
@@ -612,10 +653,13 @@ mod tests {
                 height: 720,
                 resizable: false,
             },
+            privacy: Privacy::On,
         })
         .unwrap();
         let seen: OldDisplays = decode(&new).unwrap();
         assert_eq!((seen.count, seen.current), (3, 2));
+        let seen: DisplaysOf08 = decode(&new).unwrap();
+        assert_eq!(seen.count, 3);
     }
 
     #[test]

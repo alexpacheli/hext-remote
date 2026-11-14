@@ -227,6 +227,14 @@ impl ClientHandle {
         }
     }
 
+    /// Asks the host to turn its privacy screen on or off, if it has one
+    /// ([`Displays::privacy`]).
+    pub fn privacy(&self, on: bool) {
+        if self.displays().privacy != hext_proto::Privacy::None {
+            let _ = self.select_display.send(Control::Privacy { on });
+        }
+    }
+
     /// Asks the host for its virtual monitor's next size, if it can change
     /// it ([`VirtualDisplay::On`]).
     pub fn next_virtual_size(&self) {

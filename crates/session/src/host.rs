@@ -19,7 +19,7 @@ use hext_net::video::{LOG_TARGET, ResendRequest, VideoSender};
 use hext_net::{Admission, Connection, ConnectionError, NetError};
 use hext_proto::{
     ChatText, Control, Displays, ENDED_ON_HOST, Hello, InputEvent, MAX_CLIPBOARD_TEXT, PeerInfo,
-    Permissions, RejectReason, StreamKind, VideoFrame, VirtualDisplay,
+    Permissions, Privacy, RejectReason, StreamKind, VideoFrame, VirtualDisplay,
 };
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
@@ -237,6 +237,9 @@ pub trait Screen: Send {
     fn set_virtual_display(&self, _on: bool) {}
     /// The virtual monitor's next size (only one this session turned on).
     fn next_virtual_size(&self) {}
+    /// Turns the privacy screen on or off. Where there is none, nothing
+    /// changes.
+    fn set_privacy(&self, _on: bool) {}
     /// The displays there are and the one streamed; `None`: one, and no news.
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         None
@@ -299,6 +302,7 @@ impl Desktop for LocalDesktop {
                 wanted: Mutex::new(None),
                 virtual_wanted: Mutex::new(None),
                 virtual_next: AtomicBool::new(false),
+                privacy_wanted: Mutex::new(None),
                 listed: Mutex::new(None),
                 displays: watch::Sender::default(),
             });
@@ -472,6 +476,10 @@ impl Screen for LocalScreen {
         self.shared.virtual_next.store(true, Ordering::Relaxed);
     }
 
+    fn set_privacy(&self, on: bool) {
+        *self.shared.privacy_wanted.lock().expect("lock") = Some(on);
+    }
+
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
         Some(self.shared.displays.subscribe())
     }
@@ -511,6 +519,8 @@ struct Shared {
     virtual_wanted: Mutex<Option<bool>>,
     /// The viewer asked for the virtual monitor's next size.
     virtual_next: AtomicBool,
+    /// The viewer asked for the privacy screen on, or off.
+    privacy_wanted: Mutex<Option<bool>>,
     /// The monitors as last checked, until the capture takes them.
     listed: Mutex<Option<Vec<Display>>>,
     /// What the viewer is told.
@@ -526,6 +536,8 @@ struct Layout {
     virtual_offered: bool,
     /// The virtual monitor is on because of this session: its size changes.
     virtual_resizable: bool,
+    /// The privacy screen, as the viewer is told.
+    privacy: Privacy,
 }
 
 impl Layout {
@@ -547,6 +559,7 @@ impl Layout {
                 }
                 None => VirtualDisplay::Off,
             },
+            privacy: self.privacy,
         }
     }
 
@@ -989,6 +1002,18 @@ pub async fn serve(conn: Connection, config: Arc<HostConfig>) -> Result<PeerInfo
                         screen.set_virtual_display(on);
                     }
                 }
+                // It blocks the person at the computer: it takes control.
+                Ok(Control::Privacy { on }) => {
+                    if session.permissions.control
+                        && let Some(screen) = screen.lock().expect("lock").as_ref()
+                    {
+                        screen.set_privacy(on);
+                        if let Some(audit) = &audit {
+                            let what = if on { "ligada" } else { "desligada" };
+                            audit.audit(&format!("tela de privacidade {what}: {}", session.name));
+                        }
+                    }
+                }
                 Ok(Control::NextVirtualSize) => {
                     if session.permissions.control
                         && let Some(screen) = screen.lock().expect("lock").as_ref()
@@ -1262,6 +1287,7 @@ fn open_first(
         current,
         virtual_offered: false,
         virtual_resizable: false,
+        privacy: Privacy::None,
     };
     Ok((capturer, layout))
 }
@@ -1377,6 +1403,59 @@ impl BlackWatch {
         self.since = None;
         self.asked = false;
         self.looked = None;
+    }
+}
+
+/// What the privacy screen shows the person at the computer.
+const PRIVACY_TEXT: &str = "Este computador está sendo acessado pelo suporte técnico.
+
+A tela volta ao normal quando o 
+                            técnico terminar.
+Para interromper agora, aperte Ctrl+Alt+Del.";
+
+/// The privacy screen, as the capture keeps it: on while the viewer wants it
+/// and this capture runs (it goes off with the session, however it ends).
+struct PrivacySwitch {
+    offered: bool,
+    on: Option<hext_input::privacy::Privacy>,
+}
+
+impl PrivacySwitch {
+    fn new(offered: bool) -> Self {
+        Self { offered, on: None }
+    }
+
+    /// Does what the viewer `asked`, and notices it ending by itself
+    /// (`Ctrl+Alt+Del`). Whether the viewer should hear of it.
+    fn follow(&mut self, asked: Option<bool>) -> bool {
+        let mut news = asked.is_some();
+        if self
+            .on
+            .as_ref()
+            .is_some_and(hext_input::privacy::Privacy::ended)
+        {
+            self.on = None;
+            news = true;
+        }
+        match asked {
+            Some(true) if self.offered && self.on.is_none() => {
+                match hext_input::privacy::Privacy::start(PRIVACY_TEXT) {
+                    Ok(on) => self.on = Some(on),
+                    Err(e) => warn!("tela de privacidade: {e}"),
+                }
+            }
+            Some(false) => self.on = None,
+            _ => {}
+        }
+        news
+    }
+
+    fn state(&self) -> Privacy {
+        match (self.offered, &self.on) {
+            (false, _) => Privacy::None,
+            (true, None) => Privacy::Off,
+            (true, Some(_)) => Privacy::On,
+        }
     }
 }
 
@@ -1586,6 +1665,7 @@ fn follow_displays(
     layout: &mut Layout,
     capturer: &mut Box<dyn Capturer>,
     virtual_switch: &mut VirtualSwitch,
+    privacy: &mut PrivacySwitch,
 ) -> bool {
     let listed = shared.listed.lock().expect("lock").take();
     let mut news = listed.is_some();
@@ -1605,6 +1685,9 @@ fn follow_displays(
         next_virtual_size(layout, virtual_switch);
     }
     layout.virtual_resizable = virtual_switch.owns();
+    let privacy_asked = shared.privacy_wanted.lock().expect("lock").take();
+    let privacy_news = privacy.follow(privacy_asked);
+    layout.privacy = privacy.state();
     let gone = layout.current.is_none().then_some(0);
     // The same display, somewhere else on the desktop: not every capture
     // notices, and the mouse must go there.
@@ -1636,7 +1719,7 @@ fn follow_displays(
     shared.displays.send_if_modified(|shown| {
         let changed = *shown != view;
         *shown = view;
-        changed || asked.is_some() || switch.is_some()
+        changed || asked.is_some() || switch.is_some() || privacy_news
     });
     moved
 }
@@ -1656,6 +1739,8 @@ fn capture_loop(
     // it is captured.
     let virtual_offered = !config.test_pattern && virtual_display::available();
     let mut virtual_switch = VirtualSwitch::default();
+    let mut privacy =
+        PrivacySwitch::new(!config.test_pattern && hext_input::privacy::Privacy::available());
     // Why there is nothing to show, if there is not: said instead of
     // "display not found".
     let mut no_display = None;
@@ -1697,6 +1782,7 @@ fn capture_loop(
         Ok(mut opened) => {
             opened.1.virtual_offered = virtual_offered;
             opened.1.virtual_resizable = virtual_switch.owns();
+            opened.1.privacy = privacy.state();
             shared.displays.send_replace(opened.1.view());
             let _ = started.send(Ok(()));
             opened
@@ -1724,6 +1810,7 @@ fn capture_loop(
             &mut layout,
             &mut capturer,
             &mut virtual_switch,
+            &mut privacy,
         ) {
             // What the encoder held back is of the other display.
             skipped = false;
@@ -2147,6 +2234,7 @@ mod tests {
             current: Some(current),
             virtual_offered: false,
             virtual_resizable: false,
+            privacy: Privacy::None,
         }
     }
 
@@ -2203,8 +2291,20 @@ mod tests {
                     height: 0,
                     resizable: false,
                 },
+                privacy: Privacy::None,
             }
         );
+    }
+
+    #[test]
+    fn a_host_without_the_privacy_screen_says_so_when_asked() {
+        let mut privacy = PrivacySwitch::new(false);
+        assert_eq!(privacy.state(), Privacy::None);
+        assert!(!privacy.follow(None), "nothing asked, nothing to tell");
+        // The viewer hears back, though nothing turned on.
+        assert!(privacy.follow(Some(true)));
+        assert_eq!(privacy.state(), Privacy::None);
+        assert!(privacy.on.is_none());
     }
 
     #[test]
@@ -2293,6 +2393,7 @@ mod tests {
             wanted: Mutex::new(None),
             virtual_wanted: Mutex::new(None),
             virtual_next: AtomicBool::new(false),
+            privacy_wanted: Mutex::new(None),
             listed: Mutex::new(None),
             displays: watch::Sender::default(),
         });
