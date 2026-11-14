@@ -377,6 +377,10 @@ enum CmdKey {
 
 fn main() -> Result<()> {
     let command = Cli::parse().command;
+    #[cfg(target_os = "linux")]
+    if matches!(command, None | Some(Command::Ui { .. })) {
+        interface_on_x11();
+    }
     // The service and its agents have no console: they log to a file.
     let log_file = match &command {
         Some(Command::Service {
@@ -425,6 +429,33 @@ fn main() -> Result<()> {
             anyhow::bail!("comando interno: o Hext Remote abre sem comando")
         }
     }
+}
+
+/// On Wayland no window may place itself or stay above the others (GNOME,
+/// KDE): the session bar would open in the middle of the screen, behind
+/// whatever is in front, and could not fold to the top edge. The interface
+/// runs through XWayland instead, where both work. The viewer, a process of
+/// its own (winit), stays on Wayland, and so does the capture (it goes by
+/// `XDG_SESSION_TYPE`). Someone who chose a backend keeps it.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)] // set_var
+fn interface_on_x11() {
+    if wants_x11(
+        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+        std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty()),
+        std::env::var_os("GDK_BACKEND").is_some(),
+    ) {
+        // SAFETY: first thing in main, before any other thread exists.
+        unsafe { std::env::set_var("GDK_BACKEND", "x11") };
+    }
+}
+
+/// A Wayland session with XWayland there, and no backend chosen.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn wants_x11(session: Option<&str>, wayland: bool, xwayland: bool, chosen: bool) -> bool {
+    let on_wayland = session.map_or(wayland, |kind| kind.eq_ignore_ascii_case("wayland"));
+    on_wayland && xwayland && !chosen
 }
 
 /// This computer's key, created on first run.
@@ -492,7 +523,7 @@ fn parse_addr(addr: &str) -> Result<SocketAddr> {
 
 #[cfg(test)]
 mod tests {
-    use super::{built_or, relay_built};
+    use super::{built_or, relay_built, wants_x11};
 
     #[test]
     fn a_build_setting_left_empty_is_ours() {
@@ -517,5 +548,17 @@ mod tests {
             ),
             "https://relay.example.org"
         );
+    }
+
+    #[test]
+    fn the_interface_goes_through_xwayland_only_on_wayland() {
+        // GNOME on Wayland, XWayland there.
+        assert!(wants_x11(Some("wayland"), true, true, false));
+        // No session type said: the Wayland socket tells.
+        assert!(wants_x11(None, true, true, false));
+        // Xorg, no XWayland, or a backend someone chose.
+        assert!(!wants_x11(Some("x11"), false, true, false));
+        assert!(!wants_x11(Some("wayland"), true, false, false));
+        assert!(!wants_x11(Some("wayland"), true, true, true));
     }
 }

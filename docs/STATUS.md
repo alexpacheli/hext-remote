@@ -46,8 +46,9 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 - [ ] **Linux host (X11):** the F7 milestone 4 checklist on Ubuntu LTS with GNOME on Xorg
       ([F7](planos/F7.md#marco-4-como-funciona-e-roteiro)). Checked so far only on a virtual X server in CI.
 - [ ] **Linux host (Wayland):** the F7 milestone 5 checklist on Ubuntu LTS with GNOME (Wayland)
-      ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). In CI only the PipeWire stream, from a test source; the
-      portal (the desktop's question, the restore token, input) is not checked yet.
+      ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). In the field (November 2026), on Fedora and
+      Ubuntu: the session works, and the desktop asks what to share only the first time. The session bar opened in the
+      middle of the screen; the fix (the interface through XWayland) is still to be checked.
 
 ## Open issues
 

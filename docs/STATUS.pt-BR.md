@@ -46,8 +46,9 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - [ ] **Host no Linux (X11):** o roteiro do marco 4 da F7 num Ubuntu LTS com GNOME no Xorg
       ([F7](planos/F7.md#marco-4-como-funciona-e-roteiro)). Até aqui, conferido só num servidor X virtual no CI.
 - [ ] **Host no Linux (Wayland):** o roteiro do marco 5 da F7 num Ubuntu LTS com GNOME (Wayland)
-      ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). No CI, só o fluxo do PipeWire, com uma fonte de teste; o
-      portal (a pergunta do sistema, o token, mouse e teclado) ainda não foi conferido.
+      ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). No campo (novembro de 2026), no Fedora e no
+      Ubuntu: a sessão funciona, e o sistema pergunta o que compartilhar só na primeira vez. A barra da sessão abria no
+      meio da tela; a correção (a interface pelo XWayland) falta conferir.
 
 ## Em aberto
 

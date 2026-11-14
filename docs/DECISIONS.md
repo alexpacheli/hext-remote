@@ -100,6 +100,11 @@ repository secret, and the app accepts only that signature. Releases start as dr
 *Why:* GitHub only serves the files; replacing one does not get past the check. It works the same whether or not
 the installers are code-signed.
 
+**On Linux with Wayland, the interface through XWayland** (0.9.1). The app (Tauri, GTK) runs with `GDK_BACKEND=x11`
+when the session is Wayland and XWayland is there; the viewer and the capture stay on Wayland. *Why:* Wayland
+lets no window choose where it goes or stay above the others, and the session bar (the notice that the computer
+is being accessed) needs both. The cost: with fractional scaling, the app window may look less sharp.
+
 **Virtual monitor through an open-source driver, only when asked for** (0.7.0). Windows uses the MIT-licensed
 MttVDD driver, an unchecked option in the installer (or `service virtual-display install`). Its files ship
 inside the `.msi`, pinned by SHA-256, and the driver's certificate is matched by thumbprint. macOS uses
