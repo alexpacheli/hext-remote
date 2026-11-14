@@ -354,10 +354,26 @@ impl AgentHub {
         self.send(ToAgent::Indicator(indicator));
     }
 
-    /// Ends the session's streaming (the agent releases any held key).
+    /// Ends whatever is streaming (the agent releases any held key): the
+    /// service on its way out.
     pub fn stop(&self) {
         self.state.lock().expect("lock").session = None;
         self.send(ToAgent::Stop);
+    }
+
+    /// Ends stream `id`'s streaming. A stream already replaced by another
+    /// stops nothing: a session ending late must not stop the one that took
+    /// its place.
+    fn stop_stream(&self, id: u64) {
+        let mut state = self.state.lock().expect("lock");
+        if state.session.as_ref().is_none_or(|s| s.id != id) {
+            return;
+        }
+        state.session = None;
+        // (Under the lock: a Start of the next stream cannot go ahead of it.)
+        if let Some((_, agent)) = &state.agent {
+            let _ = agent.send(ToAgent::Stop);
+        }
     }
 
     /// A [`Desktop`] streaming `stream` through the agents.
@@ -404,9 +420,10 @@ impl Desktop for AgentDesktop {
             let share = clipboard.is_some();
             let (displays_tx, displays) = watch::channel(Displays::default());
             let (audio_tx, audio) = mpsc::channel(hext_session::host::AUDIO_QUEUE);
+            let id;
             {
                 let mut state = self.hub.state.lock().expect("lock");
-                let id = state.next_stream;
+                id = state.next_stream;
                 state.next_stream += 1;
                 state.session = Some(Session {
                     id,
@@ -430,6 +447,7 @@ impl Desktop for AgentDesktop {
             }
             let screen = AgentScreen {
                 hub: self.hub.clone(),
+                id,
                 displays,
                 audio: Some(audio),
             };
@@ -453,6 +471,8 @@ impl Desktop for AgentDesktop {
 
 struct AgentScreen {
     hub: AgentHub,
+    /// Its stream: once another took its place, it reaches the agent no more.
+    id: u64,
     displays: watch::Receiver<Displays>,
     /// Taken by `audio`.
     audio: Option<mpsc::Receiver<AudioPacket>>,
@@ -460,52 +480,77 @@ struct AgentScreen {
 
 impl AgentScreen {
     fn end(&self) {
-        self.hub.stop();
+        self.hub.stop_stream(self.id);
+    }
+
+    /// While its stream is still the hub's: changes the session and sends
+    /// `msg` to the agent, both under the lock (a Start of a stream taking
+    /// its place cannot come in between). `false`: another took its place.
+    fn update(&self, change: impl FnOnce(&mut Session), msg: Option<ToAgent>) -> bool {
+        let mut state = self.hub.state.lock().expect("lock");
+        let Some(session) = state.session.as_mut().filter(|s| s.id == self.id) else {
+            return false;
+        };
+        change(session);
+        if let (Some(msg), Some((_, agent))) = (msg, &state.agent) {
+            let _ = agent.send(msg);
+        }
+        true
+    }
+
+    /// To the agent, while its stream is the hub's.
+    fn send(&self, msg: ToAgent) {
+        self.update(|_| {}, Some(msg));
+    }
+
+    /// Whether its stream is still the hub's.
+    fn owns(&self) -> bool {
+        self.update(|_| {}, None)
     }
 }
 
 impl Screen for AgentScreen {
     fn request_keyframe(&self) {
-        self.hub.send(ToAgent::Keyframe);
+        self.send(ToAgent::Keyframe);
     }
 
     fn inject(&mut self, event: &InputEvent) {
         if *event == InputEvent::SecureAttention {
-            if let Some(send) = &self.hub.secure_attention {
+            if let Some(send) = self.hub.secure_attention.as_ref().filter(|_| self.owns()) {
                 send();
             }
             return;
         }
-        self.hub.send(ToAgent::Input(*event));
+        self.send(ToAgent::Input(*event));
     }
 
     fn set_clipboard(&mut self, text: String) {
-        self.hub.send(ToAgent::Clipboard(text));
+        self.send(ToAgent::Clipboard(text));
     }
 
     fn select_display(&self, index: usize) {
         // Kept for an agent that is yet to come; the one there corrects it
         // if the display does not open.
-        if let Some(session) = &mut self.hub.state.lock().expect("lock").session {
-            session.stream.display = index;
-        }
-        self.hub.send(ToAgent::SelectDisplay(index));
+        self.update(
+            |session| session.stream.display = index,
+            Some(ToAgent::SelectDisplay(index)),
+        );
     }
 
     fn set_virtual_display(&self, on: bool) {
         // Kept for an agent that is yet to come, as the display is.
-        if let Some(session) = &mut self.hub.state.lock().expect("lock").session {
-            session.stream.virtual_display = on;
-        }
-        self.hub.send(ToAgent::VirtualDisplay(on));
+        self.update(
+            |session| session.stream.virtual_display = on,
+            Some(ToAgent::VirtualDisplay(on)),
+        );
     }
 
     fn next_virtual_size(&self) {
-        self.hub.send(ToAgent::NextVirtualSize);
+        self.send(ToAgent::NextVirtualSize);
     }
 
     fn set_privacy(&self, on: bool) {
-        self.hub.send(ToAgent::Privacy(on));
+        self.send(ToAgent::Privacy(on));
     }
 
     fn displays(&self) -> Option<watch::Receiver<Displays>> {
@@ -518,10 +563,7 @@ impl Screen for AgentScreen {
 
     fn set_audio(&self, on: bool) {
         // Kept for an agent that is yet to come, as the display is.
-        if let Some(session) = &mut self.hub.state.lock().expect("lock").session {
-            session.audio_on = on;
-        }
-        self.hub.send(ToAgent::Audio(on));
+        self.update(|session| session.audio_on = on, Some(ToAgent::Audio(on)));
     }
 
     fn close(self: Box<Self>) -> BoxFuture<'static, ()> {
@@ -843,6 +885,140 @@ mod tests {
         screen.inject(&InputEvent::SecureAttention);
         assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 1);
         screen.close().await;
+    }
+
+    /// A session that ends after another took its place (a displaced or
+    /// resumed one closing late) leaves the new one streaming.
+    #[tokio::test]
+    async fn an_older_session_ending_late_stops_nothing() {
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = sent.clone();
+        let hub = AgentHub::new(
+            move || {
+                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            },
+            || {},
+        );
+        let (service_end, agent_end) = tokio::io::duplex(1 << 20);
+        let attached = hub.clone();
+        tokio::spawn(async move { attached.attach(service_end).await });
+        let (mut reader, mut writer) = tokio::io::split(agent_end);
+
+        // A fake agent that says yes to each Start.
+        let open = |hub: &AgentHub| {
+            let desktop = hub.desktop(test_stream());
+            let (tx, _frames) = mpsc::channel(4);
+            tokio::spawn(async move { desktop.open(tx, None).await })
+        };
+        let first = open(&hub);
+        let Some(ToAgent::Start { id, .. }) = read_msg(&mut reader).await.unwrap() else {
+            panic!("expected Start");
+        };
+        write_msg(&mut writer, &FromAgent::Started { id, result: Ok(()) })
+            .await
+            .unwrap();
+        let old = first.await.unwrap().unwrap();
+        let second = open(&hub);
+        let Some(ToAgent::Start { id: new, .. }) = read_msg(&mut reader).await.unwrap() else {
+            panic!("expected Start");
+        };
+        write_msg(
+            &mut writer,
+            &FromAgent::Started {
+                id: new,
+                result: Ok(()),
+            },
+        )
+        .await
+        .unwrap();
+        let current = second.await.unwrap().unwrap();
+
+        // The old one: neither its input nor its end reach the agent.
+        let mut old = old;
+        old.inject(&InputEvent::MouseMove { x: 0.1, y: 0.1 });
+        old.inject(&InputEvent::SecureAttention);
+        assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 0);
+        old.set_audio(true);
+        old.close().await;
+        assert!(
+            hub.state
+                .lock()
+                .unwrap()
+                .session
+                .as_ref()
+                .is_some_and(|s| s.id == new)
+        );
+        // The new one's still does.
+        current.set_privacy(true);
+        let next =
+            tokio::time::timeout(Duration::from_secs(5), read_msg::<_, ToAgent>(&mut reader))
+                .await
+                .expect("a message")
+                .unwrap();
+        assert!(matches!(next, Some(ToAgent::Privacy(true))), "got {next:?}");
+    }
+
+    /// A session still opening when another replaces it gives up without
+    /// stopping the new one; its Ctrl+Alt+Del is not sent either.
+    #[tokio::test]
+    async fn a_session_replaced_while_opening_stops_nothing() {
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = sent.clone();
+        let hub = AgentHub::new(
+            move || {
+                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            },
+            || {},
+        );
+        let (service_end, agent_end) = tokio::io::duplex(1 << 20);
+        let attached = hub.clone();
+        tokio::spawn(async move { attached.attach(service_end).await });
+        let (mut reader, mut writer) = tokio::io::split(agent_end);
+        let open = |hub: &AgentHub| {
+            let desktop = hub.desktop(test_stream());
+            let (tx, _frames) = mpsc::channel(4);
+            tokio::spawn(async move { desktop.open(tx, None).await })
+        };
+
+        // The first is never answered: the second takes its place.
+        let first = open(&hub);
+        let Some(ToAgent::Start { .. }) = read_msg(&mut reader).await.unwrap() else {
+            panic!("expected Start");
+        };
+        let second = open(&hub);
+        let Some(ToAgent::Start { id: new, .. }) = read_msg(&mut reader).await.unwrap() else {
+            panic!("expected Start");
+        };
+        assert!(first.await.unwrap().is_err(), "the first gives up");
+        write_msg(
+            &mut writer,
+            &FromAgent::Started {
+                id: new,
+                result: Ok(()),
+            },
+        )
+        .await
+        .unwrap();
+        let mut current = second.await.unwrap().unwrap();
+        assert!(
+            hub.state
+                .lock()
+                .unwrap()
+                .session
+                .as_ref()
+                .is_some_and(|s| s.id == new)
+        );
+
+        // Its own Ctrl+Alt+Del goes; and nothing (no Stop) came before its message.
+        current.inject(&InputEvent::SecureAttention);
+        assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 1);
+        current.set_privacy(true);
+        let next =
+            tokio::time::timeout(Duration::from_secs(5), read_msg::<_, ToAgent>(&mut reader))
+                .await
+                .expect("a message")
+                .unwrap();
+        assert!(matches!(next, Some(ToAgent::Privacy(true))), "got {next:?}");
     }
 
     #[tokio::test]
