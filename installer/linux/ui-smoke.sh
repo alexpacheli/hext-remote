@@ -63,11 +63,14 @@ kill "$app"; wait "$app" 2>/dev/null || true
 # ---- The viewer, with video: this screen, captured by the host (X11) ----
 # Something moving on it: a still screen sends a single frame, and the
 # viewer's title (with the frame rate) waits for more.
-# (ImageMagick paints the root window, two colors in turn.)
+# (A small ImageMagick window, two colors in turn: each one opens on top of
+# everything, the viewer's window included, which covers the screen.)
 while true; do
   for color in navy teal; do
-    display -window root -size 64x64 "xc:$color" >/dev/null 2>&1
+    display -geometry 64x64+0+0 -size 64x64 "xc:$color" >/dev/null 2>&1 &
+    shown=$!
     sleep 0.5
+    kill "$shown" 2>/dev/null || true
   done
 done &
 pids+=($!)
