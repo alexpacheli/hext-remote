@@ -652,8 +652,8 @@ fn open_bar(app: &AppHandle) {
                 .decorations(false)
                 // On Linux a GTK window that cannot be resized takes the size its
                 // content asks for, not the one given (about 200 px tall), and
-                // ignores being folded. Without a frame, nobody can resize it
-                // anyway.
+                // ignores being folded. Its least and most size are then the same
+                // (`fixed_size`): the window manager does not resize it either.
                 .resizable(cfg!(target_os = "linux"))
                 .maximizable(false)
                 .minimizable(false)
@@ -670,6 +670,8 @@ fn open_bar(app: &AppHandle) {
             let _ = bar.destroy();
             return;
         }
+        #[cfg(target_os = "linux")]
+        fixed_size(&bar, BAR_OPEN);
         if let Ok(Some(monitor)) = bar.primary_monitor() {
             let width = (WIDTH * monitor.scale_factor()) as i32;
             let x = monitor.position().x + (monitor.size().width as i32 - width) / 2;
@@ -1080,6 +1082,21 @@ fn refuse(app: &AppHandle) {
     }
 }
 
+/// Linux: the bar's size as both its least and its most. The window
+/// manager then takes it as a fixed size: no maximizing when dragged to the
+/// top edge, no tiling, no resizing with the keyboard (it has to be
+/// resizable for GTK to give it the size at all, see `open_bar`).
+#[cfg(target_os = "linux")]
+fn fixed_size(window: &WebviewWindow, (width, height): (f64, f64)) {
+    let unit = |v| Some(tauri::PixelUnit::Logical(tauri::LogicalUnit::new(v)));
+    let _ = window.set_size_constraints(tauri::WindowSizeConstraints {
+        min_width: unit(width),
+        min_height: unit(height),
+        max_width: unit(width),
+        max_height: unit(height),
+    });
+}
+
 /// The bar's size, open and folded: folded it goes to the top edge of its
 /// screen and shows the dot. It stays centered where it is (it can be
 /// dragged).
@@ -1104,6 +1121,8 @@ fn fold_bar(window: WebviewWindow, folded: bool) {
         .ok()
         .flatten()
         .map_or(position.y, top);
+    #[cfg(target_os = "linux")]
+    fixed_size(&window, (width, height));
     let _ = window.set_size(LogicalSize::new(width, height));
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
