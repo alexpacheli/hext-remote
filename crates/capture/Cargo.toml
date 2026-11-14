@@ -34,5 +34,11 @@ objc2-core-video.workspace = true
 objc2-foundation.workspace = true
 objc2-screen-capture-kit.workspace = true
 
+# X11 in pure Rust (no libxcb to build or run with): MIT-SHM for the pixels,
+# RandR for the monitors, Damage to know when the screen changed.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+x11rb = { version = "0.13", features = ["shm", "randr", "damage", "xfixes"] }
+
 [lints]
 workspace = true

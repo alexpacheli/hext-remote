@@ -2,3 +2,5 @@
 # a clone made on Windows.
 *.sh text eol=lf
 deploy/** text eol=lf
+# The Linux packages' files (the systemd unit, the desktop entries).
+installer/linux/** text eol=lf

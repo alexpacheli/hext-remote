@@ -7,25 +7,19 @@
 //! after a restart, all in `~/Library/Application Support/HextRemote`. So is
 //! the unattended access (F6 marco 3): the password, the technicians and the
 //! account binding, set by this user (`service password`, or the app's
-//! Segurança tab), and good once they are signed in. With nothing running
-//! as root, the sign-in screen is out of reach: after a restart the viewer
-//! gets back in once someone signs in (decision 3 of F4).
+//! Segurança tab), and good once they are signed in (see [`super::user`]).
+//! With nothing running as root, the sign-in screen is out of reach: after
+//! a restart the viewer gets back in once someone signs in (decision 3 of
+//! F4).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result, bail};
-use hext_crypto::DeviceKey;
-use hext_session::host::{BoxFuture, Restart, UnattendedAccess};
-use hext_session::{KeptResume, Lockout, ResumeTokens};
-use zeroize::Zeroizing;
 
-use super::access::{Access, Password};
-use crate::signaling::Ask;
-use crate::ui_link::{UiAsk, UiHub};
+use super::access::Access;
+use super::user::{access, audit, owners};
 
 /// The LaunchAgent's name (the app's identifier).
 const LABEL: &str = "br.com.hext.remote";
@@ -33,9 +27,21 @@ const LABEL: &str = "br.com.hext.remote";
 /// for the user to allow it, which the viewer can see and click.
 const RESTART_ASKED: Duration = Duration::from_secs(10);
 
+/// The program, as the user types it.
+pub const PROGRAM: &str = "HextRemote";
+/// This computer, in messages.
+pub const THIS_COMPUTER: &str = "este Mac";
+/// "On this system", in messages.
+pub const ON_THIS_SYSTEM: &str = "no Mac";
+
 #[allow(unsafe_code)] // a libc call that cannot fail
 unsafe extern "C" {
     safe fn getuid() -> u32;
+}
+
+/// Whether this runs as root (`sudo`).
+pub fn is_root() -> bool {
+    getuid() == 0
 }
 
 fn home() -> Result<PathBuf> {
@@ -50,7 +56,7 @@ fn plist_file() -> Result<PathBuf> {
 }
 
 /// This user's folder of the app.
-fn data_dir() -> Result<PathBuf> {
+pub fn data_dir() -> Result<PathBuf> {
     Ok(hext_crypto::config_dir()?)
 }
 
@@ -424,7 +430,7 @@ async fn replace_app(
 }
 
 pub fn install(name: Option<String>) -> Result<()> {
-    if getuid() == 0 {
+    if is_root() {
         bail!(
             "no Mac, rode sem sudo: o Hext Remote passa a abrir no login de quem rodar este comando"
         );
@@ -603,229 +609,52 @@ pub fn remember_id(id: &str) {
     }
 }
 
-/// A line in the audit log, for the owner of the computer; also for the
-/// account's Atividade screen, while bound to one.
-fn audit(entry: &str) {
-    super::kept::audit_to(super::user_log_file("audit"), entry);
-    if let Some(activity) = ACTIVITY.get() {
-        let _ = activity.send(entry.to_owned());
-    }
-}
-
-/// Where the installed app sends what the audit writes (unset elsewhere).
-static ACTIVITY: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>> =
-    std::sync::OnceLock::new();
-
-// ------------------------------------------------------- unattended access
-
-/// The unattended access, in this user's folder.
-fn access() -> Result<Access> {
-    Ok(Access::new(data_dir()?, audit))
-}
-
-/// The binding to an account, as this computer (the app's key) sees it.
-fn owners() -> Result<crate::owners::Owners> {
-    Ok(access()?.owners(Arc::new(crate::device_key(None)?)))
-}
-
-/// Only for the installed app, run by its user: the one that opens at
-/// login reads these files.
-fn require_installed() -> Result<()> {
-    if getuid() == 0 {
-        bail!("no Mac, rode sem sudo: o acesso é do usuário que instalou");
-    }
-    if !installed() {
-        bail!("instale primeiro (HextRemote service install)");
-    }
-    Ok(())
-}
-
-/// `service password`: sets (or changes) the unattended password, or turns
-/// it off.
-pub fn password(off: bool) -> Result<()> {
-    require_installed()?;
-    let (access, owners) = (access()?, owners()?);
-    if off {
-        access.password_off(&owners)?;
-        println!("Acesso não assistido desligado.");
-        return Ok(());
-    }
-    let password = Zeroizing::new(rpassword::prompt_password("Nova senha: ")?);
-    let again = Zeroizing::new(rpassword::prompt_password("Repita a senha: ")?);
-    if *password != *again {
-        bail!("as senhas não são iguais");
-    }
-    access.set_password(&password, &owners)?;
-    println!("Acesso não assistido ligado (depois do login deste usuário).");
-    println!("Durante a sessão, este Mac mostra quem está conectado.");
-    Ok(())
-}
-
-/// The Segurança tab's buttons: the password typed in the app's own screen
-/// (`Some`), or turned off (`None`).
-pub fn set_password_from_app(password: Option<&str>) -> Result<()> {
-    require_installed()?;
-    let (access, owners) = (access()?, owners()?);
-    match password {
-        Some(password) => access.set_password(password, &owners),
-        None => access.password_off(&owners),
-    }
-}
-
-/// `service technicians`.
-pub fn technicians(revoke: Option<&str>, revoke_all: bool) -> Result<()> {
-    if revoke.is_some() || revoke_all {
-        require_installed()?;
-    }
-    access()?.technicians_command(revoke, revoke_all)
-}
-
-/// `service account`: binds this Mac to the account with list `chain`,
-/// unbinds it (`off`), or shows the binding.
-pub fn account(chain: Option<&str>, off: bool) -> Result<()> {
-    let owners = owners()?;
-    if chain.is_none() && !off {
-        Access::show_account(&owners);
-        return Ok(());
-    }
-    require_installed()?;
-    if off {
-        access()?.unbind_account(&owners)?;
-        println!("Conta desvinculada: todo acesso volta a pedir aceite.");
-        return Ok(());
-    }
-    access()?.bind_account(&owners, chain.unwrap_or_default())
-}
-
-/// The installed app's unattended access, shown on `hub`.
-pub fn login_access(key: &Arc<DeviceKey>, hub: &UiHub) -> Option<super::LoginAccess> {
-    if !installed() {
-        return None;
-    }
-    let access = access().ok()?;
-    let owners = access.owners(key.clone());
-    access.show_on(hub, &owners);
-    let (activity, activity_out) = tokio::sync::mpsc::unbounded_channel();
-    let _ = ACTIVITY.set(activity);
-    tokio::spawn(crate::owners::report_activity(owners.clone(), activity_out));
-    let (attempts, attempts_out) = tokio::sync::mpsc::unbounded_channel();
-    Some(super::LoginAccess {
-        unattended: UnattendedAccess {
-            key: key.public_key(),
-            lockout: Lockout::default(),
-            password: Arc::new(Password {
-                access: access.clone(),
-                ui: hub.clone(),
-                owners: Some(owners.clone()),
-            }),
-            attempts,
-        },
-        owners: Arc::new(owners.clone()),
-        attempts: attempts_out,
-        ask: Box::new(LoginAsk(UiAsk(hub.clone()), owners, access)),
-    })
-}
-
-/// Asks on the app's window; lets in, without asking, the technicians and
-/// the bound account's devices (while the password is on, for the
-/// technicians).
-struct LoginAsk(UiAsk, crate::owners::Owners, Access);
-
-impl Ask for LoginAsk {
-    fn ask<'a>(
-        &'a mut self,
-        name: &'a str,
-        id: hext_signal::DeviceId,
-    ) -> BoxFuture<'a, Option<hext_proto::Permissions>> {
-        self.0.ask(name, id)
-    }
-
-    fn show_id(&mut self, id: hext_signal::DeviceId) {
-        self.0.show_id(id);
-    }
-
-    fn unattended(&self) -> bool {
-        self.2.verifier().is_some()
-    }
-
-    fn bound(&self, key: &hext_crypto::PublicKey) -> bool {
-        self.2.technicians().bound(key)
-    }
-
-    fn owner<'a>(
-        &'a mut self,
-        key: &'a hext_crypto::PublicKey,
-    ) -> BoxFuture<'a, Option<crate::owners::Way>> {
-        Box::pin(super::access::owner_way(&self.1, key))
-    }
-}
-
-/// Takes back the token kept before a restart, if it is still good, and
-/// gives what restarts this Mac.
-pub fn own_restart(resumes: &ResumeTokens) -> Option<std::sync::Arc<dyn Restart>> {
-    if !installed() {
-        return None;
-    }
-    let dir = data_dir().ok()?;
-    super::kept::restore(&dir, resumes);
-    Some(std::sync::Arc::new(UserRestart(dir)))
-}
-
 /// Restarts this Mac as its user would, from the Apple menu: the apps are
-/// asked to quit, and one with something unsaved can hold it up. The token
-/// waits in the user's folder for the app's next start, at login.
-struct UserRestart(PathBuf);
-
-impl Restart for UserRestart {
-    fn restart(&self, kept: &KeptResume, who: &str) -> std::result::Result<(), String> {
-        super::kept::keep(&self.0, kept)?;
-        audit(&format!("reinício pedido: {who}"));
-        // kAERestart to loginwindow (Apple's QA1134). From the system's
-        // folder, not whatever PATH has.
-        let mut child = Command::new("/usr/bin/osascript")
-            .args(["-e", "tell application \"loginwindow\" to «event aevtrest»"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                self.revoke();
-                format!("osascript: {e}")
-            })?;
-        let asked = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(done)) if done.success() => return Ok(()),
-                Ok(Some(done)) => {
-                    self.revoke();
-                    let mut err = String::new();
-                    if let Some(mut stderr) = child.stderr.take() {
-                        use std::io::Read;
-                        let _ = stderr.read_to_string(&mut err);
+/// asked to quit, and one with something unsaved can hold it up. On a
+/// failure, the token kept in `dir` is revoked.
+pub fn restart(dir: &Path) -> Result<(), String> {
+    let revoke = || super::kept::revoke(dir);
+    // kAERestart to loginwindow (Apple's QA1134). From the system's
+    // folder, not whatever PATH has.
+    let mut child = Command::new("/usr/bin/osascript")
+        .args(["-e", "tell application \"loginwindow\" to «event aevtrest»"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            revoke();
+            format!("osascript: {e}")
+        })?;
+    let asked = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(done)) if done.success() => return Ok(()),
+            Ok(Some(done)) => {
+                revoke();
+                let mut err = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = stderr.read_to_string(&mut err);
+                }
+                return Err(format!("osascript: {done} {}", err.trim()));
+            }
+            // Waiting on the screen for the user to allow it: a no
+            // there must not leave the way back open.
+            Ok(None) if asked.elapsed() >= RESTART_ASKED => {
+                let dir = dir.to_owned();
+                std::thread::spawn(move || {
+                    if !child.wait().is_ok_and(|done| done.success()) {
+                        super::kept::revoke(&dir);
                     }
-                    return Err(format!("osascript: {done} {}", err.trim()));
-                }
-                // Waiting on the screen for the user to allow it: a no
-                // there must not leave the way back open.
-                Ok(None) if asked.elapsed() >= RESTART_ASKED => {
-                    let dir = self.0.clone();
-                    std::thread::spawn(move || {
-                        if !child.wait().is_ok_and(|done| done.success()) {
-                            super::kept::revoke(&dir);
-                        }
-                    });
-                    return Ok(());
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(200)),
-                Err(e) => {
-                    self.revoke();
-                    return Err(format!("osascript: {e}"));
-                }
+                });
+                return Ok(());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(200)),
+            Err(e) => {
+                revoke();
+                return Err(format!("osascript: {e}"));
             }
         }
-    }
-
-    fn revoke(&self) {
-        super::kept::revoke(&self.0);
     }
 }
 

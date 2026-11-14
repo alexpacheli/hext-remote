@@ -1,0 +1,13 @@
+[Unit]
+Description=Hext Remote: acesso remoto
+Documentation=https://github.com/alexpacheli/hext-remote
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/hext-remote ui
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

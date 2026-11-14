@@ -42,6 +42,14 @@ for lib in libxkbcommon-x11.so.0 libvulkan.so.1 libEGL.so.1; do
 done
 [ "$missing" = 0 ]
 
+# The host's unit (F7), for each user to turn on (`service install`).
+unit=/usr/lib/systemd/user/hext-remote.service
+grep -qx 'ExecStart=/usr/bin/hext-remote ui' "$unit" || { echo "o pacote não trouxe $unit"; exit 1; }
+
+# The interface is a host now (F7): kept off our signaling server and
+# relay, so a test run registers no computer there.
+echo "127.0.0.1 signal.hext.com.br relay.hext.com.br" >> /etc/hosts
+
 install_tools
 bash "$here/ui-smoke.sh" /usr/bin/hext-remote "$out"
 remove

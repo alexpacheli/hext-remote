@@ -1,7 +1,8 @@
 #!/bin/bash
 # Opens the interface on a virtual screen and checks that its window shows
-# up; then the viewer, with video from the test pattern host on this same
-# machine (by IP, no server). Leaves pictures of both in the folder given:
+# up; then the viewer, with video from a host on this same machine (by IP,
+# no server) capturing this virtual screen. Leaves pictures of both in the
+# folder given:
 #
 #   installer/linux/ui-smoke.sh dist/hext-remote shots
 #
@@ -59,7 +60,7 @@ kill -0 "$app" || { echo "a interface fechou:"; cat "$out/ui.log"; exit 1; }
 echo "interface: janela $window ($(xprop -id "$window" WM_CLASS 2>/dev/null || true))"
 kill "$app"; wait "$app" 2>/dev/null || true
 
-# ---- The viewer, with video ----
+# ---- The viewer, with video: this screen, captured by the host (X11) ----
 "$program" host --server off --relay off --code 424242 --listen 127.0.0.1:7420 \
   --device-key "$home/host.key" >"$out/host.log" 2>&1 &
 host=$!
@@ -83,3 +84,6 @@ fi
 sleep 2
 import -window root "$out/video.png"
 echo "visualizador: $(xdotool getwindowname "$window") ($(xprop -id "$window" WM_CLASS 2>/dev/null || true))"
+# The screen itself, not the test pattern.
+grep -q 'capturando o monitor' "$out/host.log" || { echo "o host não capturou a tela:"; cat "$out/host.log"; exit 1; }
+grep 'capturando o monitor' "$out/host.log"

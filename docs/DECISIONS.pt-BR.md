@@ -63,6 +63,17 @@ FileVault quase anula. As atualizações não são afetadas: depois de uma, o ma
 bloqueia a tela, e o Hext está lá. O desenho fica no [F6](planos/F6.md#31-marco-3-o-que-ficou-pronto-e-o-que-falta),
 caso Macs sem FileVault peçam.
 
+<a id="linux-unidade-de-usuario-sem-tela-de-login"></a>**Linux: unidade de usuário, sem tela de login** (novembro
+de 2026, F7 marco 4). No Linux, o Hext roda como o usuário, como no Mac: o `.deb` e o `.rpm` trazem uma unidade *de
+usuário* do `systemd` (`/usr/lib/systemd/user/hext-remote.service`, presa ao `graphical-session.target`), e o
+`service install`, rodado por cada usuário sem `sudo`, a liga para ele (com uma entrada de início automático do XDG
+para os ambientes cuja sessão não chega a esse alvo). Nada roda como root, e antes de alguém entrar na conta não há
+acesso; depois de reiniciar, volta no próximo login. *Por quê:* capturar a tela de login (GDM, SDDM) é rodar dentro
+da sessão do próprio greeter, como o usuário dele, com outro servidor gráfico e regras diferentes em cada
+distribuição e ambiente; um serviço do sistema que entra nela poria um processo root junto da tela e do teclado,
+contra a regra de a interface nunca rodar com direitos do sistema. O acesso não assistido (senha, técnicos, conta) é
+do usuário, na pasta dele, como no Mac.
+
 ## App
 
 **Rust, um executável nativo.** Sem runtime, .NET ou Java. *Por quê:* download pequeno para um atendimento rápido,

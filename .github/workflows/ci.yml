@@ -58,12 +58,14 @@ jobs:
         with:
           target: ${{ matrix.targets }}
 
-      # The interface on Linux: WebKitGTK, to build with.
+      # The interface on Linux: WebKitGTK, to build with. For the host's
+      # tests: a virtual X server, xkbcomp (the Brazilian keymap) and
+      # libva's headers (the VA-API structures).
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev xvfb x11-xkb-utils libva-dev
 
       - name: Format
         if: runner.os == 'Linux'
@@ -74,6 +76,21 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked
+
+      # The Linux host (F7) on a real X server: the capture sees what is
+      # drawn (XShm, Damage), XTest moves the pointer and presses keys, the
+      # ABNT2 keys land where the Brazilian layout of the system's xkb data
+      # puts them, and the VA-API structures match libva's headers.
+      - name: Host on X11 (Linux, Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          printf 'xkb_keymap { xkb_keycodes { include "evdev+aliases(qwerty)" }; xkb_types { include "complete" }; xkb_compat { include "complete" }; xkb_symbols { include "pc+br(abnt2)+inet(evdev)" }; };\n' > "$RUNNER_TEMP/br.km"
+          xkbcomp -w0 -xkb "$RUNNER_TEMP/br.km" "$RUNNER_TEMP/br.xkb"
+          cc crates/codec/va-layout.c -o "$RUNNER_TEMP/va-layout"
+          "$RUNNER_TEMP/va-layout" > "$RUNNER_TEMP/va-layout.txt"
+          HEXT_TEST_XKB_KEYMAP="$RUNNER_TEMP/br.xkb" HEXT_VA_LAYOUT="$RUNNER_TEMP/va-layout.txt" \
+            xvfb-run -a -s '-screen 0 1280x800x24' \
+            cargo test --locked -p hext-capture -p hext-input -p hext-codec -- --ignored x11_ layouts_match
 
       # vendor/netwatch replaces netwatch's WMI query (see its PATCHED.md).
       # The patch only applies to that exact version: if iroh moves to
@@ -148,11 +165,20 @@ jobs:
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg" "ubuntu:$VERSION_ID" \
             bash /src/installer/linux/package-test.sh "/pkg/$(basename pkg/*.deb)" /pkg/shots
 
+      # The .rpm too (x86_64 here; the release builds both), on Fedora.
+      - name: Interface (Linux, from the .rpm)
+        if: runner.os == 'Linux' && matrix.targets == 'x86_64-unknown-linux-gnu'
+        run: |
+          cargo install cargo-generate-rpm --locked
+          cargo generate-rpm -p apps/hext --target ${{ matrix.targets }} --output pkg/
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg" fedora:43 \
+            bash /src/installer/linux/package-test.sh "/pkg/$(basename pkg/*.rpm)" /pkg/shots-fedora
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: runner.os == 'Linux' && always()
         with:
           name: interface-${{ matrix.artifact }}
-          path: pkg/shots/
+          path: pkg/shots*/
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
