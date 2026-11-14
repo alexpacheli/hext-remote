@@ -58,14 +58,14 @@ jobs:
         with:
           target: ${{ matrix.targets }}
 
-      # The interface on Linux: WebKitGTK, to build with. For the host's
-      # tests: a virtual X server, xkbcomp (the Brazilian keymap) and
-      # libva's headers (the VA-API structures).
+      # The interface on Linux: WebKitGTK, to build with; the sound: ALSA. For
+      # the host's tests: a virtual X server, xkbcomp (the Brazilian keymap)
+      # and libva's headers (the VA-API structures).
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev xvfb x11-xkb-utils libva-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev xvfb x11-xkb-utils libva-dev
 
       - name: Format
         if: runner.os == 'Linux'
