@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,7 +14,7 @@ use tokio::sync::oneshot;
 
 use anyhow::{Context, Result, bail};
 use hext_clipboard::Clipboard;
-use hext_codec::{DecoderPreference, YuvFrame};
+use hext_codec::DecoderPreference;
 use hext_input::keymap::{self, CommandKey};
 use hext_net::{Connection, Endpoint, EndpointConfig, NetError, PasswordLogin};
 use hext_proto::Os;
@@ -24,13 +24,14 @@ use hext_proto::{
 };
 use hext_render::{
     ButtonAction, DisplayBar, Renderer, VideoRect, button_rect, chat_button_rect, handle_rect,
+    letterbox,
 };
 use hext_session::client::{self, ClientHandle};
 use hext_session::files::{Confirm, OwnFiles, Stage, Transfer, size_text};
-use hext_session::{Gaps, NETWORK_GRACE, ResumeToken, SessionError};
+use hext_session::{NETWORK_GRACE, ResumeToken, SessionError};
 use hext_signal::chain::BindAsk;
 use hext_signal::{DeviceId, KnownHosts};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Modifiers, MouseScrollDelta, WindowEvent};
@@ -40,6 +41,7 @@ use winit::window::{Fullscreen, Window, WindowId};
 use zeroize::Zeroizing;
 
 use crate::loop_watch::timed;
+use crate::screen::{News, Overlay, Screen};
 use crate::signaling::Pin;
 use crate::ui_link::ToViewer;
 use crate::{APP_VERSION, CmdKey, CodecChoice, CtrlKey, ViewArgs, device_name, parse_addr};
@@ -75,7 +77,8 @@ const IDLE_STAY: Duration = Duration::from_secs(60);
 
 /// News of one session, for the window loop.
 enum SessionEvent {
-    Frame(Instant),
+    /// From the render thread.
+    Screen(crate::screen::News),
     SessionEnded,
     /// The attempt to come back ended.
     Back(Box<Result<ClientHandle>>),
@@ -245,37 +248,13 @@ struct Back {
     tell: Tell,
 }
 
-/// Where the decoder leaves pictures for the window.
-type Latest = Arc<Pictures>;
-
-/// The newest picture, and the host's display it shows; older ones are
-/// dropped unseen. The window hears of it once until it takes it: on
-/// Windows, each word to the window is a message ahead of the mouse in its
-/// queue, and one per frame, faster than the window draws them (a burst
-/// after the network stalls, a GPU waiting for the screen), held clicks and
-/// drags for as long as the queue took to drain: a window that would not
-/// move or maximize.
-#[derive(Default)]
-struct Pictures {
-    newest: Mutex<Option<(YuvFrame, u8)>>,
-    /// The window was told of a picture it has not taken yet.
-    told: AtomicBool,
-}
-
-impl Pictures {
-    /// Leaves `frame`; whether the window must hear of it.
-    fn put(&self, frame: YuvFrame, display: u8) -> bool {
-        *self.newest.lock().expect("lock") = Some((frame, display));
-        !self.told.swap(true, Ordering::AcqRel)
-    }
-
-    /// The newest picture, if one came since the last time.
-    fn take(&self) -> Option<(YuvFrame, u8)> {
-        // Before taking: a picture left meanwhile is told again.
-        self.told.store(false, Ordering::Release);
-        self.newest.lock().expect("lock").take()
-    }
-}
+/// Where the decoder leaves pictures, drawn by the session's render thread
+/// ([`crate::screen`]). They never pass through the window's thread: on
+/// Windows, a word to the window per frame was a message ahead of the mouse
+/// in its queue, and faster than drawn (a burst after the network stalls, a
+/// GPU waiting for the screen), held clicks and drags back: a window that
+/// would not move or maximize.
+type Latest = Arc<Screen>;
 
 /// How a session's window ends.
 enum Ending {
@@ -455,7 +434,6 @@ impl Viewers {
             clipboard_tell,
             tell,
             window: None,
-            renderer: None,
             command_key: match self.cmd_key {
                 // A Mac host understands Command itself.
                 _ if host_is_mac => CommandKey::Win,
@@ -476,14 +454,13 @@ impl Viewers {
             displays: Displays::default(),
             last_display,
             restore_display: true,
-            presented: (Gaps::default(), Instant::now()),
             display_bar: None,
             switching: None,
             picture: None,
             chat_link: self.ui,
             chat_button: None,
             last_title: Instant::now(),
-            redraw_asked: None,
+            hidden: (false, false),
         };
         // In use once its window has the focus (it tells).
         self.sessions.insert(n, viewer);
@@ -534,6 +511,9 @@ impl Viewers {
         };
         if let Some(window) = viewer.window.take() {
             self.windows.remove(&window.id());
+            // Gone at once: it closes for good when its render thread lets
+            // go of it, after the frame (or the GPU) it may be making.
+            window.set_visible(false);
         }
         if let Some(session) = viewer.session.take() {
             self.closing.push(self.runtime.spawn(async move {
@@ -629,7 +609,6 @@ struct Viewer {
     clipboard_tell: Arc<tokio::sync::Notify>,
     tell: Tell,
     window: Option<Arc<Window>>,
-    renderer: Option<Renderer>,
     command_key: CommandKey,
     /// Windows/Linux keyboard on a Mac host: Ctrl acts as Command.
     swap_ctrl_and_super: bool,
@@ -657,9 +636,6 @@ struct Viewer {
     /// The kept display is still to be asked for, once the host tells its
     /// displays.
     restore_display: bool,
-    /// Gaps between the frames shown while the picture moves, and since
-    /// when: one line a second in the video log.
-    presented: (Gaps, Instant),
     /// The numbered buttons on screen, next to the full screen one.
     display_bar: Option<DisplayBar>,
     /// The display asked for, and when.
@@ -671,8 +647,17 @@ struct Viewer {
     /// The chat button on screen.
     chat_button: Option<VideoRect>,
     last_title: Instant,
-    /// Since when a picture waits for the window to paint.
-    redraw_asked: Option<Instant>,
+    /// Covered or minimized (macOS), and without a size (minimized on
+    /// Windows): nothing is drawn.
+    hidden: (bool, bool),
+}
+
+/// The window is gone: so is its render thread (which may hold the last
+/// reference to the window, released when it ends).
+impl Drop for Viewer {
+    fn drop(&mut self) {
+        self.latest.quit();
+    }
 }
 
 impl Viewer {
@@ -845,8 +830,7 @@ impl Viewer {
     /// The host's mouse stays where it was until it moves: on the display
     /// left behind, where the next click would land, unseen.
     fn aim_mouse(&self) {
-        let rect = self.renderer.as_ref().and_then(Renderer::video_rect);
-        if let (Some(rect), Some((x, y))) = (rect, self.cursor)
+        if let (Some(rect), Some((x, y))) = (self.video_rect(), self.cursor)
             && let Some((x, y)) = rect.normalize(x, y)
         {
             self.send(InputEvent::MouseMove { x, y });
@@ -886,37 +870,11 @@ impl Viewer {
         self.update_title();
     }
 
-    /// Uploads the newest decoded frame, if any, and redraws.
-    fn draw(&mut self) {
-        // Check the renderer first: taking the frame before the window exists
-        // would discard it, and a still host screen sends no replacement.
-        let Some(renderer) = &mut self.renderer else {
-            return;
-        };
-        let mut arrived = false;
-        if let Some((frame, display)) = self.latest.take() {
-            timed("upload", || renderer.upload(&frame));
-            let now = Instant::now();
-            let (gaps, since) = &mut self.presented;
-            gaps.frame(now);
-            if now.duration_since(*since) >= Duration::from_secs(1) {
-                *since = now;
-                let (gap, late) = gaps.take();
-                debug!(
-                    target: hext_net::video::LOG_TARGET,
-                    "apresentação: maior intervalo {} ms ({late} acima de {} ms)",
-                    gap.as_millis(),
-                    Gaps::LATE.as_millis(),
-                );
-            }
-            arrived = self.picture.replace(display) != Some(display);
-        }
-        if let Err(e) = timed("render", || renderer.render()) {
-            warn!("render: {e}");
-        }
-        if arrived {
-            self.aim_mouse();
-        }
+    /// Where the video sits in the window, once one was drawn.
+    fn video_rect(&self) -> Option<VideoRect> {
+        let size = self.window.as_ref()?.inner_size();
+        let video = self.latest.video_size()?;
+        Some(letterbox((size.width, size.height), video))
     }
 
     fn toggle_fullscreen(&mut self) {
@@ -995,13 +953,12 @@ impl Viewer {
             self.display_bar = bar;
             self.chat_button = chat;
             self.handle = handle;
-            if let Some(renderer) = &mut self.renderer {
-                renderer.set_button(button);
-                renderer.set_display_bar(bar);
-                renderer.set_chat_button(chat);
-                renderer.set_handle(handle);
-            }
-            self.draw();
+            self.latest.overlay(Overlay {
+                button,
+                bar,
+                chat,
+                handle,
+            });
         }
     }
 
@@ -1140,15 +1097,18 @@ impl Viewer {
                 return None;
             }
         };
-        match Renderer::new(window.clone()) {
-            Ok(renderer) => self.renderer = Some(renderer),
-            Err(e) => {
-                self.closing = Some(Ending::Failed(e.into()));
-                return None;
-            }
-        }
-        // A picture told before the window was there waits for this.
-        window.request_redraw();
+        // The surface here (on a Mac, AppKit answers only on this thread);
+        // the GPU, slow to make, on the session's render thread, so the
+        // other windows go on meanwhile.
+        let pending = Renderer::prepare(window.clone());
+        let tell = self.tell.clone();
+        crate::screen::start(
+            format!("tela {}", self.n),
+            self.latest.clone(),
+            pending,
+            move |news| tell.send(SessionEvent::Screen(news)),
+        );
+        // (Pictures left before the window was there are drawn at once.)
         let id = window.id();
         self.window = Some(window);
         Some(id)
@@ -1156,16 +1116,11 @@ impl Viewer {
 
     fn on_event(&mut self, event: SessionEvent) {
         match event {
-            // Drawn when the window paints: on Windows, after the mouse and
-            // the keyboard, which a picture never holds back. (With nothing
-            // waiting, at once.)
-            SessionEvent::Frame(sent) => {
-                crate::loop_watch::note("fila (quadro)", sent.elapsed());
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                    self.redraw_asked.get_or_insert_with(Instant::now);
-                }
+            SessionEvent::Screen(News::Display(display)) => {
+                self.picture = Some(display);
+                self.aim_mouse();
             }
+            SessionEvent::Screen(News::Failed(e)) => self.closing = Some(Ending::Failed(e.into())),
             SessionEvent::SessionEnded => {
                 let ending = self.session.as_ref().and_then(ClientHandle::comes_back);
                 match (ending, self.back.clone(), self.endpoint.clone()) {
@@ -1202,6 +1157,7 @@ impl Viewer {
                     session.select_display(index);
                     self.switching = Some((index, Instant::now()));
                     self.picture = None;
+                    self.latest.forget_display();
                     self.session = Some(session);
                     self.coming_back = None;
                     self.last_title = Instant::now() - Duration::from_secs(1);
@@ -1252,18 +1208,18 @@ impl Viewer {
         match event {
             WindowEvent::CloseRequested => self.closing = Some(Ending::Over),
             WindowEvent::Resized(size) => {
-                if let Some(renderer) = &mut self.renderer {
-                    renderer.resize(size.width, size.height);
-                }
+                // (Minimized on Windows: no size, nothing to draw on.)
+                self.hidden.1 = size.width == 0 || size.height == 0;
+                self.latest.hide(self.hidden.0 || self.hidden.1);
+                self.latest.resize(size.width, size.height);
                 self.update_button();
-                self.draw();
             }
-            WindowEvent::RedrawRequested => {
-                if let Some(asked) = self.redraw_asked.take() {
-                    crate::loop_watch::note("pintura (quadro)", asked.elapsed());
-                }
-                self.draw();
+            // Minimized or covered (macOS): drawing then is what gets stuck.
+            WindowEvent::Occluded(occluded) => {
+                self.hidden.0 = occluded;
+                self.latest.hide(self.hidden.0 || self.hidden.1);
             }
+            WindowEvent::RedrawRequested => self.latest.redraw(),
             WindowEvent::DroppedFile(path) => self.send_file(path),
             WindowEvent::Focused(false) => {
                 self.focus.changed(false);
@@ -1284,7 +1240,7 @@ impl Viewer {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Some((position.x, position.y));
                 self.update_button();
-                let rect = self.renderer.as_ref().and_then(Renderer::video_rect);
+                let rect = self.video_rect();
                 if let Some((x, y)) = rect.and_then(|r| r.normalize(position.x, position.y)) {
                     self.send(InputEvent::MouseMove { x, y });
                 }
@@ -1602,7 +1558,7 @@ impl Viewers {
 /// What a user event is, for [`timed`].
 fn user_event_name(event: &UserEvent) -> &'static str {
     match event {
-        UserEvent::Session(_, SessionEvent::Frame(_)) => "quadro",
+        UserEvent::Session(_, SessionEvent::Screen(_)) => "tela",
         UserEvent::Session(_, SessionEvent::SessionEnded) => "sessão encerrada",
         UserEvent::Session(_, SessionEvent::Back(_)) => "volta",
         UserEvent::Session(_, SessionEvent::Displays) => "monitores",
@@ -1631,13 +1587,9 @@ fn window_event_name(event: &WindowEvent) -> &'static str {
     }
 }
 
-/// Hands decoded frames to the window.
-fn show_frames(latest: Latest, tell: Tell) -> impl FnMut(client::DecodedFrame) + Send + 'static {
-    move |frame| {
-        if latest.put(frame.yuv, frame.display) {
-            tell.send(SessionEvent::Frame(Instant::now()));
-        }
-    }
+/// Hands decoded frames to the render thread, past the window's.
+fn show_frames(latest: Latest) -> impl FnMut(client::DecodedFrame) + Send + 'static {
+    move |frame| latest.put(frame.yuv, frame.display)
 }
 
 /// Wakes the window at each news of the host's displays: a still screen
@@ -1943,7 +1895,7 @@ async fn try_back(back: &Back, endpoint: &Endpoint, token: ResumeToken) -> Resul
         resume: Some(token),
         asks: Default::default(),
     };
-    let frames = show_frames(back.latest.clone(), back.tell.clone());
+    let frames = show_frames(back.latest.clone());
     let session = client::start(conn, hello, None, back.decoder, frames).await?;
     keep_pin(Some(pin));
     Ok(clean_host(session))
@@ -2167,7 +2119,7 @@ async fn open_session(
     let asks = Login::asks(login.as_ref());
     let (conn, code, route, pin) = reach(&net, target, asks, on_waiting).await?;
     let (hello, password) = hello_of(&net, code, login);
-    let session = client::start(conn, hello, password, decoder, show_frames(latest, tell))
+    let session = client::start(conn, hello, password, decoder, show_frames(latest))
         .await
         .map_err(explain)?;
     keep_pin(pin);
@@ -2337,16 +2289,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn picture(width: u32) -> YuvFrame {
-        YuvFrame {
-            width,
-            height: 2,
-            y: vec![0; 4],
-            u: vec![0; 1],
-            v: vec![0; 1],
-        }
-    }
-
     #[test]
     fn the_clipboard_goes_only_to_the_window_with_the_focus() {
         let all = Focus::default();
@@ -2369,33 +2311,6 @@ mod tests {
         assert!(all.is(2) && !all.is(1));
         two.changed(false);
         assert!(!all.is(2));
-    }
-
-    #[test]
-    fn a_burst_of_pictures_wakes_the_window_once() {
-        let pictures = Pictures::default();
-        // Only the first of many is told; the window finds the newest.
-        assert!(pictures.put(picture(1), 0));
-        for width in 2..=100 {
-            assert!(!pictures.put(picture(width), 1));
-        }
-        let (newest, display) = pictures.take().unwrap();
-        assert_eq!((newest.width, display), (100, 1));
-        assert!(pictures.take().is_none());
-        // Taken, the next is told again.
-        assert!(pictures.put(picture(101), 1));
-    }
-
-    #[test]
-    fn a_picture_left_while_drawing_is_told_again() {
-        let pictures = Pictures::default();
-        assert!(pictures.put(picture(1), 0));
-        // The window, told, takes nothing yet (no window), then takes it.
-        assert!(!pictures.put(picture(2), 0));
-        assert_eq!(pictures.take().unwrap().0.width, 2);
-        // Left right after the take: a new word for the window.
-        assert!(pictures.put(picture(3), 0));
-        assert!(!pictures.put(picture(4), 0));
     }
 
     #[test]
