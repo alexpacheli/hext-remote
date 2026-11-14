@@ -1102,12 +1102,16 @@ impl Viewer {
         // other windows go on meanwhile.
         let pending = Renderer::prepare(window.clone());
         let tell = self.tell.clone();
-        crate::screen::start(
+        let started = crate::screen::start(
             format!("tela {}", self.n),
             self.latest.clone(),
             pending,
             move |news| tell.send(SessionEvent::Screen(news)),
         );
+        if let Err(e) = started {
+            self.closing = Some(Ending::Failed(anyhow::anyhow!("tela: {e}")));
+            return None;
+        }
         // (Pictures left before the window was there are drawn at once.)
         let id = window.id();
         self.window = Some(window);

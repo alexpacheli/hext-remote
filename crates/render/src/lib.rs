@@ -315,12 +315,8 @@ impl Pending {
 }
 
 impl Renderer {
-    /// A renderer for `window`, at once (see [`Renderer::prepare`]).
-    pub fn new(window: Arc<Window>) -> Result<Self, RenderError> {
-        Self::prepare(window).finish()
-    }
-
-    /// Starts a renderer for `window`, on the window's thread.
+    /// Starts a renderer for `window`, on the window's thread; the GPU comes
+    /// with [`Pending::finish`], anywhere else.
     pub fn prepare(window: Arc<Window>) -> Pending {
         let size = window.inner_size();
         let backends = preferred_backends();
@@ -572,7 +568,9 @@ impl Renderer {
         self.write_plane(&planes.v, &frame.v, w / 2, h / 2);
     }
 
-    pub fn render(&mut self) -> Result<(), RenderError> {
+    /// Draws the current picture; `false`: the screen had no room for it
+    /// now (minimized, covered, busy), to try again.
+    pub fn render(&mut self) -> Result<bool, RenderError> {
         let mut texture = self.surface.get_current_texture();
         if matches!(
             texture,
@@ -586,7 +584,7 @@ impl Renderer {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             // Minimized or busy: skip this frame.
-            _ => return Ok(()),
+            _ => return Ok(false),
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.view_format),
@@ -665,7 +663,7 @@ impl Renderer {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(texture);
-        Ok(())
+        Ok(true)
     }
 
     fn create_planes(&self, width: u32, height: u32) -> Planes {

@@ -80,8 +80,9 @@ Não há um Mac aqui para reproduzir. A causa vem da leitura do código do wgpu 
   responde lá), e o resto (`Pending::finish`: placa, dispositivo, pipelines), que leva quase um segundo, fica
   na thread de desenho. Abrir outro computador não para mais as janelas abertas.
 - **No Mac, uma imagem espera a tela por no máximo 1 s.** Depois de cada `configure`, o
-  `allowsNextDrawableTimeout` volta a `true`. Se a imagem não vier, o quadro é pulado (`Timeout`) e o próximo
-  tenta de novo.
+  `allowsNextDrawableTimeout` volta a `true`. Se a imagem não vier, o quadro é pulado (`Timeout`) e a thread
+  tenta de novo em 250 ms, mesmo sem quadro novo. Com a tela do host parada, nada mais chegaria, e a janela
+  ficaria com a imagem velha.
 - **Minimizada ou coberta, a janela não desenha.** O `Occluded` do winit (Mac) e o tamanho zero (Windows
   minimizado) param o desenho. Ao voltar, o quadro mais novo é desenhado na hora.
 - **Sem atraso no Mac.** A primeira correção desenhava no `RedrawRequested`, que no Mac espera a próxima pintura
@@ -99,7 +100,7 @@ log:
 
 ```powershell
 $env:HEXT_LOOP_TRACE='1'
-.\hext.exe view <ID do Windows> 2>&1 | Tee-Object janela.log
+.\HextRemote.exe view <ID do Windows> 2>&1 | Tee-Object janela.log
 ```
 
 1. Com a sessão aberta, deixe um vídeo rodando em tela cheia no computador remoto, para chegar quadro o tempo

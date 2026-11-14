@@ -23,6 +23,8 @@ use tracing::{debug, warn};
 /// A frame this long in drawing is logged: the window keeps answering, but
 /// the picture stood still.
 const SLOW_RENDER: Duration = Duration::from_millis(100);
+/// A frame the screen had no room for is tried again after this long.
+const RETRY: Duration = Duration::from_millis(250);
 
 /// What the window draws over the picture.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -130,8 +132,11 @@ impl Screen {
     }
 
     /// (Render thread) Waits for something to do; `None`: the window is gone.
-    fn next(&self) -> Option<Work> {
+    /// With `retry`, a frame the screen had no room for is drawn again after
+    /// that long, if nothing came meanwhile (a still host sends no next one).
+    fn next(&self, retry: Option<Duration>) -> Option<Work> {
         let mut state = self.state.lock().expect("lock");
+        let until = retry.map(|retry| Instant::now() + retry);
         loop {
             if state.quit {
                 return None;
@@ -147,7 +152,17 @@ impl Screen {
                     draw,
                 });
             }
-            state = self.wake.wait(state).expect("lock");
+            // Hidden, seen again is what draws.
+            match until.filter(|_| !state.hidden) {
+                Some(until) => {
+                    let left = until.saturating_duration_since(Instant::now());
+                    state = self.wake.wait_timeout(state, left).expect("lock").0;
+                    if Instant::now() >= until {
+                        state.redraw = true;
+                    }
+                }
+                None => state = self.wake.wait(state).expect("lock"),
+            }
         }
     }
 
@@ -167,13 +182,11 @@ pub fn start(
     screen: Arc<Screen>,
     pending: Pending,
     news: impl Fn(News) + Send + 'static,
-) {
-    let spawned = std::thread::Builder::new()
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
         .name(name)
-        .spawn(move || draw(&screen, pending, &news));
-    if let Err(e) = spawned {
-        warn!("tela: {e}");
-    }
+        .spawn(move || draw(&screen, pending, &news))
+        .map(drop)
 }
 
 fn draw(screen: &Screen, pending: Pending, news: &impl Fn(News)) {
@@ -186,7 +199,8 @@ fn draw(screen: &Screen, pending: Pending, news: &impl Fn(News)) {
     };
     // Gaps between the frames shown while the picture moves, and since when.
     let (mut gaps, mut since) = (Gaps::default(), Instant::now());
-    while let Some(work) = screen.next() {
+    let mut retry = None;
+    while let Some(work) = screen.next(retry) {
         if let Some((width, height)) = work.size {
             renderer.resize(width, height);
         }
@@ -216,9 +230,16 @@ fn draw(screen: &Screen, pending: Pending, news: &impl Fn(News)) {
         }
         if work.draw {
             let started = Instant::now();
-            if let Err(e) = renderer.render() {
-                warn!("render: {e}");
-            }
+            retry = match renderer.render() {
+                Ok(true) => None,
+                // On a Mac, just restored: the window may not count as seen
+                // yet.
+                Ok(false) => Some(RETRY),
+                Err(e) => {
+                    warn!("render: {e}");
+                    None
+                }
+            };
             let took = started.elapsed();
             if took >= SLOW_RENDER {
                 warn!(
@@ -250,13 +271,13 @@ mod tests {
         for width in 1..=100 {
             screen.put(picture(width), 1);
         }
-        let work = screen.next().unwrap();
+        let work = screen.next(None).unwrap();
         let (newest, display) = work.frame.unwrap();
         assert_eq!((newest.width, display), (100, 1));
         assert!(work.draw);
         // Nothing left: the next waits (here, for the end).
         screen.quit();
-        assert!(screen.next().is_none());
+        assert!(screen.next(None).is_none());
     }
 
     #[test]
@@ -267,7 +288,7 @@ mod tests {
         screen.put(picture(2), 0);
         // A size still comes through, with nothing to draw.
         screen.resize(800, 600);
-        let work = screen.next().unwrap();
+        let work = screen.next(None).unwrap();
         assert_eq!(work.size, Some((800, 600)));
         assert!(work.frame.is_none() && !work.draw);
         // Pictures alone do not wake it while hidden.
@@ -277,7 +298,7 @@ mod tests {
             assert!(state.newest.is_some() && state.size.is_none() && !state.redraw);
         }
         screen.hide(false);
-        let work = screen.next().unwrap();
+        let work = screen.next(None).unwrap();
         assert_eq!(work.frame.unwrap().0.width, 3);
         assert!(work.draw);
     }
@@ -294,6 +315,18 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_the_screen_had_no_room_for_is_drawn_again() {
+        let screen = Screen::default();
+        let work = screen.next(Some(Duration::from_millis(10))).unwrap();
+        assert!(work.draw && work.frame.is_none());
+        // Hidden, it waits to be seen again instead.
+        screen.hide(true);
+        screen.resize(10, 10);
+        let work = screen.next(Some(Duration::from_millis(10))).unwrap();
+        assert!(!work.draw);
+    }
+
+    #[test]
     fn the_render_thread_wakes_for_a_picture_left_by_another_thread() {
         let screen = Arc::new(Screen::default());
         let decoder = {
@@ -303,7 +336,7 @@ mod tests {
                 screen.put(picture(7), 2);
             })
         };
-        let work = screen.next().unwrap();
+        let work = screen.next(None).unwrap();
         assert_eq!(work.frame.unwrap().0.width, 7);
         decoder.join().unwrap();
     }
