@@ -16,6 +16,7 @@ versão. **Última atualização: novembro de 2026, versão 0.8.2.**
 | F6 — Distribuição | `.msi`, `.exe` portátil, `.dmg` notarizado, `.deb`/`.rpm`/`.AppImage`, atualização automática assinada, acesso não assistido no Mac depois do login | [F6](planos/F6.md) |
 | Interface no Linux | O app como técnico no Linux: conta, Meus computadores, acessar outros computadores; `.deb` e `.rpm` com as bibliotecas de que precisam (WebKitGTK) (0.8.0) | [arquitetura](../ARCHITECTURE.pt-BR.md#7-plataformas) |
 | Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0`; uma tela que fica preta (monitor desligado no botão) passa para o virtual sozinha; o visualizador volta ao último monitor escolhido em cada computador (0.8.2) | [monitor-virtual](monitor-virtual.md) |
+| Tela de privacidade (Windows) | `Ctrl+Alt+P` no visualizador: quem está no computador vê uma tela preta com um aviso e o mouse e o teclado dele não fazem nada, enquanto o técnico vê e controla tudo; `Ctrl+Alt+Del` lá desliga | [F7](planos/F7.md#marco-1-como-funciona-e-roteiro) |
 
 Os nomes em "Meus computadores" seguem o nome atual de cada computador (0.7.1).
 
@@ -33,6 +34,7 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
       conferido (novembro de 2026).
 - [ ] **Linux:** instalar o `.deb` num Ubuntu e o `.rpm` num Fedora, abrir pelo menu, entrar na conta e acessar
       um computador (vídeo, teclado, mouse, arquivo recebido).
+- [ ] **Tela de privacidade:** o roteiro do marco 1 da F7 ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)).
 
 ## Em aberto
 
@@ -44,7 +46,7 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 
 ## A seguir
 
-- **F7 — Extras** ([plano](planos/F7.md)): tela de privacidade, áudio e host no Linux (ser acessado);
+- **F7 — Extras** ([plano](planos/F7.md)): tela de privacidade no Mac, áudio e host no Linux (ser acessado);
   Wake-on-LAN, gravação de sessão, HEVC/AV1, vários técnicos, mobile e web quando houver demanda.
 - **Fluidez, por último e com calma:** comparar lado a lado com o Parsec, na mesma rede e sem Tailscale, e aplicar o
   que o estudo achou ([fluidez-parsec](estudos/fluidez-parsec.md)). Já entrou: a captura acompanha a cadência da tela,
