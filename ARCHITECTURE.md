@@ -56,7 +56,7 @@ capture (GPU) → NV12 → H.264 encode → packets + FEC → QUIC datagrams →
 
 | Step | Windows | macOS | Linux | Fallback |
 |---|---|---|---|---|
-| Capture | DXGI Desktop Duplication (also the sign-in screen and UAC, from the service) | ScreenCaptureKit, at the screen's logical size | X11: XShm, with Damage so a still screen sends nothing | — |
+| Capture | DXGI Desktop Duplication (also the sign-in screen and UAC, from the service) | ScreenCaptureKit, at the screen's logical size | X11: XShm, with Damage so a still screen sends nothing. Wayland: the ScreenCast portal and PipeWire | — |
 | Encode | Media Foundation (graphics card), zero-copy from the capture | VideoToolbox | VA-API (graphics card, loaded at run time) | OpenH264 (CPU) |
 | Decode | Media Foundation with Direct3D 11 | VideoToolbox | OpenH264 | OpenH264 |
 
@@ -102,8 +102,10 @@ in: there is no system service for the sign-in screen ([DECISIONS](docs/DECISION
 the `.deb` and `.rpm`; `service install`, without `sudo`, turns it on for whoever runs it), with the same
 unattended access stored in the user's folder. There is no system service: no access before login
 ([DECISIONS](docs/DECISIONS.md#linux-user-unit-no-sign-in-screen)). Host on an X11 session (XShm capture, XTest
-mouse and keyboard, several monitors through XRandR); on Wayland the host does not capture yet and says to pick
-the "Ubuntu on Xorg" session. No virtual monitor and no privacy screen on Linux.
+mouse and keyboard, several monitors through XRandR). On Wayland, everything goes through the desktop's portal
+over D-Bus: one RemoteDesktop session with the ScreenCast screens attached, so the desktop asks the person at the
+computer once (and a restore token skips the question next time); frames by PipeWire (loaded at run time), input
+as evdev codes. No virtual monitor, no privacy screen and no sign-in screen (GDM) on Linux.
 
 ## 5. Who gets in
 
@@ -142,7 +144,7 @@ them in SQLite, and an unconfirmed account is deleted in 24 hours.
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | Technician (viewer) | ✅ | ✅ | ✅ (interface) |
-| Customer (host) | ✅, including sign-in screen and UAC | ✅, after login | ✅ on X11, after login |
+| Customer (host) | ✅, including sign-in screen and UAC | ✅, after login | ✅ on X11 and Wayland (through the portal), after login |
 | Unattended | ✅ service | ✅ after login | ✅ after login (systemd user unit) |
 | Virtual monitor | ✅ (optional driver) | ✅ | — |
 

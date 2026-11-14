@@ -2,8 +2,8 @@
 //!
 //! [`displays`] lists the displays and [`open`] returns a [`Capturer`] for
 //! one: DXGI Desktop Duplication on Windows, ScreenCaptureKit on macOS, X11
-//! (XShm) on Linux, or a synthetic [`TestPattern`] (any OS) for development
-//! and tests.
+//! (XShm) or the Wayland portal (PipeWire) on Linux, or a synthetic
+//! [`TestPattern`] (any OS) for development and tests.
 
 use std::time::Duration;
 
@@ -16,8 +16,12 @@ mod gpu_nv12;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "linux")]
+mod pipewire;
 mod test_pattern;
 pub mod virtual_display;
+#[cfg(target_os = "linux")]
+mod wayland;
 #[cfg(windows)]
 mod windows;
 
@@ -219,7 +223,7 @@ pub fn open_display(
     #[cfg(target_os = "linux")]
     {
         if linux::is_wayland() {
-            return Err(wayland_unsupported());
+            return wayland::open(display, max_fps);
         }
         Ok(Box::new(linux::X11Capturer::new(&display.id, max_fps)?))
     }
@@ -233,19 +237,20 @@ pub fn open_display(
 #[cfg(target_os = "linux")]
 fn linux_displays() -> Result<Vec<Display>, CaptureError> {
     if linux::is_wayland() {
-        return Err(wayland_unsupported());
+        return wayland::displays();
     }
     linux::displays()
 }
 
+/// Whether this is a Wayland session (Linux): the screen and the input go
+/// through the desktop's portal ([`send_portal_input`]) instead of X11.
 #[cfg(target_os = "linux")]
-fn wayland_unsupported() -> CaptureError {
-    CaptureError::Platform(
-        "sessão Wayland: por enquanto, o Hext Remote captura só sessões X11 (na tela de login, \
-         escolha \"Ubuntu em Xorg\")"
-            .into(),
-    )
+pub fn is_wayland() -> bool {
+    linux::is_wayland()
 }
+
+#[cfg(target_os = "linux")]
+pub use wayland::{PortalInput, send_input as send_portal_input};
 
 /// Where the main display is in the system's own coordinates, for input:
 /// X11 counts from the top-left corner of all the monitors, sessions from

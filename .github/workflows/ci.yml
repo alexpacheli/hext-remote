@@ -59,13 +59,16 @@ jobs:
           target: ${{ matrix.targets }}
 
       # The interface on Linux: WebKitGTK, to build with; the sound: ALSA. For
-      # the host's tests: a virtual X server, xkbcomp (the Brazilian keymap)
-      # and libva's headers (the VA-API structures).
+      # the host's tests: a virtual X server, xkbcomp (the Brazilian keymap),
+      # libva's and libpipewire's headers (the structures written by hand),
+      # and a PipeWire with a test video source.
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev xvfb x11-xkb-utils libva-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev xvfb x11-xkb-utils libva-dev \
+            libpipewire-0.3-dev pipewire pipewire-bin wireplumber dbus \
+            gstreamer1.0-pipewire gstreamer1.0-tools gstreamer1.0-plugins-base
 
       - name: Format
         if: runner.os == 'Linux'
@@ -90,7 +93,20 @@ jobs:
           "$RUNNER_TEMP/va-layout" > "$RUNNER_TEMP/va-layout.txt"
           HEXT_TEST_XKB_KEYMAP="$RUNNER_TEMP/br.xkb" HEXT_VA_LAYOUT="$RUNNER_TEMP/va-layout.txt" \
             xvfb-run -a -s '-screen 0 1280x800x24' \
-            cargo test --locked -p hext-capture -p hext-input -p hext-codec -- --ignored x11_ layouts_match
+            cargo test --locked -p hext-capture -p hext-input -p hext-codec -- --ignored x11_ layouts_match_libva
+
+      # The Wayland host (F7, milestone 5): the PipeWire structures match its
+      # headers, and a real PipeWire stream (a test source standing in for
+      # the desktop's screen) comes out as BGRA. The portal itself (the
+      # desktop's question, the restore token, input) needs a real desktop:
+      # the field checklist covers it.
+      - name: Host on Wayland (Linux, PipeWire)
+        if: runner.os == 'Linux'
+        run: |
+          cc $(pkg-config --cflags libpipewire-0.3) crates/capture/pw-layout.c -o "$RUNNER_TEMP/pw-layout"
+          "$RUNNER_TEMP/pw-layout" > "$RUNNER_TEMP/pw-layout.txt"
+          HEXT_PW_LAYOUT="$RUNNER_TEMP/pw-layout.txt" bash crates/capture/pipewire-source.sh \
+            cargo test --locked -p hext-capture -- --ignored layouts_match_pipewire pipewire_
 
       # vendor/netwatch replaces netwatch's WMI query (see its PATCHED.md).
       # The patch only applies to that exact version: if iroh moves to

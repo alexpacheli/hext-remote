@@ -1,6 +1,6 @@
 [package]
 name = "hext-input"
-description = "Hext Remote input injection (SendInput, CGEvent, XTest) and key mapping"
+description = "Hext Remote input injection (SendInput, CGEvent, XTest, the Wayland portal) and key mapping"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

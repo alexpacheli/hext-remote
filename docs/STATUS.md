@@ -19,6 +19,7 @@ Where Hext Remote stands: what is done, what is being checked and what comes nex
 | Privacy screen (Windows and Mac) | `Ctrl+Alt+P` in the viewer: the person at the computer sees a black screen with a notice and their mouse and keyboard do nothing, while the technician sees and controls everything; `Ctrl+Alt+Del` there ends it (on a Mac, macOS 12.3 or newer: Esc three times) | [F7](planos/F7.md#marco-1-como-funciona-e-roteiro), [Mac](planos/F7.md#marco-2-como-funciona-e-roteiro) |
 | Sound | What the host plays (Windows, and macOS 13+) reaches the viewer, about 70 ms behind on a local network; `Ctrl+Alt+S` mutes it, and nothing is sent while the computer is silent | [F7](planos/F7.md#marco-3-como-funciona-e-roteiro) |
 | Linux host (X11) | Linux is accessed too, on an X11 session: capture (XShm, several monitors through XRandR), mouse and keyboard (XTest, ABNT2 by scancode), clipboard and files; VA-API encoding where there is one, OpenH264 otherwise; `service install` (no `sudo`) opens it at login through a systemd user unit shipped in the `.deb`/`.rpm`. No access before login, no virtual monitor, no privacy screen | [F7](planos/F7.md#marco-4-como-funciona-e-roteiro) |
+| Linux host (Wayland) | The same on Wayland, through the desktop's portal: the desktop asks the person at the computer once what to share (a restore token skips it next time), frames by PipeWire, input through the RemoteDesktop portal. The sign-in screen (GDM) stays out | [F7](planos/F7.md#marco-5-como-funciona-e-roteiro) |
 
 Names in "My computers" follow the computer's current name (0.7.1).
 
@@ -44,6 +45,9 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 - [ ] **Sound:** the F7 milestone 3 checklist ([F7](planos/F7.md#marco-3-como-funciona-e-roteiro)).
 - [ ] **Linux host (X11):** the F7 milestone 4 checklist on Ubuntu LTS with GNOME on Xorg
       ([F7](planos/F7.md#marco-4-como-funciona-e-roteiro)). Checked so far only on a virtual X server in CI.
+- [ ] **Linux host (Wayland):** the F7 milestone 5 checklist on Ubuntu LTS with GNOME (Wayland)
+      ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). In CI only the PipeWire stream, from a test source; the
+      portal (the desktop's question, the restore token, input) is not checked yet.
 
 ## Open issues
 
@@ -56,7 +60,7 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 
 ## Next
 
-- **F7 — Extras** ([plan](planos/F7.md), in Portuguese): the Linux host on Wayland;
+- **F7 — Extras** ([plan](planos/F7.md), in Portuguese): the field checklist of each milestone;
   Wake-on-LAN, session recording, HEVC/AV1, several technicians, mobile and web when there is demand.
 - **Smoothness, last and with care:** compare with Parsec side by side, on the same network without Tailscale, and
   apply what the study found ([fluidez-parsec](estudos/fluidez-parsec.md)). Already in: the capture keeps step with

@@ -3,7 +3,8 @@
 //! - The viewer turns window events into [`InputEvent`]s; [`keymap`] maps
 //!   physical keys to PC set-1 scancodes, the wire format for keys.
 //! - The host replays them with an [`Injector`]: `SendInput` on Windows,
-//!   CGEvent on macOS, XTest on Linux (X11), a logger elsewhere.
+//!   CGEvent on macOS, XTest on Linux (X11) or the RemoteDesktop portal
+//!   (Wayland), a logger elsewhere.
 
 use hext_proto::InputEvent;
 
@@ -13,6 +14,8 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod privacy;
+#[cfg(target_os = "linux")]
+mod wayland;
 #[cfg(windows)]
 mod windows;
 
@@ -68,7 +71,11 @@ pub fn injector() -> Box<dyn Injector> {
     }
     #[cfg(target_os = "linux")]
     {
-        Box::new(linux::XTestInjector::default())
+        if hext_capture::is_wayland() {
+            Box::new(wayland::PortalInjector::default())
+        } else {
+            Box::new(linux::XTestInjector::default())
+        }
     }
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {

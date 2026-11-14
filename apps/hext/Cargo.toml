@@ -87,11 +87,11 @@ workspace = true
 name = "hext-remote"
 maintainer = "Hext Remote <suporte@hext.com.br>"
 copyright = "Hext"
-extended-description = "Acesso e suporte remoto: acessa outros computadores e é acessado (sessões X11; hext-remote service install liga o acesso a cada login do usuário)."
+extended-description = "Acesso e suporte remoto: acessa outros computadores e é acessado (X11, ou Wayland pelo portal do sistema; hext-remote service install liga o acesso a cada login do usuário)."
 section = "net"
 priority = "optional"
 depends = "$auto, libxkbcommon-x11-0, libvulkan1, libegl1"
-recommends = "mesa-vulkan-drivers, libva2, libva-drm2"
+recommends = "mesa-vulkan-drivers, libva2, libva-drm2, libpipewire-0.3-0t64 | libpipewire-0.3-0, xdg-desktop-portal"
 assets = [
     ["target/release/hext", "usr/bin/hext-remote", "755"],
     ["../../installer/linux/hext-remote.desktop", "usr/share/applications/", "644"],
@@ -139,3 +139,7 @@ auto-req = "no"
 mesa-vulkan-drivers = "*"
 # VA-API, for the host to encode on the graphics card (opened at run time).
 libva = "*"
+# The screen on Wayland: the desktop's portal and PipeWire (opened at run
+# time).
+pipewire-libs = "*"
+xdg-desktop-portal = "*"
