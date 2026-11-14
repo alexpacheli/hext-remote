@@ -225,6 +225,7 @@ async fn session_with(permissions: Permissions) -> Running {
             resume: None,
             asks: Default::default(),
             audio: false,
+            audio_muted: false,
         },
         None,
         DecoderPreference::Software,

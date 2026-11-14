@@ -282,6 +282,7 @@ impl Host {
                 resume,
                 asks,
                 audio: false,
+                audio_muted: false,
             },
             login,
             DecoderPreference::Software,

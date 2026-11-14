@@ -22,6 +22,7 @@ fn hello(code: &str) -> Hello {
         resume: None,
         asks: Default::default(),
         audio: false,
+        audio_muted: false,
     }
 }
 

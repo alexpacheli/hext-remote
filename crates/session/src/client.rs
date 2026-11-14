@@ -345,7 +345,15 @@ pub async fn start(
     decoder: DecoderPreference,
     on_frame: impl FnMut(DecodedFrame) + Send + 'static,
 ) -> Result<ClientHandle> {
-    let audio_asked = hello.audio;
+    // Started muted, whether the host sends is not known: one of 0.9
+    // ignores `audio_muted` and does. It is told either way once it says
+    // it has sound.
+    let audio_wanted = hello.audio && !hello.audio_muted;
+    let host_sends = if hello.audio && hello.audio_muted {
+        None
+    } else {
+        Some(hello.audio)
+    };
     let (control, host, permissions) = hext_net::client_handshake(&conn, hello, password).await?;
     let input_stream = hext_net::open_uni(&conn, StreamKind::Input).await?;
 
@@ -363,7 +371,7 @@ pub async fn start(
     // A few slots: a burst nobody is taking loses its last messages.
     let (chat_in_tx, chat_in) = mpsc::channel(32);
     let (audio_in_tx, audio_in) = mpsc::channel(AUDIO_QUEUE);
-    let (audio_on, audio_on_rx) = watch::channel(audio_asked);
+    let (audio_on, audio_on_rx) = watch::channel(audio_wanted);
     let resume = Arc::new(Mutex::new(Resume::default()));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = oneshot::channel();
@@ -384,7 +392,7 @@ pub async fn start(
         Sound {
             packets: audio_in_tx,
             wanted: audio_on_rx,
-            host_sends: audio_asked,
+            host_sends,
         },
         resume.clone(),
         shutdown_rx,
@@ -603,18 +611,19 @@ struct Sound {
     packets: mpsc::Sender<AudioPacket>,
     /// Not muted.
     wanted: watch::Receiver<bool>,
-    /// What the host was last asked for (first in the [`Hello`]).
-    host_sends: bool,
+    /// What the host was last asked for (first in the [`Hello`]); `None`:
+    /// not known.
+    host_sends: Option<bool>,
 }
 
 impl Sound {
     /// What to tell the host, if it has sound and does not do as wanted.
     fn tell(&mut self, displays: &Displays) -> Option<Control> {
         let on = *self.wanted.borrow_and_update();
-        if !displays.audio || on == self.host_sends {
+        if !displays.audio || Some(on) == self.host_sends {
             return None;
         }
-        self.host_sends = on;
+        self.host_sends = Some(on);
         Some(Control::Audio { on })
     }
 }
@@ -889,7 +898,7 @@ mod tests {
         let mut sound = Sound {
             packets: mpsc::channel(1).0,
             wanted: wanted_rx,
-            host_sends: true,
+            host_sends: Some(true),
         };
         let without = Displays::default();
         let with = Displays {
@@ -902,6 +911,33 @@ mod tests {
         assert_eq!(sound.tell(&with), Some(Control::Audio { on: false }));
         assert_eq!(sound.tell(&with), None, "once");
         wanted.send_replace(true);
+        assert_eq!(sound.tell(&with), Some(Control::Audio { on: true }));
+    }
+
+    #[test]
+    fn a_session_started_muted_tells_the_host_once_it_has_sound() {
+        // (Whether the host sends it is not known: one of 0.9 does.)
+        let (_wanted, wanted_rx) = watch::channel(false);
+        let mut sound = Sound {
+            packets: mpsc::channel(1).0,
+            wanted: wanted_rx,
+            host_sends: None,
+        };
+        let with = Displays {
+            audio: true,
+            ..Displays::default()
+        };
+        assert_eq!(sound.tell(&Displays::default()), None);
+        assert_eq!(sound.tell(&with), Some(Control::Audio { on: false }));
+        assert_eq!(sound.tell(&with), None);
+        // Back in a session that had it on: told on, which a new host
+        // has not started.
+        let (_wanted, wanted_rx) = watch::channel(true);
+        let mut sound = Sound {
+            packets: mpsc::channel(1).0,
+            wanted: wanted_rx,
+            host_sends: None,
+        };
         assert_eq!(sound.tell(&with), Some(Control::Audio { on: true }));
     }
 

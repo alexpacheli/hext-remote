@@ -403,7 +403,9 @@ impl Viewers {
         ));
         runtime.spawn(share_files(&mut session, tell.clone()));
         runtime.spawn(hear_displays(&session, tell.clone()));
+        // Without sound until Ctrl+Alt+S (as the Hello asks the host).
         let player = Player::new();
+        player.set_muted(true);
         runtime.spawn(hear_audio(&mut session, &player));
         if self.ui {
             runtime.spawn(hear_chat(&mut session, n));
@@ -1964,8 +1966,10 @@ async fn try_back(back: &Back, endpoint: &Endpoint, token: ResumeToken) -> Resul
         access_code: code,
         resume: Some(token),
         asks: Default::default(),
-        // (Muted: told as soon as the host says it has sound.)
+        // (Muted or not as the window is: told as soon as the host says
+        // it has sound.)
         audio: true,
+        audio_muted: true,
     };
     let frames = show_frames(back.latest.clone());
     let session = client::start(conn, hello, None, back.decoder, frames).await?;
@@ -2221,6 +2225,8 @@ fn hello_of(
         resume: None,
         asks,
         audio,
+        // Sessions start without sound: the technician turns it on.
+        audio_muted: audio,
     };
     let viewer = net.key.public_key();
     let password = login.map(|login| PasswordLogin {

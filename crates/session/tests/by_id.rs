@@ -119,6 +119,7 @@ async fn accepted_by_id_then_streams() {
         resume: None,
         asks: Default::default(),
         audio: false,
+        audio_muted: false,
     };
     let client_endpoint = hext_net::bind(&viewer_key, &EndpointConfig::default())
         .await

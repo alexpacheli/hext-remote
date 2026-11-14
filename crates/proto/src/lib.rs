@@ -179,6 +179,12 @@ pub struct Hello {
     /// (it would not know [`Datagram::Audio`]).
     #[serde(default, deserialize_with = "absent_is_default")]
     pub audio: bool,
+    /// With `audio`: offer the sound, but start without it (muted in the
+    /// viewer until [`Control::Audio`]). After `audio`, last for the same
+    /// reason: a viewer from before gets the sound from the start, as it
+    /// did; a host from before ignores it and starts it.
+    #[serde(default, deserialize_with = "absent_is_default")]
+    pub audio_muted: bool,
 }
 
 /// What a viewer that got in with the unattended password asks the host for.
@@ -578,6 +584,7 @@ mod tests {
                     account: Some([3; 32]),
                 },
                 audio: true,
+                audio_muted: true,
             }),
             Control::RequestKeyframe,
             Control::ResendVideo {
@@ -872,6 +879,7 @@ mod tests {
                 account: Some([2; 32]),
             },
             audio: true,
+            audio_muted: true,
         };
         let read: OldHello = decode(&encode(&new).unwrap()).unwrap();
         assert_eq!(read.resume, Some([1; 32]));
@@ -898,6 +906,27 @@ mod tests {
         assert!(!hello.audio);
         let read: HelloOf08 = decode(&encode(&new).unwrap()).unwrap();
         assert_eq!(read.asks, new.asks);
+        // A viewer of 0.9 (sound, not muted) gets it from the start; a host
+        // of 0.9 reads that the viewer plays it.
+        #[derive(Serialize, Deserialize)]
+        struct HelloOf09 {
+            peer: PeerInfo,
+            access_code: String,
+            resume: Option<[u8; 32]>,
+            asks: HelloAsks,
+            audio: bool,
+        }
+        let of_09 = HelloOf09 {
+            peer: old.peer.clone(),
+            access_code: old.access_code.clone(),
+            resume: None,
+            asks: HelloAsks::default(),
+            audio: true,
+        };
+        let hello: Hello = decode(&encode(&of_09).unwrap()).unwrap();
+        assert!(hello.audio && !hello.audio_muted);
+        let read: HelloOf09 = decode(&encode(&new).unwrap()).unwrap();
+        assert!(read.audio);
         // Inside a control frame, too.
         let mut buf =
             frame::encode_frame(&Control::Hello(new.clone()), frame::MAX_FRAME_LEN).unwrap();
