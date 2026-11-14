@@ -91,7 +91,8 @@ pub fn installed() -> bool {
     enabled_link().is_ok_and(|link| link.symlink_metadata().is_ok())
 }
 
-/// The unit, running `exe`.
+/// The unit, running `exe`. A program failing at start (a bad update) stops
+/// being restarted after five tries in two minutes.
 fn unit(exe: &Path) -> String {
     format!(
         "[Unit]\n\
@@ -99,6 +100,8 @@ fn unit(exe: &Path) -> String {
          Documentation=https://github.com/alexpacheli/hext-remote\n\
          PartOf=graphical-session.target\n\
          After=graphical-session.target\n\
+         StartLimitIntervalSec=120\n\
+         StartLimitBurst=5\n\
          \n\
          [Service]\n\
          ExecStart={} ui\n\
@@ -131,6 +134,39 @@ fn autostart() -> String {
      NoDisplay=true\n\
      X-GNOME-Autostart-Phase=Applications\n"
         .to_owned()
+}
+
+/// Opens the installed program again after its package was updated, as the
+/// unit: restarted by systemd when this process is the unit's (after
+/// reading a unit file the package may have changed); otherwise started
+/// once this one is gone (a copy opened from the menu, which the unit gave
+/// way to). `Ok(false)`: not installed, nothing done.
+pub fn reopen_installed() -> Result<bool> {
+    if !installed() {
+        return Ok(false);
+    }
+    if std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| in_unit(&c)) {
+        let _ = systemctl(&["daemon-reload"]);
+        // (systemd stops this one and starts the new one.)
+        systemctl(&["restart", "--no-block", UNIT])?;
+        return Ok(true);
+    }
+    Command::new("/bin/sh")
+        .args(["-c", r#"sleep 2; exec systemctl --user start "$0""#, UNIT])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("systemctl")?;
+    std::process::exit(0);
+}
+
+/// Whether `/proc/self/cgroup` puts this process in the unit (not just
+/// below some other systemd service, whose variables it may have).
+fn in_unit(cgroup: &str) -> bool {
+    cgroup
+        .lines()
+        .any(|line| line.trim_end().ends_with(&format!("/{UNIT}")))
 }
 
 fn systemctl(args: &[&str]) -> Result<String> {
@@ -358,6 +394,19 @@ pub fn restart(dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_units_own_process_is_the_unit() {
+        let slice = "0::/user.slice/user-1000.slice/user@1000.service/app.slice";
+        assert!(in_unit(&format!("{slice}/hext-remote.service\n")));
+        // Opened from the menu, or below another service.
+        assert!(!in_unit(&format!(
+            "{slice}/app-gnome-hext-remote-4242.scope\n"
+        )));
+        assert!(!in_unit(&format!(
+            "{slice}/org.gnome.Shell@wayland.service\n"
+        )));
+    }
 
     #[test]
     fn the_unit_runs_the_program_at_login() {

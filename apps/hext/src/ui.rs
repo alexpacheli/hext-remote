@@ -243,9 +243,14 @@ const REPLACED_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Linux: `apt` and `dnf` put the new program in place of the old one,
 /// which goes on running from a deleted file (still the old version, saying
-/// a new one is out). Between sessions, it opens again as the new one: under
-/// systemd (the unit of `service install`) by exiting with a failure, for
-/// `Restart=on-failure`; otherwise by starting the new program itself.
+/// a new one is out). Once nothing would be cut, it opens again as the new
+/// one: as the unit of `service install` when installed, otherwise by
+/// starting the new program itself.
+///
+/// Nothing would be cut: no session, no request waiting for an answer, no
+/// computer open from here, no window in front of anyone, and all of that
+/// for longer than a dropped session has to come back (its token lives
+/// only in this process).
 #[cfg(target_os = "linux")]
 fn watch_replaced(app: AppHandle) {
     // (An AppImage runs from a mount of its own: replacing it is the
@@ -255,34 +260,52 @@ fn watch_replaced(app: AppHandle) {
     }
     tauri::async_runtime::spawn(async move {
         let mut said = false;
+        let mut quiet_since: Option<std::time::Instant> = None;
         loop {
             tokio::time::sleep(REPLACED_CHECK).await;
+            let shown = app
+                .webview_windows()
+                .values()
+                .any(|window| window.is_visible().unwrap_or(false));
+            if !idle(&app) || shown {
+                quiet_since = None;
+            } else {
+                quiet_since.get_or_insert_with(std::time::Instant::now);
+            }
             let Some(path) = replaced() else { continue };
-            if !idle(&app) {
+            if quiet_since.is_none_or(|t| t.elapsed() < hext_session::NETWORK_GRACE) {
                 if !std::mem::replace(&mut said, true) {
-                    tracing::info!("o pacote foi atualizado: reabrindo depois da sessão");
+                    tracing::info!("o pacote foi atualizado: reabrindo quando nada estiver em uso");
                 }
                 continue;
             }
             tracing::info!("o pacote foi atualizado: reabrindo ({})", path.display());
-            if std::env::var_os("INVOCATION_ID").is_none() {
-                // Once this one is gone: the new one would find it and give
-                // way to it.
-                let started = std::process::Command::new("/bin/sh")
-                    .args(["-c", r#"sleep 2; exec "$0" "$@""#])
-                    .arg(&path)
-                    .args(std::env::args_os().skip(1))
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-                if let Err(e) = started {
+            match crate::service::reopen_installed() {
+                // (systemd stops this one.)
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => {
+                    warn!("reabrir: {e:#}");
+                    continue;
+                }
+            }
+            // Once this one is gone: the new one would find it and give way
+            // to it.
+            let started = std::process::Command::new("/bin/sh")
+                .args(["-c", r#"sleep 2; exec "$0" "$@""#])
+                .arg(&path)
+                .args(std::env::args_os().skip(1))
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            match started {
+                Ok(_) => std::process::exit(0),
+                Err(e) => {
                     warn!("reabrir: {e}");
                     return;
                 }
-                std::process::exit(0);
             }
-            std::process::exit(1);
         }
     });
 }
@@ -306,14 +329,14 @@ fn replaced_path(
 }
 
 /// Nothing going on that an update would cut: no session on this computer,
-/// no computer open from here.
+/// no request waiting for an answer, no computer open from here.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn idle(app: &AppHandle) -> bool {
     let shared = app.state::<Shared>();
     // (One lock at a time.)
     let quiet = {
         let view = shared.view.lock().expect("lock");
-        view.session.is_none() && view.viewers.is_empty()
+        view.session.is_none() && view.ask.is_none() && view.viewers.is_empty()
     };
     quiet && shared.hub.lock().expect("lock").is_none()
 }
