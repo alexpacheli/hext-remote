@@ -45,8 +45,8 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 
 ## Next
 
-- **F7 — Extras:** Linux host (being accessed), audio, privacy screen, session recording, HEVC/AV1, Wake-on-LAN,
-  mobile and web.
+- **F7 — Extras** ([plan](planos/F7.md), in Portuguese): privacy screen, audio and the Linux host (being
+  accessed); Wake-on-LAN, session recording, HEVC/AV1, several technicians, mobile and web when there is demand.
 - **Smoothness, last and with care:** compare with Parsec side by side, on the same network without Tailscale, and
   apply what the study found ([fluidez-parsec](estudos/fluidez-parsec.md)). Already in: the capture keeps step with
   the screen, and the log shows the longest gap between frames on both sides.
