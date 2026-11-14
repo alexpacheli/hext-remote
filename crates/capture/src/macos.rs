@@ -101,9 +101,18 @@ pub fn exclude_windows(ids: &[u32]) -> Result<(), CaptureError> {
             "a janela não aparece para o ScreenCaptureKit".into(),
         ));
     }
+    let present: Vec<String> = screens_of(&content)
+        .iter()
+        .map(|display| display_id(display))
+        .collect();
     let mut exclusion = EXCLUSION.lock().expect("lock");
     exclusion.windows = ids.to_vec();
     for live in &exclusion.streams {
+        // A display that is gone took its stream with it (the capture opens
+        // another, with this list): updating that one would only fail.
+        if !present.contains(&display_id(&live.display)) {
+            continue;
+        }
         let filter = unsafe {
             SCContentFilter::initWithDisplay_excludingWindows(
                 SCContentFilter::alloc(),
@@ -345,6 +354,10 @@ impl ScreenCaptureKitCapturer {
         if !CGPreflightScreenCaptureAccess() {
             return Err(permission_error());
         }
+        // Held from before the list of windows is read until the stream
+        // runs and is listed: an exclusion asked meanwhile (of windows made
+        // after that read) waits, and then reaches this stream too.
+        let mut exclusion = EXCLUSION.lock().expect("lock");
         let content = shareable_content()?;
         let display = screens_of(&content)
             .into_iter()
@@ -367,9 +380,6 @@ impl ScreenCaptureKitCapturer {
         let shared = Arc::new(Shared::default());
         let output = StreamOutput::new(shared.clone());
         let key = NEXT_STREAM.fetch_add(1, Ordering::Relaxed);
-        // Held until the stream is listed: an exclusion asked meanwhile
-        // waits, and then reaches this stream too.
-        let mut exclusion = EXCLUSION.lock().expect("lock");
         let stream = unsafe {
             // (A window that closed in the meantime is simply not there.)
             let excluded = windows_of(&content, &exclusion.windows);
@@ -394,12 +404,6 @@ impl ScreenCaptureKitCapturer {
                 None,
             )
         };
-        exclusion.streams.push(Live {
-            key,
-            stream: stream.clone(),
-            display: display.clone(),
-        });
-        drop(exclusion);
         let added = unsafe {
             stream.addStreamOutput_type_sampleHandlerQueue_error(
                 ProtocolObject::from_ref(&*output),
@@ -408,15 +412,21 @@ impl ScreenCaptureKitCapturer {
             )
         };
         if let Err(e) = added {
-            forget_stream(key);
             return Err(platform("addStreamOutput", &e));
         }
+        // Listed only once running: a filter update before the start could
+        // fail and turn the privacy screen off.
         if let Err(e) = start(&stream) {
             // It may still start after the timeout: never leave it running.
-            forget_stream(key);
             stop(&stream, &output);
             return Err(e);
         }
+        exclusion.streams.push(Live {
+            key,
+            stream: stream.clone(),
+            display,
+        });
+        drop(exclusion);
         tracing::info!(
             "capturando o monitor {id}: {}x{} pontos, imagem {width}x{height}",
             rect.width,

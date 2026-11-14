@@ -131,7 +131,7 @@ impl Running {
         match started.recv() {
             Ok(Ok(())) => Ok(running),
             Ok(Err(e)) => {
-                // (It cleans up before saying so.)
+                // (It cleans up as it ends.)
                 if let Some(thread) = running.thread.take() {
                     let _ = thread.join();
                 }
@@ -164,9 +164,14 @@ fn run(
     ended: &Arc<AtomicBool>,
     ready: &mpsc::Sender<Result<(), String>>,
 ) {
+    // However this thread ends, a panic included: no windows left behind,
+    // and the host hears it ended.
+    let off = Off {
+        token,
+        ended: ended.clone(),
+    };
     let mut displays = active_displays();
     if let Err(e) = cover(token, text) {
-        uncover(token);
         let _ = ready.send(Err(e));
         return;
     }
@@ -179,7 +184,6 @@ fn run(
     let tap = match Tap::new(&state) {
         Ok(tap) => tap,
         Err(e) => {
-            uncover(token);
             let _ = ready.send(Err(e));
             return;
         }
@@ -229,7 +233,7 @@ fn run(
     }
     drop(tap);
     drop(state);
-    uncover(token);
+    drop(off);
     info!("tela de privacidade desligada");
 }
 
@@ -242,14 +246,30 @@ fn cover(token: u64, text: &str) -> Result<(), String> {
     on_main(move |mtm| reveal(mtm, token))
 }
 
-/// Closes the windows, waiting (bounded) for them to go, and stops leaving
-/// them out of new captures.
-fn uncover(token: u64) {
-    if let Err(e) = on_main(move |mtm| close(mtm, token)) {
-        // They go as soon as the main thread gets to it.
-        warn!("tela de privacidade: {e}");
+/// Ends a privacy screen when dropped: see [`run`].
+struct Off {
+    token: u64,
+    ended: Arc<AtomicBool>,
+}
+
+impl Drop for Off {
+    fn drop(&mut self) {
+        self.ended.store(true, Ordering::Relaxed);
+        uncover(self.token);
     }
-    let _ = hext_capture::exclude_windows(&[]);
+}
+
+/// Closes the windows, waiting (bounded) for them to go, and then stops
+/// leaving them out of new captures.
+fn uncover(token: u64) {
+    match on_main(move |mtm| close(mtm, token)) {
+        Ok(()) => {
+            let _ = hext_capture::exclude_windows(&[]);
+        }
+        // They go as soon as the main thread gets to it; until then, a
+        // capture that opens must still leave them out.
+        Err(e) => warn!("tela de privacidade: {e}"),
+    }
 }
 
 /// Runs `work` on the app's main thread and returns what it gave, or fails
@@ -373,6 +393,8 @@ fn window(mtm: MainThreadMarker, frame: NSRect, text: &NSString) -> Retained<NSW
     );
     // The technician's clicks land on the programs under it.
     window.setIgnoresMouseEvents(true);
+    // Hiding the app (Cmd+H, the technician's too) must not uncover it.
+    window.setCanHide(false);
     window.setAlphaValue(0.0);
 
     let label = NSTextField::wrappingLabelWithString(text, mtm);
