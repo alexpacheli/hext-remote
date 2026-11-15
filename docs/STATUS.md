@@ -50,10 +50,9 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
       Ubuntu: the session works, and the desktop asks what to share only the first time. The session bar opened in the
       middle of the screen; the fix (the interface through XWayland) is still to be checked.
 - [ ] **Linux repositories (apt and dnf):** the `.deb` and `.rpm` subscribe to our repositories and then update
-      with the system; tested in CI with a throwaway key. The real key is missing: generate it, put it in the
-      secrets of the `linux-repo` environment (`main` only), turn on GitHub Pages, run **Linux repositories** once by
-      hand, and only then commit the public part, in that order
-      ([repositorios-linux](repositorios-linux.md#o-que-você-precisa-fazer-uma-vez), in Portuguese). Then, on a real
+      with the system; tested in CI with a throwaway key. The real key is in the secrets of the `linux-repo`
+      environment, the repository is online (November 2026), and the packages subscribe from the first version
+      published after that. Still to do, on a real
       Ubuntu and Fedora, see a new version arrive through `apt upgrade`/`dnf upgrade` and the software store (on
       Fedora, whether GNOME Software/PackageKit asks to trust the key because of `repo_gpgcheck`; not checked yet).
 
@@ -73,9 +72,6 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 
 ## Next
 
-- **Linux repositories key** ([repositorios-linux](repositorios-linux.md), in Portuguese): until
-  `installer/linux/repo-key.asc` exists, the packages ship without the subscription and Linux keeps updating
-  through the app's notice.
 - **F7 — Extras** ([plan](planos/F7.md), in Portuguese): the field checklist of each milestone;
   Wake-on-LAN, session recording, HEVC/AV1, several technicians, mobile and web when there is demand.
 - **Smoothness, last and with care:** compare with Parsec side by side, on the same network without Tailscale, and
