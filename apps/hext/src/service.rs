@@ -29,6 +29,8 @@ mod windows;
 
 #[cfg(windows)]
 pub use banner::Banner;
+#[cfg(target_os = "linux")]
+pub use linux::reopen_installed;
 #[cfg(target_os = "macos")]
 pub use macos::{updatable_app, update_app};
 

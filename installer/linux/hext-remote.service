@@ -3,6 +3,8 @@ Description=Hext Remote: acesso remoto
 Documentation=https://github.com/alexpacheli/hext-remote
 PartOf=graphical-session.target
 After=graphical-session.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 ExecStart=/usr/bin/hext-remote ui
