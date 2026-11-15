@@ -113,6 +113,15 @@ inside the `.msi`, pinned by SHA-256, and the driver's certificate is matched by
 for computers with no monitor without an HDMI dummy plug, without trusting a new certificate unless the owner
 chooses, and without a ghost monitor left behind. ([monitor-virtual.md](monitor-virtual.md))
 
+**Linux updated by the system, from our own apt and dnf repositories** (November 2026). The `.deb` and `.rpm`
+subscribe themselves when installed, like Chrome; a workflow builds the repositories only from published releases
+(never a draft or a prerelease), signs them with our own GPG key (the metadata of both, and each `.rpm`) and
+publishes them on GitHub Pages. The packages subscribe only once the public key is in the source tree. The
+`.AppImage` keeps the in-app notice. *Why:* on Linux the package manager does the updating, and the app should
+not replace itself behind its back. PPA (Launchpad) and COPR were ruled out: both build from source on their own
+servers, and our Rust build, with its dependencies and packaging already tested in CI, would have to be redone
+there for each distribution. ([repositorios-linux.md](repositorios-linux.md), in Portuguese)
+
 ## Process
 
 **Study other tools, never copy their code.** *Why:* RustDesk (AGPL) and Sunshine/Moonlight (GPL) are good

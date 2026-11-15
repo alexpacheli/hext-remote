@@ -1,0 +1,152 @@
+name: Linux repositories
+
+# Our apt and dnf repositories (docs/repositorios-linux.md), on GitHub Pages:
+# the .deb and .rpm of the latest published release, signed with the key in
+# the secrets HEXT_REPO_GPG_KEY (armored private key) and
+# HEXT_REPO_GPG_PASSPHRASE (optional) of the environment linux-repo, which
+# only main may use. Without the key, nothing is published and the run ends
+# with a notice. Only published releases get here, never a draft nor a
+# prerelease (the same rule as the update manifest). The repositories keep
+# only the latest version.
+#
+# Publishing a release (or promoting a prerelease) starts it; "Run workflow"
+# on main redoes it (for the latest release, or the tag given). The base URL
+# is the variable HEXT_REPO_URL, or this repository's GitHub Pages
+# (installer/linux/repo.sh url).
+
+on:
+  release:
+    # Not "published": that one fires for prereleases too and misses a
+    # prerelease promoted later.
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (empty: the latest published)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-repositories
+  cancel-in-progress: false
+
+jobs:
+  # A release event runs on its tag, and the github-pages environment only
+  # deploys from the default branch: hand over to a run there (a
+  # workflow_dispatch started with GITHUB_TOKEN does start a run).
+  relay:
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Run on the default branch
+        run: gh workflow run repositorios.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH"
+
+  build:
+    # Only main: the key's environment refuses any other branch too.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    # The same Ubuntu as release.yml's repository test, so what builds the
+    # published repositories (apt-ftparchive, createrepo_c, rpmsign) is what
+    # CI proved on Ubuntu 24.04 and Fedora 43 clients.
+    runs-on: ubuntu-22.04
+    environment: linux-repo
+    outputs:
+      ready: ${{ steps.site.outputs.ready }}
+    env:
+      # Whether there is a key ("true" or "false"), not the key: that one
+      # only in the step that imports it.
+      HAS_KEY: ${{ secrets.HEXT_REPO_GPG_KEY != '' }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: No key
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice::sem HEXT_REPO_GPG_KEY, os repositórios Linux não foram publicados (docs/repositorios-linux.md)"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: env.HAS_KEY == 'true'
+
+      - name: Tools
+        if: env.HAS_KEY == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq apt-utils createrepo-c rpm jq >/dev/null
+
+      # The release's .deb and .rpm, each checked against its SHA256SUMS.txt
+      # and, with the variable HEXT_UPDATE_KEY, against the signed update
+      # manifest (latest.json), as the app checks it.
+      - name: Release
+        env:
+          HEXT_UPDATE_KEY: ${{ vars.HEXT_UPDATE_KEY }}
+        if: env.HAS_KEY == 'true'
+        run: |
+          latest=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          tag="${TAG:-$latest}"
+          info=$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json isDraft,isPrerelease -q '"\(.isDraft) \(.isPrerelease)"')
+          if [ "$info" != "false false" ]; then
+            echo "::error::$tag não é uma release publicada (rascunho ou pré-release)"; exit 1
+          fi
+          if [ "$tag" != "$latest" ]; then
+            echo "::warning::$tag não é a última release ($latest): os repositórios voltam para ela"
+          fi
+          packages="$RUNNER_TEMP/packages"
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -D "$packages" \
+            -p '*.deb' -p '*.rpm' -p SHA256SUMS.txt -p latest.json -p latest.json.sig
+          ls -l "$packages"
+          installer/linux/repo.sh verify "$packages"
+          echo "PACKAGES=$packages" >> "$GITHUB_ENV"
+          echo "### Repositórios Linux: $tag" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Key
+        if: env.HAS_KEY == 'true'
+        env:
+          HEXT_REPO_GPG_KEY: ${{ secrets.HEXT_REPO_GPG_KEY }}
+          HEXT_REPO_GPG_PASSPHRASE: ${{ secrets.HEXT_REPO_GPG_PASSPHRASE }}
+        run: |
+          echo "GNUPGHOME=$RUNNER_TEMP/gnupg" >> "$GITHUB_ENV"
+          GNUPGHOME="$RUNNER_TEMP/gnupg" installer/linux/repo.sh import
+
+      - name: Repositories
+        if: env.HAS_KEY == 'true'
+        env:
+          HEXT_REPO_URL: ${{ vars.HEXT_REPO_URL }}
+        run: |
+          installer/linux/repo.sh build "$PACKAGES" site
+          echo "Endereço: $(installer/linux/repo.sh url)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Forget the key
+        if: always() && env.HAS_KEY == 'true'
+        run: |
+          gpgconf --kill gpg-agent || true
+          rm -rf "$RUNNER_TEMP/gnupg"
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: env.HAS_KEY == 'true'
+        with:
+          path: site
+
+      - id: site
+        if: env.HAS_KEY == 'true'
+        run: echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    # The only job that writes: it publishes the site.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

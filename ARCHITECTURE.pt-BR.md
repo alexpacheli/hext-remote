@@ -142,6 +142,11 @@ guarda em SQLite, e uma conta não confirmada é apagada em 24 horas.
   interface, sem rede); o app só aceita essa assinatura. O serviço do Windows
   confere a cada hora e instala entre uma sessão e outra; o app do Mac se troca em Aplicativos (só com
   Developer ID); nos outros casos, a tela inicial oferece o download.
+- **Repositórios Linux:** o `.deb` e o `.rpm` se inscrevem nos nossos repositórios apt e dnf (no GitHub Pages, ou
+  em `HEXT_REPO_URL`), e as atualizações do sistema trazem as versões novas. O `repositorios.yml` os remonta a
+  cada release publicada e os assina com uma chave GPG guardada como segredo do repositório; os pacotes só se
+  inscrevem quando a chave pública está no código (`installer/linux/repo-key.asc`).
+  ([guia](docs/repositorios-linux.md))
 
 ## 7. Plataformas
 
@@ -151,6 +156,7 @@ guarda em SQLite, e uma conta não confirmada é apagada em 24 horas.
 | Cliente (host) | ✅, inclusive tela de login e UAC | ✅, depois do login | ✅ no X11 e no Wayland (pelo portal), depois do login |
 | Não assistido | ✅ serviço | ✅ depois do login | ✅ depois do login (unidade de usuário do `systemd`) |
 | Monitor virtual | ✅ (driver opcional) | ✅ | — |
+| Atualização | ✅ automática (serviço instalado) | ✅ automática (Developer ID) | Pelo sistema: nossos repositórios apt/dnf (`.deb`, `.rpm`, depois que a chave existir); `.AppImage`: aviso no app |
 
 ## 8. Código
 

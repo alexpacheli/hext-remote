@@ -26,6 +26,7 @@ Where to start, and what each document is for. Files marked *(pt)* are only in P
 | Document | For |
 |---|---|
 | [monitor-virtual](monitor-virtual.md) *(pt)* | Virtual monitor for computers without a screen: how it works, install, test checklists |
+| [repositorios-linux](repositorios-linux.md) *(pt)* | apt and dnf repositories: Linux updated by the system, and how to generate the key |
 
 ## Test checklists — [roteiros/](roteiros/) *(pt)*
 

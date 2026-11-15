@@ -176,7 +176,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo install cargo-deb --locked
-          cargo deb -p hext --target ${{ matrix.targets }} --no-build --output pkg/
+          # As the release builds it: subscribed to our repository once its key exists.
+          target=${{ matrix.targets }}
+          variant=$(installer/linux/repo.sh variant "${target%%-*}")
+          cargo deb -p hext --target "$target" --no-build $variant --output pkg/
           . /etc/os-release
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg" "ubuntu:$VERSION_ID" \
             bash /src/installer/linux/package-test.sh "/pkg/$(basename pkg/*.deb)" /pkg/shots
@@ -187,7 +190,8 @@ jobs:
         if: runner.os == 'Linux' && matrix.targets == 'x86_64-unknown-linux-gnu'
         run: |
           cargo install cargo-generate-rpm --locked
-          cargo generate-rpm -p apps/hext --target ${{ matrix.targets }} --output pkg/
+          variant=$(installer/linux/repo.sh variant x86_64)
+          cargo generate-rpm -p apps/hext --target ${{ matrix.targets }} $variant --output pkg/
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg" fedora:44 \
             bash /src/installer/linux/package-test.sh "/pkg/$(basename pkg/*.rpm)" /pkg/shots-fedora
 

@@ -138,6 +138,11 @@ them in SQLite, and an unconfirmed account is deleted in 24 hours.
   no network); the app accepts only that signature. The Windows service checks every
   hour and installs between sessions; the Mac app swaps itself in Applications (Developer ID builds only);
   elsewhere the home screen offers the download.
+- **Linux repositories:** the `.deb` and `.rpm` subscribe to our apt and dnf repositories (on GitHub Pages, or at
+  `HEXT_REPO_URL`), so the system's updates bring new versions. `repositorios.yml` rebuilds them from each
+  published release and signs them with a GPG key kept as a repository secret; the packages subscribe only once
+  the public key is in the tree (`installer/linux/repo-key.asc`). ([guide](docs/repositorios-linux.md), in
+  Portuguese)
 
 ## 7. Platforms
 
@@ -147,6 +152,7 @@ them in SQLite, and an unconfirmed account is deleted in 24 hours.
 | Customer (host) | ✅, including sign-in screen and UAC | ✅, after login | ✅ on X11 and Wayland (through the portal), after login |
 | Unattended | ✅ service | ✅ after login | ✅ after login (systemd user unit) |
 | Virtual monitor | ✅ (optional driver) | ✅ | — |
+| Updates | ✅ automatic (installed service) | ✅ automatic (Developer ID) | Through the system: our apt/dnf repositories (`.deb`, `.rpm`, once the key exists); `.AppImage`: in-app notice |
 
 ## 8. Code
 
