@@ -118,8 +118,8 @@ pub struct DisplayBar {
 }
 
 impl DisplayBar {
-    /// The bar for `count` displays, left of the full screen `button`;
-    /// `None` when the window has no room for it.
+    /// The bar for `count` displays, left of `button` (the next part of the
+    /// row); `None` when there is no room for it left of that.
     pub fn new(
         button: VideoRect,
         count: u32,

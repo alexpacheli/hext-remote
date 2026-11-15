@@ -57,6 +57,9 @@ const BUTTON_GAP: f64 = 8.0;
 /// How long the buttons stay after the mouse leaves them: one passing by
 /// does not make them blink.
 const BUTTON_LINGER: Duration = Duration::from_millis(800);
+/// Where the bar's buttons are laid out before they move beside the handle:
+/// far enough right for all of them, near enough for exact pixels.
+const LAYOUT_ROOM: f32 = 100_000.0;
 /// How long the second Ctrl+Alt+R has to come.
 const RESTART_CONFIRM: Duration = Duration::from_secs(5);
 /// How long the title waits for the host's answer about restarting.
@@ -906,10 +909,12 @@ impl Viewer {
         let Some(window) = &self.window else { return };
         let size = window.inner_size();
         let scale = window.scale_factor();
-        // Laid out from the right edge (each part goes left of the last),
-        // then moved beside the handle.
+        // Laid out right to left (each part goes left of the last) with room
+        // for all, then moved beside the handle: in a narrow window, what
+        // goes past the right edge, the farthest from the handle, is left
+        // out (`fits`, below), and the displays stay.
         let mut rect = button_rect((size.width, size.height), scale);
-        rect.x = size.width as f32 - rect.width;
+        rect.x = LAYOUT_ROOM - rect.width;
         // Beside the handle, what the technician presses most: the displays
         // first, then the chat, then the privacy screen and the sound (once
         // a session), and the full screen button last. Laid out right to
@@ -1491,8 +1496,10 @@ impl Viewer {
                 }
                 // Ctrl+Alt+→ and ←: the host's next and previous display,
                 // round (with two, either one switches), without knowing
-                // its number.
+                // its number. One press, one display: a key held a little
+                // long does not spin through them.
                 if event.state == ElementState::Pressed
+                    && !event.repeat
                     && self.ctrl_alt()
                     && self.displays.count > 1
                     && let Some(forward) = cycle_key(code)
