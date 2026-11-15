@@ -169,8 +169,11 @@ where
                 }
             },
             move |e| {
-                debug!("som: {e}");
-                failed.store(true, Ordering::Relaxed);
+                debug!(target: LOG_TARGET, "som: {e}");
+                // (A glitch leaves the stream playing.)
+                if crate::stream_stopped(&e) {
+                    failed.store(true, Ordering::Relaxed);
+                }
             },
             None,
         )
@@ -256,13 +259,14 @@ fn run(packets: &Receiver<AudioPacket>, muted: &AtomicBool) {
                 };
                 debug!(
                     target: LOG_TARGET,
-                    "som: fila {} ms, {} vezes vazia, {} ms descartados | {} refeitos, {} disfarçados, {} atrasados",
+                    "som: fila {} ms, {} vezes vazia, {} ms descartados | {} refeitos, {} disfarçados, {} atrasados, {} perdidos",
                     delay.as_millis(),
                     underruns,
                     dropped / out.channels as u64 * 1000 / u64::from(out.rate.max(1)),
                     depacketizer.recovered,
                     depacketizer.concealed,
                     depacketizer.late,
+                    depacketizer.lost,
                 );
             }
         }

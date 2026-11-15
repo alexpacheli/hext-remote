@@ -164,7 +164,7 @@ fn run(commands: &Receiver<bool>, packets: &mpsc::Sender<AudioPacket>) {
             }
         }
         if loopback.needs_reopen() {
-            info!("som: o dispositivo de som mudou; capturando o novo");
+            info!("som: a captura falhou ou o dispositivo mudou; abrindo de novo");
             source = None;
             encoder.reset();
         }

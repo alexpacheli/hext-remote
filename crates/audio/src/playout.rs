@@ -29,6 +29,8 @@ pub struct Depacketizer {
     pub recovered: u64,
     pub concealed: u64,
     pub late: u64,
+    /// Frames lost in gaps too long to make up.
+    pub lost: u64,
 }
 
 impl Depacketizer {
@@ -41,6 +43,7 @@ impl Depacketizer {
             recovered: 0,
             concealed: 0,
             late: 0,
+            lost: 0,
         })
     }
 
@@ -64,6 +67,7 @@ impl Depacketizer {
         if let Some(next) = self.next {
             let missing = packet.seq.wrapping_sub(next);
             if missing > MAX_CONCEAL {
+                self.lost += u64::from(missing);
                 let _ = self.opus.reset_state();
             } else {
                 for i in 0..missing {
@@ -372,5 +376,7 @@ mod tests {
         depacketizer.push(&sent[15], &mut pcm);
         assert_eq!(pcm.len(), 2 * FRAME * CHANNELS);
         assert_eq!(depacketizer.concealed, 0);
+        // (But counted, for the log.)
+        assert_eq!(depacketizer.lost, 14);
     }
 }

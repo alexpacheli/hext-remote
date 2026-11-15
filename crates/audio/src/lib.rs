@@ -43,6 +43,18 @@ pub const BITRATE: i32 = 64_000;
 /// Where the sound's measurements go, like the video's.
 pub const LOG_TARGET: &str = "hext_audio";
 
+/// Whether an audio device stream's error means it stopped. A glitch (an
+/// xrun: a buffer that ran over or dry), a refused real-time priority or a
+/// stream already following the new default device leave it running, and
+/// opening it again would lose more sound than they did (on Windows, the
+/// loopback reports glitches several times a second).
+pub(crate) fn stream_stopped(error: &cpal::Error) -> bool {
+    !matches!(
+        error.kind(),
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied | cpal::ErrorKind::DeviceChanged
+    )
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
     #[error("opus: {0}")]
@@ -51,4 +63,27 @@ pub enum AudioError {
     Device(String),
     #[error("este sistema não captura o som")]
     Unsupported,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_error_that_stops_the_stream_opens_the_device_again() {
+        for kind in [
+            cpal::ErrorKind::Xrun,
+            cpal::ErrorKind::RealtimeDenied,
+            cpal::ErrorKind::DeviceChanged,
+        ] {
+            assert!(!stream_stopped(&kind.into()), "{kind:?}");
+        }
+        for kind in [
+            cpal::ErrorKind::DeviceNotAvailable,
+            cpal::ErrorKind::StreamInvalidated,
+            cpal::ErrorKind::HostUnavailable,
+        ] {
+            assert!(stream_stopped(&kind.into()), "{kind:?}");
+        }
+    }
 }

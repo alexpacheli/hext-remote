@@ -117,8 +117,11 @@ where
                 let _ = chunks.try_send(out);
             },
             move |e| {
-                tracing::debug!("som: {e}");
-                failed.store(true, Ordering::Relaxed);
+                tracing::debug!(target: crate::LOG_TARGET, "som: {e}");
+                // (Not for a glitch: those come several times a second.)
+                if crate::stream_stopped(&e) {
+                    failed.store(true, Ordering::Relaxed);
+                }
             },
             None,
         )
