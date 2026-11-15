@@ -65,7 +65,7 @@ capture (GPU) → NV12 → H.264 encode → packets + FEC → QUIC datagrams →
   packets with Reed-Solomon parity (20%, 40% on keyframes), interleaved, and sent with **pacing** (at most 4× the
   bitrate) so a keyframe does not leave as a burst. The bitrate adapts to the path.
 - The **cursor** is not in the video, and the host does not send it: the viewer shows its own pointer, with no delay.
-- **Several monitors:** the viewer switches with `Ctrl+Alt+1..9` or the numbered buttons on its left edge.
+- **Several monitors:** the viewer switches with `Ctrl+Alt+1..9`, `Ctrl+Alt+→`/`←` (next and previous, round) or the numbered buttons on its left edge, first beside the handle.
 - **Virtual monitor:** with no monitor attached, the host creates one for the session and removes it at the end
   (MttVDD driver on Windows, optional in the installer; `CGVirtualDisplay` on macOS). `Ctrl+Alt+0` turns it on
   and changes its resolution. Details: [docs/monitor-virtual.md](docs/monitor-virtual.md) (in Portuguese).

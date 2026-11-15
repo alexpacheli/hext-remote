@@ -67,7 +67,7 @@ captura (GPU) → NV12 → codificação H.264 → pacotes + FEC → datagramas 
   pacotes com paridade Reed-Solomon (20%, 40% nos keyframes), intercalados e enviados com **pacing** (no máximo
   4× o bitrate), para um keyframe não sair numa rajada. O bitrate se adapta ao caminho.
 - O **cursor** não vai no vídeo, e o host não o manda: o visualizador mostra o seu próprio ponteiro, sem atraso.
-- **Vários monitores:** o visualizador troca com `Ctrl+Alt+1..9` ou com os botões numerados da borda esquerda.
+- **Vários monitores:** o visualizador troca com `Ctrl+Alt+1..9`, `Ctrl+Alt+→`/`←` (próximo e anterior, dando a volta) ou com os botões numerados da borda esquerda, os primeiros ao lado da alça.
 - **Monitor virtual:** sem monitor ligado, o host cria um para a sessão e o remove no fim (driver MttVDD no
   Windows, opcional no instalador; `CGVirtualDisplay` no macOS). `Ctrl+Alt+0` liga e troca a resolução.
   Detalhes: [docs/monitor-virtual.md](docs/monitor-virtual.md).
