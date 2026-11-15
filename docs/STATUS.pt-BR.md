@@ -3,7 +3,7 @@
 [English](STATUS.md) | **Português**
 
 Em que pé está o Hext Remote: o que está pronto, o que está em conferência e o que vem a seguir. Atualizado a cada
-versão. **Última atualização: novembro de 2026, versão 0.9.1.**
+versão. **Última atualização: novembro de 2026, versão 0.9.2.**
 
 ## Pronto
 
@@ -17,11 +17,11 @@ versão. **Última atualização: novembro de 2026, versão 0.9.1.**
 | Interface no Linux | O app como técnico no Linux: conta, Meus computadores, acessar outros computadores; `.deb` e `.rpm` com as bibliotecas de que precisam (WebKitGTK) (0.8.0) | [arquitetura](../ARCHITECTURE.pt-BR.md#7-plataformas) |
 | Monitor virtual | Sessão num computador sem monitor (driver do Windows como opção no instalador, macOS sem instalar nada), resolução pelo `Ctrl+Alt+0`; uma tela que fica preta (monitor desligado no botão) passa para o virtual sozinha; o visualizador volta ao último monitor escolhido em cada computador (0.8.2) | [monitor-virtual](monitor-virtual.md) |
 | Tela de privacidade (Windows e Mac) | `Ctrl+Alt+P` ou (desde a 0.9.1) o botão na barra do visualizador: quem está no computador vê uma tela preta com um aviso e o mouse e o teclado dele não fazem nada, enquanto o técnico vê e controla tudo; `Ctrl+Alt+Del` lá desliga (no Mac, macOS 12.3 ou mais novo: esc três vezes) (0.9.0) | [F7](planos/F7.md#marco-1-como-funciona-e-roteiro), [Mac](planos/F7.md#marco-2-como-funciona-e-roteiro) |
-| Som | O que o host toca (Windows, e macOS 13+) chega ao visualizador, uns 70 ms atrás na rede local; `Ctrl+Alt+S` silencia, e nada trafega com o computador em silêncio (0.9.0). Desde a 0.9.1: a sessão começa sem som e o técnico liga com `Ctrl+Alt+S` ou o botão do alto-falante na barra (desligado, o host não captura nem manda nada); pelo serviço do Windows, o som não picota mais com um vídeo tocando (0.9.1) | [F7](planos/F7.md#marco-3-como-funciona-e-roteiro) |
-| Host no Linux (X11) | O Linux também é acessado, numa sessão X11: captura (XShm, vários monitores pelo XRandR), mouse e teclado (XTest, ABNT2 por scancode), área de transferência e arquivos; codificação pelo VA-API onde houver, OpenH264 onde não; `service install` (sem `sudo`) o abre no login por uma unidade de usuário do `systemd` que vem no `.deb`/`.rpm`. Sem acesso antes do login, sem monitor virtual, sem tela de privacidade (0.9.0) | [F7](planos/F7.md#marco-4-como-funciona-e-roteiro) |
+| Som | O que o host toca (Windows, e macOS 13+) chega ao visualizador, uns 70 ms atrás na rede local; `Ctrl+Alt+S` silencia, e nada trafega com o computador em silêncio (0.9.0). Desde a 0.9.1: a sessão começa sem som e o técnico liga com `Ctrl+Alt+S` ou o botão do alto-falante na barra (desligado, o host não captura nem manda nada); pelo serviço do Windows, o som não picota mais com um vídeo tocando (0.9.1). Na 0.9.2: um soluço do dispositivo de som não reabre mais a captura do Windows (o "tac tac tac" do Mac ouvindo um Windows), e o agente do Windows fica fora do modo de eficiência do Windows 11 | [F7](planos/F7.md#marco-3-como-funciona-e-roteiro) |
+| Host no Linux (X11) | O Linux também é acessado, numa sessão X11: captura (XShm, vários monitores pelo XRandR), mouse e teclado (XTest, ABNT2 por scancode), área de transferência e arquivos; codificação pelo VA-API onde houver, OpenH264 onde não; `service install` (sem `sudo`) o abre no login por uma unidade de usuário do `systemd` que vem no `.deb`/`.rpm`. Sem acesso antes do login, sem monitor virtual, sem tela de privacidade (0.9.0). Depois de atualizar o pacote, ele se reabre sozinho assim que fica parado (0.9.2) | [F7](planos/F7.md#marco-4-como-funciona-e-roteiro) |
 | Host no Linux (Wayland) | O mesmo no Wayland, pelo portal do sistema: o sistema pergunta uma vez a quem está no computador o que compartilhar (um token de restauração dispensa a pergunta da próxima vez), a imagem pelo PipeWire, mouse e teclado pelo portal RemoteDesktop. A tela de login (GDM) fica de fora (0.9.0) | [F7](planos/F7.md#marco-5-como-funciona-e-roteiro) |
 
-Os nomes em "Meus computadores" seguem o nome atual de cada computador (0.7.1).
+Os nomes em "Meus computadores" seguem o nome atual de cada computador (0.7.1). Na janela da sessão, os botões dos monitores vêm primeiro, ao lado da alça, e `Ctrl+Alt+→`/`←` vão para o próximo e o anterior monitor (0.9.2).
 
 ## Em conferência no campo
 
@@ -42,13 +42,16 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
       ([janela-travada](estudos/janela-travada.md#roteiro-de-campo)). Conferido no Mac (novembro de 2026).
 - [ ] **Tela de privacidade:** o roteiro do marco 1 da F7 ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)) e, num
       Mac, o do marco 2 ([F7](planos/F7.md#marco-2-como-funciona-e-roteiro)).
-- [ ] **Som:** o roteiro do marco 3 da F7 ([F7](planos/F7.md#marco-3-como-funciona-e-roteiro)).
+- [ ] **Som:** o roteiro do marco 3 da F7 ([F7](planos/F7.md#marco-3-como-funciona-e-roteiro)). No campo (novembro
+      de 2026), o Mac ouvindo um Windows recebia "tac tac tac"; a correção da 0.9.2 falta conferir (o log do agente
+      diz quantos soluços a captura teve).
 - [ ] **Host no Linux (X11):** o roteiro do marco 4 da F7 num Ubuntu LTS com GNOME no Xorg
       ([F7](planos/F7.md#marco-4-como-funciona-e-roteiro)). Até aqui, conferido só num servidor X virtual no CI.
 - [ ] **Host no Linux (Wayland):** o roteiro do marco 5 da F7 num Ubuntu LTS com GNOME (Wayland)
       ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). No campo (novembro de 2026), no Fedora e no
       Ubuntu: a sessão funciona, e o sistema pergunta o que compartilhar só na primeira vez. A barra da sessão abria no
-      meio da tela; a correção (a interface pelo XWayland) falta conferir.
+      meio da tela; a correção (a interface pelo XWayland, 0.9.1) funcionou, mas a barra ficava com uns
+      200 px de altura e não se recolhia; o tamanho certo (0.9.2) falta conferir.
 - [ ] **Repositórios Linux (apt e dnf):** o `.deb` e o `.rpm` se inscrevem nos nossos repositórios e passam a se
       atualizar com o sistema; testado no CI com uma chave descartável. Falta a chave de verdade: gerar, pôr nos
       segredos do ambiente `linux-repo` (só `main`), ligar o GitHub Pages, rodar **Linux repositories** uma vez à
