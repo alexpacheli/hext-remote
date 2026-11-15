@@ -3,18 +3,22 @@ name: Linux repositories
 # Our apt and dnf repositories (docs/repositorios-linux.md), on GitHub Pages:
 # the .deb and .rpm of the latest published release, signed with the key in
 # the secrets HEXT_REPO_GPG_KEY (armored private key) and
-# HEXT_REPO_GPG_PASSPHRASE (optional). Without the key, nothing is published
-# and the run ends with a notice. Only published releases get here, never a
-# draft nor a prerelease (the same rule as the update manifest). The
-# repositories keep only the latest version.
+# HEXT_REPO_GPG_PASSPHRASE (optional) of the environment linux-repo, which
+# only main may use. Without the key, nothing is published and the run ends
+# with a notice. Only published releases get here, never a draft nor a
+# prerelease (the same rule as the update manifest). The repositories keep
+# only the latest version.
 #
-# Publishing a release starts it; "Run workflow" redoes it (for the latest
-# release, or the tag given). The base URL is the variable HEXT_REPO_URL, or
-# this repository's GitHub Pages (installer/linux/repo.sh url).
+# Publishing a release (or promoting a prerelease) starts it; "Run workflow"
+# on main redoes it (for the latest release, or the tag given). The base URL
+# is the variable HEXT_REPO_URL, or this repository's GitHub Pages
+# (installer/linux/repo.sh url).
 
 on:
   release:
-    types: [published]
+    # Not "published": that one fires for prereleases too and misses a
+    # prerelease promoted later.
+    types: [released]
   workflow_dispatch:
     inputs:
       tag:
@@ -40,15 +44,19 @@ jobs:
       actions: write
     env:
       GH_TOKEN: ${{ github.token }}
+      BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - name: Run on the default branch
-        run: |
-          gh workflow run repositorios.yml -R "$GITHUB_REPOSITORY" \
-            --ref "${{ github.event.repository.default_branch }}"
+        run: gh workflow run repositorios.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH"
 
   build:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
+    # Only main: the key's environment refuses any other branch too.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    # The same Ubuntu as release.yml's repository test, so what builds the
+    # published repositories (apt-ftparchive, createrepo_c, rpmsign) is what
+    # CI proved on Ubuntu 24.04 and Fedora 43 clients.
+    runs-on: ubuntu-22.04
+    environment: linux-repo
     outputs:
       ready: ${{ steps.site.outputs.ready }}
     env:
@@ -65,8 +73,18 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: env.HAS_KEY == 'true'
 
-      # The release's .deb and .rpm, checked against its SHA256SUMS.txt.
+      - name: Tools
+        if: env.HAS_KEY == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq apt-utils createrepo-c rpm jq >/dev/null
+
+      # The release's .deb and .rpm, each checked against its SHA256SUMS.txt
+      # and, with the variable HEXT_UPDATE_KEY, against the signed update
+      # manifest (latest.json), as the app checks it.
       - name: Release
+        env:
+          HEXT_UPDATE_KEY: ${{ vars.HEXT_UPDATE_KEY }}
         if: env.HAS_KEY == 'true'
         run: |
           latest=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)
@@ -80,17 +98,11 @@ jobs:
           fi
           packages="$RUNNER_TEMP/packages"
           gh release download "$tag" -R "$GITHUB_REPOSITORY" -D "$packages" \
-            -p '*.deb' -p '*.rpm' -p SHA256SUMS.txt
-          (cd "$packages" && sha256sum -c --ignore-missing SHA256SUMS.txt && rm SHA256SUMS.txt)
+            -p '*.deb' -p '*.rpm' -p SHA256SUMS.txt -p latest.json -p latest.json.sig
           ls -l "$packages"
+          installer/linux/repo.sh verify "$packages"
           echo "PACKAGES=$packages" >> "$GITHUB_ENV"
           echo "### Repositórios Linux: $tag" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Tools
-        if: env.HAS_KEY == 'true'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq apt-utils createrepo-c rpm >/dev/null
 
       - name: Key
         if: env.HAS_KEY == 'true'

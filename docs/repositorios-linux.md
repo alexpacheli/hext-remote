@@ -6,23 +6,29 @@ Com os repositórios, o Hext Remote instalado por `.deb` ou `.rpm` passa a ser a
 
 ## Como funciona
 
-- **Os pacotes se inscrevem sozinhos.** O `.deb` traz a chave em `/usr/share/keyrings/hext-remote.gpg` e, ao
-  instalar, grava `/etc/apt/sources.list.d/hext-remote.sources` (formato deb822, `Signed-By` apontando para a
-  chave). O `.rpm` traz `/etc/yum.repos.d/hext-remote.repo` (`gpgcheck=1`, `repo_gpgcheck=1`) e a chave em
-  `/etc/pki/rpm-gpg/RPM-GPG-KEY-hext-remote`. Remover o pacote remove a inscrição e a chave.
+- **Os pacotes se inscrevem sozinhos.** O `.deb`, ao instalar, grava `/etc/apt/sources.list.d/hext-remote.sources`
+  (formato deb822) e copia a chave para `/etc/apt/keyrings/hext-remote.gpg`, para onde aponta o `Signed-By`;
+  remover o pacote apaga os dois (uma atualização, não). O `.rpm` traz `/etc/yum.repos.d/hext-remote.repo`
+  (`gpgcheck=1`, `repo_gpgcheck=1`, `metadata_expire=6h`) e a chave em
+  `/etc/pki/rpm-gpg/RPM-GPG-KEY-hext-remote`; remover o pacote apaga os dois arquivos, mas a chave que o dnf
+  importou fica no banco do rpm (veja [Para quem já tem o pacote](#para-quem-já-tem-o-pacote)).
 - **Só depois que a chave pública estiver no código.** Enquanto `installer/linux/repo-key.asc` não existir, os
   pacotes saem como antes, sem inscrição: ninguém fica com um repositório quebrado.
 - **Só releases publicadas.** O workflow **Linux repositories** (`.github/workflows/repositorios.yml`) roda quando
-  uma release é publicada (nunca um rascunho nem uma pré-release, a mesma regra da atualização automática). Ele
-  baixa os `.deb` e `.rpm` da release, confere o `SHA256SUMS.txt`, monta os dois repositórios, assina e publica
-  no GitHub Pages. Os repositórios guardam só a última versão.
+  uma release é publicada ou quando uma pré-release vira release (nunca um rascunho nem uma pré-release, a mesma
+  regra da atualização automática). Ele baixa os `.deb` e `.rpm` da release, confere cada um no `SHA256SUMS.txt`
+  e, se a variável `HEXT_UPDATE_KEY` existir, também na lista assinada da atualização automática
+  (`latest.json`, conferida como o app confere), monta os dois repositórios, assina e publica no GitHub Pages.
+  Os repositórios guardam só a última versão.
+- **A chave só no `main`.** Os segredos ficam num ambiente (`linux-repo`) que só aceita o branch `main`: um
+  workflow alterado em outro branch não chega até eles.
 - **Assinatura.** No apt, o `Release` é assinado (`InRelease` e `Release.gpg`). No dnf, cada `.rpm` é assinado
   (`rpmsign`) e o `repomd.xml` também (`repomd.xml.asc`). Os `.rpm` da página da release continuam sem
   assinatura; só as cópias do repositório são assinadas. Para instalar um arquivo baixado, o dnf não exige
   assinatura.
 - **Endereço.** `https://<dono>.github.io/<repositório>` (hoje `https://alexpacheli.github.io/hext-remote`), com
   `apt/` e `rpm/`. A variável do repositório `HEXT_REPO_URL` troca o endereço, para o workflow e para os
-  pacotes gerados a partir daí.
+  pacotes gerados a partir daí (antes de trocar, leia [Mudar de endereço](#mudar-de-endereço-ou-tornar-o-repositório-privado)).
 - **Testado no CI.** A cada build dos instaladores, o `release.yml` cria uma chave descartável, gera pacotes
   inscritos num repositório local, monta o repositório com o mesmo script e, num Ubuntu e num Fedora limpos,
   instala a versão 1, atualiza para a 2 pelo repositório (com as assinaturas conferidas) e remove
@@ -30,10 +36,13 @@ Com os repositórios, o Hext Remote instalado por `.deb` ou `.rpm` passa a ser a
 
 ## O que você precisa fazer (uma vez)
 
-A ordem importa: o repositório precisa existir antes de um pacote apontar para ele.
+A ordem importa: o repositório precisa existir antes de um pacote apontar para ele. Os comandos abaixo são para
+o Git Bash, o Linux ou o macOS. No PowerShell, use sempre `--output`, como abaixo, e nunca `>`: o `>` do
+Windows PowerShell 5.1 grava em UTF-16, e a chave sai ilegível.
 
-1. **Gerar a chave**, num computador seu com GnuPG (no Windows, o Gpg4win). Sem validade, ou com uma longa (uma
-   chave vencida faz o apt e o dnf recusarem as atualizações até um pacote novo trazer a chave renovada):
+1. **Gerar a chave**, num computador seu com GnuPG (o Git Bash já traz o `gpg`; ou o Gpg4win). Sem validade, ou
+   com uma longa (uma chave vencida faz o apt e o dnf recusarem as atualizações até um pacote novo trazer a
+   chave renovada):
 
    ```bash
    gpg --quick-generate-key "Hext Remote <suporte@hext.com.br>" rsa4096 sign never
@@ -42,11 +51,15 @@ A ordem importa: o repositório precisa existir antes de um pacote apontar para 
 
    Uma frase secreta é opcional; com ela, vai também para um segredo (passo 2).
 
-2. **Guardar a parte privada nos segredos** do GitHub (**Settings → Secrets and variables → Actions**):
+2. **Criar o ambiente e guardar a parte privada nele.** Em **Settings → Environments → New environment**, crie
+   `linux-repo`. Em **Deployment branches and tags**, escolha **Selected branches and tags** e acrescente só
+   `main`. Exporte a chave:
 
    ```bash
-   gpg --armor --export-secret-keys <impressão digital> > chave-privada.asc
+   gpg --armor --output chave-privada.asc --export-secret-keys <impressão digital>
    ```
+
+   e, em **Environment secrets** do `linux-repo` (não nos segredos do repositório):
 
    - `HEXT_REPO_GPG_KEY`: o conteúdo inteiro de `chave-privada.asc` (de `-----BEGIN` a `-----END`).
    - `HEXT_REPO_GPG_PASSPHRASE`: a frase secreta, se houver.
@@ -63,7 +76,7 @@ A ordem importa: o repositório precisa existir antes de um pacote apontar para 
 5. **Pôr a chave pública no código**, num pull request:
 
    ```bash
-   gpg --armor --export <impressão digital> > installer/linux/repo-key.asc
+   gpg --armor --output installer/linux/repo-key.asc --export <impressão digital>
    ```
 
    O workflow confere que a chave do segredo é a mesma deste arquivo. A partir da próxima release, os pacotes
@@ -81,14 +94,37 @@ Para desligar o repositório sem remover o app: no Debian e no Ubuntu, acrescent
 no Fedora, `enabled=0` em `/etc/yum.repos.d/hext-remote.repo` (arquivo de configuração: o rpm mantém a
 alteração).
 
+No Fedora, a chave que o dnf importou na primeira atualização fica no banco do rpm depois de remover o pacote.
+Para tirá-la também:
+
+```bash
+rpm -q gpg-pubkey --qf '%{NAME}-%{VERSION}-%{RELEASE}\t%{SUMMARY}\n' | grep -i hext
+sudo rpm -e gpg-pubkey-<versão>-<release>   # o nome da linha acima
+```
+
+## Mudar de endereço ou tornar o repositório privado
+
+O GitHub Pages de um repositório privado exige um plano pago. Para tornar o repositório privado, ou só para
+sair do GitHub Pages, publique o conteúdo do artefato em outro servidor estático e aponte `HEXT_REPO_URL` para
+ele. **A ordem importa**, porque cada computador só conhece o endereço que veio no pacote instalado:
+
+1. Ponha o endereço novo no ar e mude `HEXT_REPO_URL`.
+2. Publique uma release (gerada com o endereço novo) **também no endereço antigo**, e mantenha o antigo
+   servindo por um bom tempo (meses): é por ele que os computadores recebem o pacote que os leva ao novo.
+3. Só então desligue o GitHub Pages (ou torne o repositório privado).
+
+Quem não atualizar a tempo fica com uma inscrição quebrada (o `apt update` e o `dnf` reclamam) e precisa
+apagar à mão `/etc/apt/sources.list.d/hext-remote.sources` ou `/etc/yum.repos.d/hext-remote.repo` e
+reinstalar o pacote.
+
 ## Limites
 
-- **Repositório privado:** o GitHub Pages de um repositório privado exige um plano pago. Nesse caso, ou para
-  sair do GitHub Pages, publique o conteúdo do artefato em outro servidor estático e aponte `HEXT_REPO_URL` para
-  ele (os pacotes já instalados continuam no endereço antigo até a próxima versão, que traz o novo).
 - O GitHub Pages tem limites de uso (cerca de 100 GB de tráfego por mês e sites de até 1 GB); para os pacotes
   de hoje, sobra.
 - Ao publicar uma release, quem estiver no meio de um `apt update` pode ver por alguns minutos um arquivo que já
   não existe (só a última versão fica no repositório); a próxima atualização resolve.
-- O GNOME Software pode pedir, na primeira atualização pelo repositório no Fedora, para confiar na chave do Hext
-  Remote; o `dnf upgrade` pergunta o mesmo (`-y` aceita).
+- Sem a variável `HEXT_UPDATE_KEY`, os pacotes são conferidos só pelo `SHA256SUMS.txt`, que vem da própria
+  release: protege contra um download corrompido, não contra quem consiga trocar os arquivos da release.
+- O GNOME Software (PackageKit) pode pedir, na primeira atualização pelo repositório no Fedora, para confiar na
+  chave do Hext Remote, por causa do `repo_gpgcheck`; o `dnf upgrade` pergunta o mesmo (`-y` aceita). Ainda não
+  conferido numa máquina real.

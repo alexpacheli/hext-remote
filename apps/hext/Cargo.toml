@@ -104,7 +104,8 @@ assets = [
 # The same, subscribed to our apt repository (docs/repositorios-linux.md):
 # `--variant repo`, built only once installer/linux/repo-key.asc exists. The
 # files come from `installer/linux/repo.sh files` (into target/linux-repo);
-# postinst copies the source into /etc/apt/sources.list.d, postrm removes it.
+# postinst copies the source into /etc/apt/sources.list.d and the key into
+# /etc/apt/keyrings, postrm removes both.
 [package.metadata.deb.variants.repo]
 maintainer-scripts = "../../installer/linux/deb-repo"
 merge-assets.append = [

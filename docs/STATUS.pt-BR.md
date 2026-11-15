@@ -51,9 +51,12 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
       meio da tela; a correção (a interface pelo XWayland) falta conferir.
 - [ ] **Repositórios Linux (apt e dnf):** o `.deb` e o `.rpm` se inscrevem nos nossos repositórios e passam a se
       atualizar com o sistema; testado no CI com uma chave descartável. Falta a chave de verdade: gerar, pôr nos
-      segredos, ligar o GitHub Pages e pôr a parte pública no código, nessa ordem
+      segredos do ambiente `linux-repo` (só `main`), ligar o GitHub Pages, rodar **Linux repositories** uma vez à
+      mão e só então pôr a parte pública no código, nessa ordem
       ([repositorios-linux](repositorios-linux.md#o-que-você-precisa-fazer-uma-vez)). Depois, num Ubuntu e num
-      Fedora reais, ver uma versão nova chegar pelo `apt upgrade`/`dnf upgrade`.
+      Fedora reais, ver uma versão nova chegar pelo `apt upgrade`/`dnf upgrade` e pela loja de aplicativos (no
+      Fedora, ver se o GNOME Software/PackageKit pede para confiar na chave, por causa do `repo_gpgcheck`; ainda
+      não conferido).
 
 ## Em aberto
 
@@ -62,6 +65,11 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - No Mac, depois de reiniciar, o Hext só volta quando alguém entra na conta. Fica assim de propósito
   ([decisões](DECISIONS.pt-BR.md#mac-sem-tela-de-login)): com o FileVault ligado, o macOS pede uma senha antes de carregar.
 - O `.AppImage` do Linux usa o WebKitGTK do sistema (`libwebkit2gtk-4.1`): onde ele não existe, não abre.
+- Se o repositório do GitHub ficar privado, o GitHub Pages (onde estão os repositórios Linux) exige plano pago.
+  Antes de desligar o Pages ou mudar `HEXT_REPO_URL`, é preciso publicar no endereço antigo uma release gerada
+  com o novo e manter o antigo no ar por um tempo; senão, cada usuário tem de apagar à mão
+  `/etc/apt/sources.list.d/hext-remote.sources` ou `/etc/yum.repos.d/hext-remote.repo`
+  ([repositorios-linux](repositorios-linux.md#mudar-de-endereço-ou-tornar-o-repositório-privado)).
 
 ## A seguir
 

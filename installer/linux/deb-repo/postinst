@@ -1,12 +1,15 @@
 #!/bin/sh
 # The .deb built with the repository (cargo deb --variant repo): subscribes to
 # our apt repository. Copied, not shipped in /etc: a conffile would stay
-# behind on removal, without its key, and break apt update.
+# behind on removal. The key goes to /etc/apt/keyrings too, so a downgrade to
+# a package without it (whose postrm we never see) leaves a working entry.
 set -e
 sources=/etc/apt/sources.list.d/hext-remote.sources
 if [ "$1" = configure ]; then
-  # Turned off by hand ("Enabled: no"): left as it is.
-  if ! grep -qi '^Enabled: *no' "$sources" 2>/dev/null; then
+  install -d -m 755 /etc/apt/keyrings
+  install -m 644 /usr/share/keyrings/hext-remote.gpg /etc/apt/keyrings/hext-remote.gpg
+  # Turned off by hand (Enabled: no, false, off, 0...): left as it is.
+  if ! grep -Eqi '^Enabled:[[:space:]]*(no|false|off|0|disable|without)[[:space:]]*$' "$sources" 2>/dev/null; then
     install -m 644 /usr/share/hext-remote/hext-remote.sources "$sources"
   fi
 fi

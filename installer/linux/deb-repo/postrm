@@ -1,8 +1,9 @@
 #!/bin/sh
-# Undoes postinst: the repository goes with the package.
+# Undoes postinst: the repository and its key go with the package (not on
+# an upgrade, which keeps them).
 set -e
 case "$1" in
   remove | purge | abort-install | disappear)
-    rm -f /etc/apt/sources.list.d/hext-remote.sources
+    rm -f /etc/apt/sources.list.d/hext-remote.sources /etc/apt/keyrings/hext-remote.gpg
     ;;
 esac

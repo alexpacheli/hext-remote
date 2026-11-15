@@ -51,9 +51,11 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
       middle of the screen; the fix (the interface through XWayland) is still to be checked.
 - [ ] **Linux repositories (apt and dnf):** the `.deb` and `.rpm` subscribe to our repositories and then update
       with the system; tested in CI with a throwaway key. The real key is missing: generate it, put it in the
-      secrets, turn on GitHub Pages and commit the public part, in that order
+      secrets of the `linux-repo` environment (`main` only), turn on GitHub Pages, run **Linux repositories** once by
+      hand, and only then commit the public part, in that order
       ([repositorios-linux](repositorios-linux.md#o-que-você-precisa-fazer-uma-vez), in Portuguese). Then, on a real
-      Ubuntu and Fedora, see a new version arrive through `apt upgrade`/`dnf upgrade`.
+      Ubuntu and Fedora, see a new version arrive through `apt upgrade`/`dnf upgrade` and the software store (on
+      Fedora, whether GNOME Software/PackageKit asks to trust the key because of `repo_gpgcheck`; not checked yet).
 
 ## Open issues
 
@@ -63,6 +65,11 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 - On a Mac, after a restart Hext comes back only when someone signs in. Left as is on purpose
   ([DECISIONS](DECISIONS.md#mac-no-sign-in-screen)): with FileVault on, macOS asks for a password before it loads.
 - The Linux `.AppImage` uses the system's WebKitGTK (`libwebkit2gtk-4.1`): where it is missing, it does not open.
+- If the GitHub repository goes private, GitHub Pages (where the Linux repositories live) needs a paid plan.
+  Before turning Pages off or changing `HEXT_REPO_URL`, a release built with the new URL must be published at the
+  old one, and the old one kept serving for a while; otherwise each user has to delete
+  `/etc/apt/sources.list.d/hext-remote.sources` or `/etc/yum.repos.d/hext-remote.repo` by hand
+  ([repositorios-linux](repositorios-linux.md#mudar-de-endereço-ou-tornar-o-repositório-privado), in Portuguese).
 
 ## Next
 

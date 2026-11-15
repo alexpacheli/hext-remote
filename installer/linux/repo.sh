@@ -19,16 +19,23 @@
 #                                   any) into a new GNUPGHOME, ready to sign
 #                                   unattended; it must match HEXT_REPO_KEY
 #                                   when that file exists
+#   repo.sh verify <pkgs>           the .deb and .rpm in <pkgs> against the
+#                                   release's SHA256SUMS.txt and, with
+#                                   HEXT_UPDATE_KEY (the update manifest's
+#                                   public key, hex), against the signed
+#                                   latest.json too
 #   repo.sh build <pkgs> <out>      <out>/apt and <out>/rpm from the .deb and
 #                                   .rpm in <pkgs>, signed with the one secret
 #                                   key in GNUPGHOME (the .rpm files too)
 #
 # Tools: gpg; for build also apt-ftparchive (apt-utils), createrepo_c and
-# rpmsign (rpm).
+# rpmsign (rpm); for verify, jq and openssl 3.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 die() { echo "repo.sh: $*" >&2; exit 1; }
+# Hex text to bytes (printf %b reads \xHH).
+hex2bin() { printf '%b' "$(sed 's/../\\x&/g' <<<"$1")"; }
 
 base_url() {
   if [ -n "${HEXT_REPO_URL:-}" ]; then
@@ -73,7 +80,7 @@ URIs: $url/apt
 Suites: stable
 Components: main
 Architectures: $deb_arch
-Signed-By: /usr/share/keyrings/hext-remote.gpg
+Signed-By: /etc/apt/keyrings/hext-remote.gpg
 EOF
 
   cat >"$out/hext-remote.repo" <<EOF
@@ -85,6 +92,7 @@ enabled=1
 gpgcheck=1
 repo_gpgcheck=1
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-hext-remote
+metadata_expire=6h
 EOF
 }
 
@@ -136,6 +144,51 @@ import_key() {
     echo "repo.sh: sem $key: os pacotes ainda não se inscrevem no repositório"
   fi
   echo "chave $fpr"
+}
+
+verify() {
+  local dir="$1" f name sum
+  shopt -s nullglob
+  local packages=("$dir"/*.deb "$dir"/*.rpm)
+  shopt -u nullglob
+  [ "${#packages[@]}" -gt 0 ] || die "nenhum .deb ou .rpm em $dir"
+  [ -f "$dir/SHA256SUMS.txt" ] || die "sem SHA256SUMS.txt"
+
+  local manifest=""
+  if [ -n "${HEXT_UPDATE_KEY:-}" ]; then
+    # latest.json, signed by hext-release (Ed25519, signature in hex):
+    # checked as the app checks it, with the raw public key wrapped as DER.
+    [ -f "$dir/latest.json" ] && [ -f "$dir/latest.json.sig" ] ||
+      die "a release não tem latest.json assinado (HEXT_UPDATE_KEY está definida)"
+    local key tmp
+    key="$(tr -d ' \r\n' <<<"$HEXT_UPDATE_KEY")"
+    [[ "$key" =~ ^[0-9a-fA-F]{64}$ ]] || die "HEXT_UPDATE_KEY não é uma chave Ed25519 em hex"
+    tmp="$(mktemp -d)"
+    hex2bin "302a300506032b6570032100$key" >"$tmp/key.der"
+    hex2bin "$(tr -d ' \r\n' <"$dir/latest.json.sig")" >"$tmp/sig"
+    openssl pkeyutl -verify -pubin -keyform DER -inkey "$tmp/key.der" -rawin \
+      -in "$dir/latest.json" -sigfile "$tmp/sig" >/dev/null ||
+      { rm -rf "$tmp"; die "a assinatura de latest.json não confere"; }
+    rm -rf "$tmp"
+    manifest="$dir/latest.json"
+  else
+    echo "repo.sh: sem HEXT_UPDATE_KEY: conferido só pelo SHA256SUMS.txt" >&2
+  fi
+
+  for f in "${packages[@]}"; do
+    name="$(basename "$f")"
+    sum="$(sha256sum "$f" | cut -d' ' -f1)"
+    # Every package listed (no --ignore-missing passing on an empty match).
+    awk -v s="$sum" -v n="$name" '$1 == s && ($2 == n || $2 == "*" n) { f = 1 } END { exit !f }' \
+      "$dir/SHA256SUMS.txt" ||
+      die "$name não confere com SHA256SUMS.txt (ou não está nele)"
+    if [ -n "$manifest" ]; then
+      jq -e --arg n "$name" --arg s "$sum" \
+        '[.files[] | select(.name == $n and .sha256 == $s)] | length == 1' "$manifest" >/dev/null ||
+        die "$name não confere com latest.json (ou não está nele)"
+    fi
+    echo "conferido: $name"
+  done
 }
 
 build() {
@@ -217,6 +270,7 @@ case "${1:-}" in
   files) [ $# = 3 ] || die "uso: repo.sh files <arch> <out>"; files "$2" "$3" ;;
   variant) [ $# = 2 ] || die "uso: repo.sh variant <arch>"; variant "$2" ;;
   import) import_key ;;
+  verify) [ $# = 2 ] || die "uso: repo.sh verify <pacotes>"; verify "$2" ;;
   build) [ $# = 3 ] || die "uso: repo.sh build <pacotes> <out>"; build "$2" "$3" ;;
   *) die "uso: repo.sh url | files <arch> <out> | variant <arch> | import | build <pacotes> <out>" ;;
 esac

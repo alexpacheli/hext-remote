@@ -420,10 +420,16 @@ jobs:
           rm -rf target/linux-repo
           installer/linux/repo.sh build "$work/new" "$work/site"
 
+          # The version to land on: the new build's own, as each tool wrote it.
+          deb_want=$(dpkg-deb -f "$work"/new/*.deb Version)
+          rpm_want=$(rpm -qp --qf '%{VERSION}-%{RELEASE}' "$work"/new/*.rpm)
           for package in "$work"/old/*.deb "$work"/old/*.rpm; do
-            case "$package" in *.deb) image=ubuntu:24.04 ;; *) image=fedora:43 ;; esac
+            case "$package" in
+              *.deb) image=ubuntu:24.04 want=$deb_want ;;
+              *) image=fedora:43 want=$rpm_want ;;
+            esac
             docker run --rm -v "$PWD:/src:ro" -v "$work/old:/old:ro" -v "$work/site:/repo:ro" "$image" \
-              bash /src/installer/linux/repo-test.sh "/old/$(basename "$package")" "$VERSION-2"
+              bash /src/installer/linux/repo-test.sh "/old/$(basename "$package")" "$want"
           done
           gpgconf --kill gpg-agent
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

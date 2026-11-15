@@ -17,11 +17,12 @@ case "$package" in
   *.deb)
     export DEBIAN_FRONTEND=noninteractive
     sources=/etc/apt/sources.list.d/hext-remote.sources
-    keyring=/usr/share/keyrings/hext-remote.gpg
+    keyring=/etc/apt/keyrings/hext-remote.gpg
     apt-get update -qq
     apt-get install -y -qq "$package" >/dev/null
     [ -f "$sources" ] || fail "o pacote não inscreveu $sources"
-    [ -f "$keyring" ] || fail "o pacote não trouxe $keyring"
+    [ -f "$keyring" ] || fail "o pacote não pôs $keyring"
+    grep -qx "Signed-By: $keyring" "$sources" || fail "$sources não aponta para $keyring"
     cat "$sources"
     # A bad or unknown signature is only a warning for apt: any line about
     # our repository fails the test.
@@ -31,10 +32,15 @@ case "$package" in
     apt-get install -y -qq --only-upgrade hext-remote >/dev/null
     got="$(dpkg-query -W -f '${Version}' hext-remote)"
     [ "$got" = "$want" ] || fail "versão $got depois de atualizar, esperada $want"
-    [ -f "$sources" ] || fail "a atualização tirou $sources"
+    [ -f "$sources" ] && [ -f "$keyring" ] || fail "a atualização tirou $sources ou $keyring"
+    # Turned off by hand: reinstalling (postinst again) leaves it off.
+    echo "Enabled: Off" >>"$sources"
+    dpkg -i /repo/apt/pool/main/h/hext-remote/*.deb >/dev/null
+    grep -qx "Enabled: Off" "$sources" || fail "a reinstalação religou $sources"
     apt-get remove -y -qq hext-remote >/dev/null
     [ ! -e "$sources" ] || fail "remover deixou $sources"
     [ ! -e "$keyring" ] || fail "remover deixou $keyring"
+    [ ! -e /usr/share/keyrings/hext-remote.gpg ] || fail "remover deixou a cópia da chave"
     apt-get update -qq
     ;;
   *.rpm)
@@ -44,6 +50,7 @@ case "$package" in
     [ -f "$repo" ] || fail "o pacote não trouxe $repo"
     [ -f "$key" ] || fail "o pacote não trouxe $key"
     cat "$repo"
+    grep -qx 'metadata_expire=6h' "$repo" || fail "$repo sem metadata_expire"
     # repo_gpgcheck and gpgcheck: dnf imports the key from the package (-y)
     # and checks the metadata and the package with it.
     dnf upgrade -y hext-remote
