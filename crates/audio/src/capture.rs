@@ -29,8 +29,12 @@ mod platform {
             Err(AudioError::Unsupported)
         }
 
-        pub fn needs_reopen(&mut self) -> bool {
-            false
+        pub fn needs_reopen(&mut self) -> Option<&'static str> {
+            None
+        }
+
+        pub fn glitches(&self) -> u64 {
+            0
         }
     }
 }
@@ -163,11 +167,6 @@ fn run(commands: &Receiver<bool>, packets: &mpsc::Sender<AudioPacket>) {
                 continue;
             }
         }
-        if loopback.needs_reopen() {
-            info!("som: a captura falhou ou o dispositivo mudou; abrindo de novo");
-            source = None;
-            encoder.reset();
-        }
         if report.elapsed() >= REPORT_EVERY {
             report = Instant::now();
             debug!(
@@ -176,6 +175,17 @@ fn run(commands: &Receiver<bool>, packets: &mpsc::Sender<AudioPacket>) {
                 encoder.sent,
                 encoder.silent
             );
+            // (In the log of the installed app too, which has no debug: the
+            // sound lost before it got here is heard as clicks.)
+            let glitches = loopback.glitches();
+            if glitches > 0 {
+                info!("som: {glitches} soluços da captura nos últimos 10 s");
+            }
+        }
+        if let Some(why) = loopback.needs_reopen() {
+            info!("som: {why}; abrindo de novo");
+            source = None;
+            encoder.reset();
         }
     }
 }

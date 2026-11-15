@@ -254,8 +254,19 @@ impl Loopback {
 
     /// ScreenCaptureKit follows the device by itself; only a stream the
     /// system stopped is opened again.
-    pub fn needs_reopen(&mut self) -> bool {
-        self.output.ivars().sink.stopped.load(Ordering::Relaxed)
+    /// Why the capture must open again, if it must.
+    pub fn needs_reopen(&mut self) -> Option<&'static str> {
+        self.output
+            .ivars()
+            .sink
+            .stopped
+            .load(Ordering::Relaxed)
+            .then_some("a captura parou")
+    }
+
+    /// ScreenCaptureKit reports no glitches of its own.
+    pub fn glitches(&self) -> u64 {
+        0
     }
 }
 

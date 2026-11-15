@@ -5,7 +5,7 @@
 //! only has the end of each sound to deal with.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::time::{Duration, Instant};
 
@@ -28,7 +28,7 @@ pub fn available() -> bool {
 pub struct Loopback {
     _stream: cpal::Stream,
     device: Option<cpal::DeviceId>,
-    broken: Arc<AtomicBool>,
+    health: Arc<Health>,
     checked: Instant,
 }
 
@@ -44,12 +44,12 @@ impl Loopback {
             .ok_or_else(|| device_error("nenhum dispositivo de saída de som"))?;
         let config = device.default_output_config().map_err(device_error)?;
         let (tx, rx) = sync_channel::<Vec<f32>>(QUEUE);
-        let broken = Arc::new(AtomicBool::new(false));
+        let health = Arc::new(Health::default());
         let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => build::<f32>(&device, &config, tx, &broken),
-            cpal::SampleFormat::I16 => build::<i16>(&device, &config, tx, &broken),
-            cpal::SampleFormat::I32 => build::<i32>(&device, &config, tx, &broken),
-            cpal::SampleFormat::U16 => build::<u16>(&device, &config, tx, &broken),
+            cpal::SampleFormat::F32 => build::<f32>(&device, &config, tx, &health),
+            cpal::SampleFormat::I16 => build::<i16>(&device, &config, tx, &health),
+            cpal::SampleFormat::I32 => build::<i32>(&device, &config, tx, &health),
+            cpal::SampleFormat::U16 => build::<u16>(&device, &config, tx, &health),
             other => Err(device_error(format!("formato sem suporte: {other:?}"))),
         }?;
         stream.play().map_err(device_error)?;
@@ -66,34 +66,48 @@ impl Loopback {
             Self {
                 _stream: stream,
                 device: device.id().ok(),
-                broken,
+                health,
                 checked: Instant::now(),
             },
             rx,
         ))
     }
 
-    /// The stream failed, or the default device is another one now.
-    pub fn needs_reopen(&mut self) -> bool {
-        if self.broken.load(Ordering::Relaxed) {
-            return true;
+    /// Why the capture must open again, if it must: the stream failed, or
+    /// the default device is another one now.
+    pub fn needs_reopen(&mut self) -> Option<&'static str> {
+        if self.health.stopped.load(Ordering::Relaxed) {
+            return Some("a captura falhou");
         }
         if self.checked.elapsed() < CHECK_EVERY {
-            return false;
+            return None;
         }
         self.checked = Instant::now();
         let now = cpal::default_host()
             .default_output_device()
             .and_then(|d| d.id().ok());
-        now.is_some() && now != self.device
+        (now.is_some() && now != self.device).then_some("o dispositivo de som mudou")
     }
+
+    /// Glitches since the last call (sound Windows dropped before handing
+    /// it over: the capture's thread woke up late).
+    pub fn glitches(&self) -> u64 {
+        self.health.glitches.swap(0, Ordering::Relaxed)
+    }
+}
+
+/// What the stream's error callback tells the capture's thread.
+#[derive(Default)]
+struct Health {
+    stopped: AtomicBool,
+    glitches: AtomicU64,
 }
 
 fn build<T>(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
     chunks: std::sync::mpsc::SyncSender<Vec<f32>>,
-    broken: &Arc<AtomicBool>,
+    health: &Arc<Health>,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: cpal::SizedSample,
@@ -102,7 +116,7 @@ where
     let channels = usize::from(config.channels());
     let mut resampler = Resampler::new(config.sample_rate(), SAMPLE_RATE, 2);
     let (mut floats, mut stereo) = (Vec::new(), Vec::new());
-    let failed = broken.clone();
+    let failed = health.clone();
     device
         .build_input_stream::<T, _, _>(
             config.config(),
@@ -117,10 +131,15 @@ where
                 let _ = chunks.try_send(out);
             },
             move |e| {
+                // A glitch is only counted (it may come several times a
+                // second, on the audio thread): the capture's thread logs it.
+                if e.kind() == cpal::ErrorKind::Xrun {
+                    failed.glitches.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
                 tracing::debug!(target: crate::LOG_TARGET, "som: {e}");
-                // (Not for a glitch: those come several times a second.)
                 if crate::stream_stopped(&e) {
-                    failed.store(true, Ordering::Relaxed);
+                    failed.stopped.store(true, Ordering::Relaxed);
                 }
             },
             None,

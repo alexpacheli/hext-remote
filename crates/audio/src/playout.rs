@@ -15,6 +15,9 @@ const MAX_CONCEAL: u32 = 4;
 /// its numbers with it.
 const RESTART_BEHIND: u32 = 50;
 const RESTART_LATE: u32 = 4;
+/// A gap counted as lost sound at most (5 s): numbers further ahead are
+/// the host starting over, not that much sound gone.
+const MAX_COUNTED_GAP: u32 = 500;
 
 /// Decodes packets in the order they arrive, making up for lost ones.
 pub struct Depacketizer {
@@ -67,7 +70,7 @@ impl Depacketizer {
         if let Some(next) = self.next {
             let missing = packet.seq.wrapping_sub(next);
             if missing > MAX_CONCEAL {
-                self.lost += u64::from(missing);
+                self.lost += u64::from(missing.min(MAX_COUNTED_GAP));
                 let _ = self.opus.reset_state();
             } else {
                 for i in 0..missing {
@@ -378,5 +381,10 @@ mod tests {
         assert_eq!(depacketizer.concealed, 0);
         // (But counted, for the log.)
         assert_eq!(depacketizer.lost, 14);
+        // Numbers far ahead count as no more than a few seconds.
+        let mut far = sent[16].clone();
+        far.seq = 1 << 30;
+        depacketizer.push(&far, &mut pcm);
+        assert_eq!(depacketizer.lost, 14 + u64::from(MAX_COUNTED_GAP));
     }
 }

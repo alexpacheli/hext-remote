@@ -2001,12 +2001,41 @@ unsafe fn create_process(
 
 // ---------------------------------------------------------------- agent
 
+/// Out of Windows 11's efficiency mode (EcoQoS), which slows a process with
+/// no window down: the agent has none, and a capture woken up late loses
+/// sound (Windows drops it from the loopback) and frames. Fails harmlessly
+/// before Windows 10 1709.
+fn full_speed() {
+    use windows::Win32::System::Threading::{
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
+        ProcessPowerThrottling, SetProcessInformation,
+    };
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        StateMask: 0,
+    };
+    if let Err(e) = unsafe {
+        SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            (&raw const state).cast(),
+            size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        )
+    } {
+        tracing::debug!("modo de eficiência: {e}");
+    }
+}
+
 /// The agent: connects to the service's pipe and streams this session's
 /// screen while the service asks.
 pub fn agent(pipe: &str) -> Result<()> {
     info!("agent iniciado (sessão {})", unsafe {
         WTSGetActiveConsoleSessionId()
     });
+    full_speed();
     tokio::runtime::Runtime::new()?.block_on(async {
         let client = ClientOptions::new()
             .open(pipe)
