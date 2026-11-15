@@ -162,6 +162,9 @@ jobs:
 
       # Installs, checks the service, removes: what a user does.
       - name: Install test
+        # Normally about a minute. A runner whose msiexec waits on something of
+        # its own would otherwise hold the release for up to 6 hours.
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $msi = (Resolve-Path "dist\HextRemote-$env:VERSION-x64.msi").Path
