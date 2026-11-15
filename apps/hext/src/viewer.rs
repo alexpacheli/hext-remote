@@ -910,25 +910,34 @@ impl Viewer {
         // then moved beside the handle.
         let mut rect = button_rect((size.width, size.height), scale);
         rect.x = size.width as f32 - rect.width;
-        let Displays { count, current, .. } = self.displays;
-        let plus = self.virtual_offered();
-        // (As many as the shortcut reaches, whatever the host says.)
-        let buttons = u32::from(count.min(9)) + u32::from(plus);
-        let mut bar = DisplayBar::new(rect, buttons, current.into(), plus, scale)
-            .filter(|_| count > 1 || plus);
-        let left = bar.map_or(rect.x, |bar| bar.rect.x);
-        let mut chat = row_button_rect(left, rect, scale).filter(|_| self.chat_link);
-        let left = chat.map_or(left, |chat| chat.x);
-        // Then the privacy screen and the sound, where Ctrl+Alt+P and
-        // Ctrl+Alt+S would do something.
+        // Beside the handle, what the technician presses most: the displays
+        // first, then the chat, then the privacy screen and the sound (once
+        // a session), and the full screen button last. Laid out right to
+        // left: the sound and the privacy screen where Ctrl+Alt+S and
+        // Ctrl+Alt+P would do something.
+        let mut sound = row_button_rect(rect.x, rect, scale)
+            .filter(|_| self.displays.audio)
+            .map(|r| (r, !self.player.muted()));
+        let left = sound.map_or(rect.x, |(r, _)| r.x);
         let mut privacy = row_button_rect(left, rect, scale)
             .filter(|_| self.privacy_offered())
             .map(|r| (r, self.displays.privacy == Privacy::On));
         let left = privacy.map_or(left, |(r, _)| r.x);
-        let mut sound = row_button_rect(left, rect, scale)
-            .filter(|_| self.displays.audio)
-            .map(|r| (r, !self.player.muted()));
-        let mut left = sound.map_or(left, |(r, _)| r.x);
+        let mut chat = row_button_rect(left, rect, scale).filter(|_| self.chat_link);
+        let left = chat.map_or(left, |chat| chat.x);
+        let Displays { count, current, .. } = self.displays;
+        let plus = self.virtual_offered();
+        // (As many as the shortcut reaches, whatever the host says.)
+        let buttons = u32::from(count.min(9)) + u32::from(plus);
+        let mut bar = DisplayBar::new(
+            VideoRect { x: left, ..rect },
+            buttons,
+            current.into(),
+            plus,
+            scale,
+        )
+        .filter(|_| count > 1 || plus);
+        let mut left = bar.map_or(left, |bar| bar.rect.x);
         // The row, beside the handle, halfway down like it.
         let handle = handle_rect((size.width, size.height), scale);
         let dx = (handle.x + handle.width + (BUTTON_GAP * scale) as f32 - left).floor();
@@ -1132,8 +1141,10 @@ impl Viewer {
         };
         if count > 1 {
             title += &format!(" — monitor {} de {count}", u16::from(current) + 1);
-            if let Some(label) = &on_virtual {
-                title += &format!(" ({label})");
+            // (How to switch fast, without the buttons.)
+            match &on_virtual {
+                Some(label) => title += &format!(" ({label}; Ctrl+Alt+→ troca)"),
+                None => title += " (Ctrl+Alt+→ troca)",
             }
         } else if let Some(label) = &on_virtual {
             title += &format!(" — monitor {label}");
@@ -1476,6 +1487,19 @@ impl Viewer {
                 {
                     self.local_key = Some(code);
                     self.select_display(index);
+                    return;
+                }
+                // Ctrl+Alt+→ and ←: the host's next and previous display,
+                // round (with two, either one switches), without knowing
+                // its number.
+                if event.state == ElementState::Pressed
+                    && self.ctrl_alt()
+                    && self.displays.count > 1
+                    && let Some(forward) = cycle_key(code)
+                {
+                    self.local_key = Some(code);
+                    let aimed = self.switching().unwrap_or(self.displays.current);
+                    self.select_display(cycled(aimed, self.displays.count, forward));
                     return;
                 }
                 // Ctrl+Alt+C: the chat, where the interface can show it.
@@ -2113,6 +2137,27 @@ fn display_key(code: KeyCode) -> Option<u8> {
     KEYS.iter().position(|key| *key == code).map(|i| i as u8)
 }
 
+/// Whether a Ctrl+Alt+arrow goes to the next display (`true`, →) or the
+/// previous one (`false`, ←).
+fn cycle_key(code: KeyCode) -> Option<bool> {
+    match code {
+        KeyCode::ArrowRight => Some(true),
+        KeyCode::ArrowLeft => Some(false),
+        _ => None,
+    }
+}
+
+/// The display after (or before) `from` among `count`, round.
+fn cycled(from: u8, count: u8, forward: bool) -> u8 {
+    let count = count.max(1);
+    let from = from.min(count - 1);
+    if forward {
+        (from + 1) % count
+    } else {
+        (from + count - 1) % count
+    }
+}
+
 /// Whether input takes its meaning from the picture on screen. A release is
 /// not such a thing: the button it lets go of would stay down on the host.
 fn aimed_at_the_picture(event: &InputEvent) -> bool {
@@ -2493,6 +2538,24 @@ mod tests {
         assert_eq!(display_key(KeyCode::Digit9), Some(8));
         assert_eq!(display_key(KeyCode::Digit0), None);
         assert_eq!(display_key(KeyCode::KeyR), None);
+    }
+
+    #[test]
+    fn the_arrows_go_round_the_displays() {
+        assert_eq!(cycle_key(KeyCode::ArrowRight), Some(true));
+        assert_eq!(cycle_key(KeyCode::ArrowLeft), Some(false));
+        assert_eq!(cycle_key(KeyCode::ArrowUp), None);
+        // Two: either way switches.
+        assert_eq!(cycled(0, 2, true), 1);
+        assert_eq!(cycled(0, 2, false), 1);
+        assert_eq!(cycled(1, 2, true), 0);
+        // Three: round both ways.
+        assert_eq!(cycled(2, 3, true), 0);
+        assert_eq!(cycled(0, 3, false), 2);
+        assert_eq!(cycled(1, 3, false), 0);
+        // A display the host no longer has counts as the last.
+        assert_eq!(cycled(7, 3, true), 0);
+        assert_eq!(cycled(0, 0, true), 0);
     }
 
     #[test]
