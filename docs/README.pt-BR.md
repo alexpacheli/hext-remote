@@ -26,6 +26,7 @@ Por onde começar e para que serve cada documento.
 | Documento | Para |
 |---|---|
 | [monitor-virtual](monitor-virtual.md) | Monitor virtual para computadores sem tela: como funciona, instalação, roteiros |
+| [repositorios-linux](repositorios-linux.md) | Repositórios apt e dnf: o Linux atualizado pelo sistema, e como gerar a chave |
 
 ## Roteiros de teste — [roteiros/](roteiros/)
 

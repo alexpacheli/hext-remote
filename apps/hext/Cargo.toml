@@ -101,6 +101,17 @@ assets = [
     ["icons/icon.png", "usr/share/icons/hicolor/512x512/apps/hext-remote.png", "644"],
 ]
 
+# The same, subscribed to our apt repository (docs/repositorios-linux.md):
+# `--variant repo`, built only once installer/linux/repo-key.asc exists. The
+# files come from `installer/linux/repo.sh files` (into target/linux-repo);
+# postinst copies the source into /etc/apt/sources.list.d, postrm removes it.
+[package.metadata.deb.variants.repo]
+maintainer-scripts = "../../installer/linux/deb-repo"
+merge-assets.append = [
+    ["../../target/linux-repo/hext-remote.sources", "usr/share/hext-remote/", "644"],
+    ["../../target/linux-repo/hext-remote.gpg", "usr/share/keyrings/", "644"],
+]
+
 [package.metadata.generate-rpm]
 name = "hext-remote"
 license = "AGPL-3.0-only"
@@ -145,3 +156,16 @@ libva = "*"
 # time).
 pipewire-libs = "*"
 xdg-desktop-portal = "*"
+
+# The same, subscribed to our dnf repository (see the .deb's variant above).
+# A variant replaces the whole list, so it is repeated here. The .repo file is
+# a config file: rpm removes it with the package and keeps one changed by hand.
+[package.metadata.generate-rpm.variants.repo]
+assets = [
+    { source = "target/release/hext", dest = "/usr/bin/hext-remote", mode = "755" },
+    { source = "../../installer/linux/hext-remote.desktop", dest = "/usr/share/applications/hext-remote.desktop", mode = "644" },
+    { source = "../../installer/linux/hext-remote.service", dest = "/usr/lib/systemd/user/hext-remote.service", mode = "644" },
+    { source = "icons/icon.png", dest = "/usr/share/icons/hicolor/512x512/apps/hext-remote.png", mode = "644" },
+    { source = "../../target/linux-repo/hext-remote.repo", dest = "/etc/yum.repos.d/hext-remote.repo", mode = "644", config = "noreplace" },
+    { source = "../../target/linux-repo/RPM-GPG-KEY-hext-remote", dest = "/etc/pki/rpm-gpg/RPM-GPG-KEY-hext-remote", mode = "644" },
+]

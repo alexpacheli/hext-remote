@@ -49,6 +49,11 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
       ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). No campo (novembro de 2026), no Fedora e no
       Ubuntu: a sessão funciona, e o sistema pergunta o que compartilhar só na primeira vez. A barra da sessão abria no
       meio da tela; a correção (a interface pelo XWayland) falta conferir.
+- [ ] **Repositórios Linux (apt e dnf):** o `.deb` e o `.rpm` se inscrevem nos nossos repositórios e passam a se
+      atualizar com o sistema; testado no CI com uma chave descartável. Falta a chave de verdade: gerar, pôr nos
+      segredos, ligar o GitHub Pages e pôr a parte pública no código, nessa ordem
+      ([repositorios-linux](repositorios-linux.md#o-que-você-precisa-fazer-uma-vez)). Depois, num Ubuntu e num
+      Fedora reais, ver uma versão nova chegar pelo `apt upgrade`/`dnf upgrade`.
 
 ## Em aberto
 
@@ -60,6 +65,9 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 
 ## A seguir
 
+- **Chave dos repositórios Linux** ([repositorios-linux](repositorios-linux.md)): enquanto
+  `installer/linux/repo-key.asc` não existir, os pacotes saem sem a inscrição, e o Linux segue atualizando pelo
+  aviso do app.
 - **F7 — Extras** ([plano](planos/F7.md)): o roteiro de campo de cada marco;
   Wake-on-LAN, gravação de sessão, HEVC/AV1, vários técnicos, mobile e web quando houver demanda.
 - **Fluidez, por último e com calma:** comparar lado a lado com o Parsec, na mesma rede e sem Tailscale, e aplicar o

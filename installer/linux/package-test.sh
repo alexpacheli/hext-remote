@@ -46,6 +46,18 @@ done
 unit=/usr/lib/systemd/user/hext-remote.service
 grep -qx 'ExecStart=/usr/bin/hext-remote ui' "$unit" || { echo "o pacote não trouxe $unit"; exit 1; }
 
+# Our apt/dnf repository: subscribed only when the tree has its key
+# (repo.sh; the whole path is in repo-test.sh).
+case "$package" in
+  *.deb) subscription=/etc/apt/sources.list.d/hext-remote.sources ;;
+  *.rpm) subscription=/etc/yum.repos.d/hext-remote.repo ;;
+esac
+if [ -f "$here/repo-key.asc" ]; then
+  [ -f "$subscription" ] || { echo "o pacote não inscreveu o repositório ($subscription)"; exit 1; }
+else
+  [ ! -e "$subscription" ] || { echo "sem repo-key.asc, o pacote não deveria trazer $subscription"; exit 1; }
+fi
+
 # The interface is a host now (F7): kept off our signaling server and
 # relay, so a test run registers no computer there.
 echo "127.0.0.1 signal.hext.com.br relay.hext.com.br" >> /etc/hosts
@@ -53,4 +65,5 @@ echo "127.0.0.1 signal.hext.com.br relay.hext.com.br" >> /etc/hosts
 install_tools
 bash "$here/ui-smoke.sh" /usr/bin/hext-remote "$out"
 remove
+[ ! -e "$subscription" ] || { echo "remover deixou $subscription"; exit 1; }
 echo "ok: $(basename "$package")"

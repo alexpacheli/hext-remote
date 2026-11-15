@@ -118,6 +118,15 @@ usa o `CGVirtualDisplay`, uma API privada carregada em tempo de execução. O mo
 *Por quê:* atender computadores sem monitor sem o adaptador HDMI emulador, sem confiar num certificado novo sem
 o dono escolher e sem deixar um monitor fantasma para trás. ([monitor-virtual.md](monitor-virtual.md))
 
+**Linux atualizado pelo sistema, em repositórios apt e dnf nossos** (novembro de 2026). O `.deb` e o `.rpm` se
+inscrevem ao instalar, como o Chrome; um workflow monta os repositórios só a partir de releases publicadas (nunca
+rascunho nem pré-release), assina com uma chave GPG nossa (os metadados nos dois, e cada `.rpm`) e publica no
+GitHub Pages. Os pacotes só se inscrevem quando a chave pública está no código. O `.AppImage` segue com o aviso
+do app. *Por quê:* no Linux quem atualiza é o gerenciador de pacotes, e o app não deve se trocar sozinho por
+cima dele. PPA (Launchpad) e COPR foram descartados: os dois compilam a partir do código-fonte nos servidores
+deles, e o nosso build em Rust, com as dependências e o empacotamento já testados no CI, teria de ser refeito lá
+para cada distribuição. ([repositorios-linux.md](repositorios-linux.md))
+
 ## Processo
 
 **Estudar outras ferramentas, nunca copiar o código delas.** *Por quê:* o RustDesk (AGPL) e o Sunshine/Moonlight

@@ -11,6 +11,10 @@ name: Release
 #            APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_APP_PASSWORD, APPLE_TEAM_ID
 #   Update:  UPDATE_SIGNING_KEY (marco 2), with the public half in the variable HEXT_UPDATE_KEY
 #
+# The apt/dnf repositories are repositorios.yml's, from the published release
+# (its key never comes here); this one only builds the packages subscribed to
+# them, once installer/linux/repo-key.asc exists.
+#
 # Each secret reaches only the steps that use it, and none of them runs for a
 # pull request (nor for main). The actions are pinned by commit (the tag in
 # the comment).
@@ -335,12 +339,19 @@ jobs:
           cargo build --release --locked -p hext --target ${{ matrix.arch }}-unknown-linux-gnu
           mkdir dist
 
+      # With the repositories' public key in the tree (installer/linux/repo-key.asc,
+      # docs/repositorios-linux.md), the packages subscribe themselves to our
+      # apt and dnf repositories (`--variant repo`, at HEXT_REPO_URL or this
+      # repository's GitHub Pages); without it, they come out as before.
       - name: Packages (.deb, .rpm)
+        env:
+          HEXT_REPO_URL: ${{ vars.HEXT_REPO_URL }}
         run: |
           cargo install cargo-deb --locked
           cargo install cargo-generate-rpm --locked
-          cargo deb -p hext --target ${{ matrix.arch }}-unknown-linux-gnu --no-build --output dist/
-          cargo generate-rpm -p apps/hext --target ${{ matrix.arch }}-unknown-linux-gnu --output dist/
+          variant=$(installer/linux/repo.sh variant ${{ matrix.arch }})
+          cargo deb -p hext --target ${{ matrix.arch }}-unknown-linux-gnu --no-build $variant --output dist/
+          cargo generate-rpm -p apps/hext --target ${{ matrix.arch }}-unknown-linux-gnu $variant --output dist/
 
       # appimagetool and the runtime it puts at the head of the AppImage: fixed
       # versions, checked against their hashes (the "continuous" release
@@ -377,6 +388,44 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/dist:/dist:ro" -v "$RUNNER_TEMP/shots:/shots" fedora:43 \
             bash /src/installer/linux/package-test.sh "/dist/$(basename dist/*.rpm)" /shots/fedora
+      # The repositories (repositorios.yml) end to end, with a throwaway key
+      # made here (passphrase and all, through the same import): packages
+      # built with the repository and pointed at a local copy of it
+      # (file:///repo) install, upgrade from it (revision 1 to 2, signatures
+      # checked) and take it away when removed. Nothing here reaches dist/.
+      - name: Repository test (apt, dnf)
+        env:
+          HEXT_REPO_URL: file:///repo
+        run: |
+          sudo apt-get install -y -qq apt-utils createrepo-c rpm >/dev/null
+          work="$RUNNER_TEMP/repo-test"
+          mkdir -p "$work"
+          export GNUPGHOME="$work/gen"
+          mkdir -m 700 "$GNUPGHOME"
+          gpg --batch --pinentry-mode loopback --passphrase test \
+            --quick-generate-key "Hext Remote test <test@invalid>" rsa3072 sign never
+          gpg --batch --armor --export >"$work/key.asc"
+          secret="$(gpg --batch --pinentry-mode loopback --passphrase test --armor --export-secret-keys)"
+          gpgconf --kill gpg-agent
+          export HEXT_REPO_KEY="$work/key.asc" GNUPGHOME="$work/gnupg"
+          HEXT_REPO_GPG_KEY="$secret" HEXT_REPO_GPG_PASSPHRASE=test installer/linux/repo.sh import
+
+          target=${{ matrix.arch }}-unknown-linux-gnu
+          rm -rf target/linux-repo
+          installer/linux/repo.sh files ${{ matrix.arch }} target/linux-repo
+          cargo deb -p hext --target $target --no-build --variant repo --deb-revision 1 --output "$work/old/"
+          cargo deb -p hext --target $target --no-build --variant repo --deb-revision 2 --output "$work/new/"
+          cargo generate-rpm -p apps/hext --target $target --variant repo -s 'release = "1"' --output "$work/old/"
+          cargo generate-rpm -p apps/hext --target $target --variant repo -s 'release = "2"' --output "$work/new/"
+          rm -rf target/linux-repo
+          installer/linux/repo.sh build "$work/new" "$work/site"
+
+          for package in "$work"/old/*.deb "$work"/old/*.rpm; do
+            case "$package" in *.deb) image=ubuntu:24.04 ;; *) image=fedora:43 ;; esac
+            docker run --rm -v "$PWD:/src:ro" -v "$work/old:/old:ro" -v "$work/site:/repo:ro" "$image" \
+              bash /src/installer/linux/repo-test.sh "/old/$(basename "$package")" "$VERSION-2"
+          done
+          gpgconf --kill gpg-agent
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

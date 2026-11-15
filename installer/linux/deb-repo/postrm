@@ -1,0 +1,8 @@
+#!/bin/sh
+# Undoes postinst: the repository goes with the package.
+set -e
+case "$1" in
+  remove | purge | abort-install | disappear)
+    rm -f /etc/apt/sources.list.d/hext-remote.sources
+    ;;
+esac
