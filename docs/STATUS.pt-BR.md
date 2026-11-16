@@ -40,18 +40,20 @@ Cada fase fecha com um roteiro em máquinas reais ([roteiros/](roteiros/)):
 - [x] **Janela da sessão:** cada sessão desenha numa thread própria. No Mac, uma janela minimizada volta sem
       travar; abrir outro computador não para mais as janelas abertas
       ([janela-travada](estudos/janela-travada.md#roteiro-de-campo)). Conferido no Mac (novembro de 2026).
-- [ ] **Tela de privacidade:** o roteiro do marco 1 da F7 ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)) e, num
-      Mac, o do marco 2 ([F7](planos/F7.md#marco-2-como-funciona-e-roteiro)).
-- [ ] **Som:** o roteiro do marco 3 da F7 ([F7](planos/F7.md#marco-3-como-funciona-e-roteiro)). No campo (novembro
-      de 2026), o Mac ouvindo um Windows recebia "tac tac tac"; a correção da 0.9.2 falta conferir (o log do agente
-      diz quantos soluços a captura teve).
+- [x] **Tela de privacidade:** o roteiro do marco 1 da F7 ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)) e, num
+      Mac, o do marco 2 ([F7](planos/F7.md#marco-2-como-funciona-e-roteiro)), com a troca rápida de monitor da 0.9.2.
+      Conferido no Windows e no Mac (novembro de 2026).
+- [x] **Som:** o roteiro do marco 3 da F7 ([F7](planos/F7.md#marco-3-como-funciona-e-roteiro)). No campo (novembro
+      de 2026), o Mac ouvindo um Windows recebia "tac tac tac"; com a 0.9.2, o som chega limpo. Conferido (novembro
+      de 2026).
 - [ ] **Host no Linux (X11):** o roteiro do marco 4 da F7 num Ubuntu LTS com GNOME no Xorg
       ([F7](planos/F7.md#marco-4-como-funciona-e-roteiro)). Até aqui, conferido só num servidor X virtual no CI.
-- [ ] **Host no Linux (Wayland):** o roteiro do marco 5 da F7 num Ubuntu LTS com GNOME (Wayland)
+- [x] **Host no Linux (Wayland):** o roteiro do marco 5 da F7 num Ubuntu LTS com GNOME (Wayland)
       ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). No campo (novembro de 2026), no Fedora e no
       Ubuntu: a sessão funciona, e o sistema pergunta o que compartilhar só na primeira vez. A barra da sessão abria no
       meio da tela; a correção (a interface pelo XWayland, 0.9.1) funcionou, mas a barra ficava com uns
-      200 px de altura e não se recolhia; o tamanho certo (0.9.2) falta conferir.
+      200 px de altura e não se recolhia; com a 0.9.2, a barra tem o tamanho certo. Conferido no Fedora e no Ubuntu
+      (novembro de 2026).
 - [ ] **Repositórios Linux (apt e dnf):** o `.deb` e o `.rpm` se inscrevem nos nossos repositórios e passam a se
       atualizar com o sistema; testado no CI com uma chave descartável. A chave de verdade está nos segredos do ambiente
       `linux-repo`, o repositório está no ar (novembro de 2026), e os pacotes se inscrevem a partir da primeira
