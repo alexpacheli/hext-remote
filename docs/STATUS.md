@@ -3,7 +3,7 @@
 **English** | [Português](STATUS.pt-BR.md)
 
 Where Hext Remote stands: what is done, what is being checked and what comes next. Updated with each release.
-**Last update: November 2026, version 0.9.2.**
+**Last update: November 2026, version 0.9.3.**
 
 ## Done
 
@@ -16,7 +16,7 @@ Where Hext Remote stands: what is done, what is being checked and what comes nex
 | F6 — Distribution | `.msi`, portable `.exe`, notarized `.dmg`, `.deb`/`.rpm`/`.AppImage`, signed automatic updates, unattended access on the Mac after login | [F6](planos/F6.md) |
 | Linux interface | The app as a technician on Linux: account, My computers, opening other computers; `.deb` and `.rpm` with the libraries they need (WebKitGTK) (0.8.0) | [ARCHITECTURE](../ARCHITECTURE.md#7-platforms) |
 | Virtual monitor | Session on a computer with no monitor (Windows driver as an installer option, macOS built in), resolution with `Ctrl+Alt+0`; a screen that stays black (a display turned off at its button) moves to the virtual one by itself; the viewer goes back to the last monitor chosen for each computer (0.8.2) | [monitor-virtual](monitor-virtual.md) |
-| Privacy screen (Windows and Mac) | `Ctrl+Alt+P` or (since 0.9.1) the button on the viewer's bar: the person at the computer sees a black screen with a notice and their mouse and keyboard do nothing, while the technician sees and controls everything; `Ctrl+Alt+Del` there ends it (on a Mac, macOS 12.3 or newer: Esc three times) (0.9.0) | [F7](planos/F7.md#marco-1-como-funciona-e-roteiro), [Mac](planos/F7.md#marco-2-como-funciona-e-roteiro) |
+| Privacy screen (Windows and Mac) | `Ctrl+Alt+P` or (since 0.9.1) the button on the viewer's bar: the person at the computer sees a black screen with a notice and their mouse and keyboard do nothing, while the technician sees and controls everything; `Ctrl+Alt+Del` there ends it (on a Mac, macOS 12.3 or newer: Esc three times), an emergency exit the notice no longer mentions since 0.9.3 (0.9.0) | [F7](planos/F7.md#marco-1-como-funciona-e-roteiro), [Mac](planos/F7.md#marco-2-como-funciona-e-roteiro) |
 | Sound | What the host plays (Windows, and macOS 13+) reaches the viewer, about 70 ms behind on a local network; `Ctrl+Alt+S` mutes it, and nothing is sent while the computer is silent (0.9.0). Since 0.9.1: sessions start without sound and the technician turns it on with `Ctrl+Alt+S` or the speaker button on the bar (while off, the host records and sends nothing); through the Windows service, the sound no longer breaks up while a video plays (0.9.1). In 0.9.2: a glitch of the sound device no longer reopens the Windows capture (the clicks a Mac heard from a Windows host), and the Windows agent stays out of Windows 11's efficiency mode | [F7](planos/F7.md#marco-3-como-funciona-e-roteiro) |
 | Linux host (X11) | Linux is accessed too, on an X11 session: capture (XShm, several monitors through XRandR), mouse and keyboard (XTest, ABNT2 by scancode), clipboard and files; VA-API encoding where there is one, OpenH264 otherwise; `service install` (no `sudo`) opens it at login through a systemd user unit shipped in the `.deb`/`.rpm`. No access before login, no virtual monitor, no privacy screen (0.9.0). After a package update, it opens again by itself as soon as it is idle (0.9.2) | [F7](planos/F7.md#marco-4-como-funciona-e-roteiro) |
 | Linux host (Wayland) | The same on Wayland, through the desktop's portal: the desktop asks the person at the computer once what to share (a restore token skips it next time), frames by PipeWire, input through the RemoteDesktop portal. The sign-in screen (GDM) stays out (0.9.0) | [F7](planos/F7.md#marco-5-como-funciona-e-roteiro) |
@@ -40,18 +40,20 @@ Each phase closes with a real-world checklist ([roteiros/](roteiros/), in Portug
 - [x] **Session window:** each session draws on a thread of its own. On a Mac, a minimized window comes back
       without freezing; opening another computer no longer stalls the open windows
       ([janela-travada](estudos/janela-travada.md#roteiro-de-campo)). Checked on a Mac (November 2026).
-- [ ] **Privacy screen:** the F7 milestone 1 checklist ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)) and,
-      on a Mac, the milestone 2 one ([F7](planos/F7.md#marco-2-como-funciona-e-roteiro)).
-- [ ] **Sound:** the F7 milestone 3 checklist ([F7](planos/F7.md#marco-3-como-funciona-e-roteiro)). In the field
-      (November 2026), a Mac hearing a Windows host got clicks; the 0.9.2 fix is still to be checked (the agent log
-      says how many capture glitches there were).
+- [x] **Privacy screen:** the F7 milestone 1 checklist ([F7](planos/F7.md#marco-1-como-funciona-e-roteiro)) and,
+      on a Mac, the milestone 2 one ([F7](planos/F7.md#marco-2-como-funciona-e-roteiro)), with the 0.9.2 quick monitor
+      switch. Checked on Windows and on a Mac (November 2026).
+- [x] **Sound:** the F7 milestone 3 checklist ([F7](planos/F7.md#marco-3-como-funciona-e-roteiro)). In the field
+      (November 2026), a Mac hearing a Windows host got clicks; with 0.9.2 the sound arrives clean. Checked
+      (November 2026).
 - [ ] **Linux host (X11):** the F7 milestone 4 checklist on Ubuntu LTS with GNOME on Xorg
       ([F7](planos/F7.md#marco-4-como-funciona-e-roteiro)). Checked so far only on a virtual X server in CI.
-- [ ] **Linux host (Wayland):** the F7 milestone 5 checklist on Ubuntu LTS with GNOME (Wayland)
+- [x] **Linux host (Wayland):** the F7 milestone 5 checklist on Ubuntu LTS with GNOME (Wayland)
       ([F7](planos/F7.md#marco-5-como-funciona-e-roteiro)). In the field (November 2026), on Fedora and
       Ubuntu: the session works, and the desktop asks what to share only the first time. The session bar opened in the
       middle of the screen; the fix (the interface through XWayland, 0.9.1) worked, but the bar was
-      about 200 px tall and did not fold; its right size (0.9.2) is still to be checked.
+      about 200 px tall and did not fold; with 0.9.2 the bar has the right size. Checked on Fedora and Ubuntu
+      (November 2026).
 - [ ] **Linux repositories (apt and dnf):** the `.deb` and `.rpm` subscribe to our repositories and then update
       with the system; tested in CI with a throwaway key. The real key is in the secrets of the `linux-repo`
       environment, the repository is online (November 2026), and the packages subscribe from the first version
